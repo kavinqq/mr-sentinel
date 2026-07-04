@@ -86,9 +86,14 @@ def run_review(work_dir: Path, context_file: Path, output_file: Path,
                             context_file.name, output_file.name)
     cmd = build_cmd(prompt, build_agents_json(skeptic, review_cfg), str(repo_dir), review_cfg)
 
-    with open(work_dir / "claude.log", "w") as logf:
-        proc = subprocess.run(cmd, cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
-                              timeout=review_cfg["review_timeout_seconds"])
+    try:
+        with open(work_dir / "claude.log", "w") as logf:
+            proc = subprocess.run(cmd, cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
+                                  timeout=review_cfg["review_timeout_seconds"])
+    except subprocess.TimeoutExpired:
+        # must not raise past the engine contract, or the reviewer's
+        # "review did not finish" warning path never fires
+        return 1
     if proc.returncode != 0 or not output_file.exists():
         return 1
     return 0

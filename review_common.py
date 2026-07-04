@@ -76,7 +76,12 @@ def format_comment_body(finding: dict, signature: str = DEFAULT_SIGNATURE) -> st
 
 
 def build_position(finding: dict, diff_refs: dict) -> dict | None:
-    """Build a GitLab inline-discussion position; None when no line (falls back to a note)."""
+    """Build a GitLab inline-discussion position; None when no line (falls back to a note).
+
+    GitLab requires BOTH old_path and new_path for position_type=text; omitting
+    old_path 400s every inline discussion. Defaulting old_path to the file path
+    covers the non-rename case; renames can pass an explicit old_path.
+    """
     line = finding.get("line")
     if line is None:
         return None
@@ -86,6 +91,7 @@ def build_position(finding: dict, diff_refs: dict) -> dict | None:
         "head_sha": diff_refs["head_sha"],
         "position_type": "text",
         "new_path": finding["file"],
+        "old_path": finding.get("old_path") or finding["file"],
         "new_line": line,
     }
 

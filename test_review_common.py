@@ -111,9 +111,17 @@ class TestPositionEmojiTs(unittest.TestCase):
     def test_build_position_inline(self):
         pos = rc.build_position({"file": "a.py", "line": 12}, DIFF_REFS)
         self.assertEqual(pos["new_path"], "a.py")
+        # GitLab requires old_path too for position_type=text; omitting it 400s
+        # every inline discussion and silently degrades to plain notes
+        self.assertEqual(pos["old_path"], "a.py")
         self.assertEqual(pos["new_line"], 12)
         self.assertEqual(pos["position_type"], "text")
         self.assertEqual(pos["head_sha"], "h")
+
+    def test_build_position_uses_explicit_old_path_for_renames(self):
+        pos = rc.build_position({"file": "new.py", "old_path": "old.py", "line": 5}, DIFF_REFS)
+        self.assertEqual(pos["new_path"], "new.py")
+        self.assertEqual(pos["old_path"], "old.py")
 
     def test_build_position_none_when_no_line(self):
         self.assertIsNone(rc.build_position({"file": "a.py", "line": None}, DIFF_REFS))

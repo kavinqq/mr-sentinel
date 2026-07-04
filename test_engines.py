@@ -65,6 +65,17 @@ class TestCommand(unittest.TestCase):
                                               work / "final_findings.json", "/tmp/wt", CFG)
         self.assertEqual(rc, 1)  # process "succeeded" but produced no findings file
 
+    def test_run_review_returns_1_on_timeout(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            (work / "mr_context.json").write_text("{}")
+            with mock.patch("subprocess.run",
+                            side_effect=subprocess.TimeoutExpired("claude", 900)):
+                rc = claude_engine.run_review(work, work / "mr_context.json",
+                                              work / "final_findings.json", "/tmp/wt", CFG)
+        self.assertEqual(rc, 1)  # timeout must not raise past the engine contract
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -129,6 +129,11 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
     add = _run_git(["git", "-C", local, "worktree", "add", "--detach", "-q", str(wt), head_sha])
     if add.returncode != 0:
         log.error("worktree add failed: %s", add.stderr)
+        if not dry_run:
+            # the MR is already claimed (:eyes:) and will never be retried;
+            # every failure branch must produce a human-visible signal
+            _slack_say(config, f":warning: worktree setup failed for {project_path} MR !{iid}, "
+                               f"please review manually\n{ctx.get('web_url')}")
         return 1
 
     try:
