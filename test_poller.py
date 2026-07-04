@@ -55,12 +55,17 @@ class TestNotifyAndSpawn(unittest.TestCase):
         m.assert_not_called()
 
     def test_spawn_review_only_for_mapped_projects(self):
+        import pathlib
+        import tempfile
         mr = {"id": 1, "iid": 2}
-        with mock.patch("subprocess.Popen") as pop:
-            poller.maybe_spawn_review(CFG, mr, "group/other-app")
-            pop.assert_not_called()
-            poller.maybe_spawn_review(CFG, mr, "group/backend-app")
-            pop.assert_called_once()
+        with tempfile.TemporaryDirectory() as d:
+            # redirect SCRIPT_DIR so the spawn-log file never touches the real reviews/
+            with mock.patch.object(poller, "SCRIPT_DIR", pathlib.Path(d)), \
+                 mock.patch("subprocess.Popen") as pop:
+                poller.maybe_spawn_review(CFG, mr, "group/other-app")
+                pop.assert_not_called()
+                poller.maybe_spawn_review(CFG, mr, "group/backend-app")
+                pop.assert_called_once()
 
     def test_build_notification_mentions(self):
         mr = {"iid": 7, "title": "T", "web_url": "https://gl/mr/7",
