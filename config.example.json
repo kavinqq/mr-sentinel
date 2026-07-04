@@ -1,0 +1,30 @@
+{
+  "gitlab_url": "https://gitlab.example.com",
+  "gitlab_token": "glpat-your-api-scope-token",
+
+  "slack": {
+    "bot_token": "",
+    "channel_id": "",
+    "mention_user_ids": []
+  },
+
+  "review": {
+    "project_map": {
+      "your-group/your-repo": "/absolute/path/to/local/clone"
+    },
+    "language": "en",
+    "engine": "claude",
+    "max_changed_files": 60,
+    "max_diff_lines": 3000,
+    "review_timeout_seconds": 900,
+    "claude": {
+      "model": "claude-opus-4-8",
+      "skeptic_model": "sonnet",
+      "effort": "medium"
+    },
+    "codex": {
+      "model": "",
+      "skeptic_model": ""
+    }
+  }
+}

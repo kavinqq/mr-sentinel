@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for mr-sentinel.
+
+  1. Replace /PATH/TO/mr-sentinel with your clone path (twice below).
+  2. cp this file to ~/Library/LaunchAgents/com.example.mr-sentinel.plist
+  3. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.mr-sentinel.plist
+  Stop: launchctl bootout gui/$(id -u)/com.example.mr-sentinel
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.mr-sentinel</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/PATH/TO/mr-sentinel/poller.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/PATH/TO/mr-sentinel/launchd.err.log</string>
+</dict>
+</plist>

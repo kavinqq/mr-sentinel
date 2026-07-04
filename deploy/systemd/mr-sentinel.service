@@ -1,0 +1,13 @@
+# systemd unit template for mr-sentinel (pair with mr-sentinel.timer).
+# 1. Fix the paths / user below.
+# 2. cp mr-sentinel.service mr-sentinel.timer /etc/systemd/system/
+# 3. systemctl daemon-reload && systemctl enable --now mr-sentinel.timer
+[Unit]
+Description=mr-sentinel GitLab MR poller
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=youruser
+WorkingDirectory=/PATH/TO/mr-sentinel
+ExecStart=/usr/bin/env python3 /PATH/TO/mr-sentinel/poller.py

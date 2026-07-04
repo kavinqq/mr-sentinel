@@ -55,6 +55,8 @@ def build_cmd(prompt: str, work_dir: str, last_message_file: str, model: str) ->
     cmd = ["codex", "exec", prompt,
            "--sandbox", "read-only",
            "--cd", str(work_dir),
+           # the work dir (reviews/<id>/) is not a git repo; sandbox is read-only anyway
+           "--skip-git-repo-check",
            "--output-last-message", str(last_message_file)]
     if model:
         cmd += ["-m", model]
@@ -76,6 +78,7 @@ def _exec_pass(prompt: str, work_dir: Path, model: str, timeout: int) -> str:
     with open(work_dir / "codex.log", "a") as logf:
         proc = subprocess.run(build_cmd(prompt, str(work_dir), str(last), model),
                               cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL,  # codex waits on stdin otherwise
                               timeout=timeout)
     if proc.returncode != 0 or not last.exists():
         raise RuntimeError(f"codex exec failed (rc={proc.returncode})")

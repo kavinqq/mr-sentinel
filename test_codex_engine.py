@@ -55,6 +55,7 @@ class TestCommand(unittest.TestCase):
         self.assertEqual(cmd[:2], ["codex", "exec"])
         self.assertIn("read-only", cmd)
         self.assertIn("--output-last-message", cmd)
+        self.assertIn("--skip-git-repo-check", cmd)  # work dir is not a git repo
         self.assertNotIn("-m", cmd)  # empty model -> CLI default
 
     def test_build_cmd_with_model(self):

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run mr-sentinel poller every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

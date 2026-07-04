@@ -1,0 +1,3 @@
+# mr-sentinel: poll GitLab every minute.
+# Install with: crontab -e   (append this line, fix the path)
+* * * * * cd /PATH/TO/mr-sentinel && /usr/bin/env python3 poller.py
