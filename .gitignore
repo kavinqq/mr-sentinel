@@ -1,0 +1,19 @@
+# secrets — never commit (GitLab token, Slack bot token)
+config.json
+
+# runtime state / locks / logs
+state.json
+state.tmp
+.lock
+reviews/
+*.log
+*.log.*
+
+# script <-> AI engine handoff artifacts
+mr_context.json
+final_findings.json
+
+# python
+__pycache__/
+*.pyc
+*.tmp
