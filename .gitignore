@@ -1,6 +1,9 @@
 # secrets — never commit (GitLab token, Slack bot token)
 config.json
 
+# personal local runbook (contains company-specific details)
+本機使用說明.md
+
 # runtime state / locks / logs
 state.json
 state.tmp
