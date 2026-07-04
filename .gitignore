@@ -3,6 +3,7 @@ config.json
 
 # personal local runbook (contains company-specific details)
 本機使用說明.md
+本機使用說明.html
 deploy/local/
 
 # runtime state / locks / logs
