@@ -51,3 +51,54 @@ def should_skip_for_size(files: int, lines: int, review_cfg: dict) -> tuple[bool
     if lines > max_lines:
         return True, f"{lines} lines changed (limit {max_lines})"
     return False, ""
+
+
+SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+SEVERITY_EMOJI = {"high": "🔴", "medium": "🟠", "low": "🟡"}
+SEVERITY_LABEL = {"high": "High", "medium": "Medium", "low": "Low"}
+
+DEFAULT_SIGNATURE = "— 🤖 mr-sentinel AI review"
+
+
+def sort_findings(findings: list[dict]) -> list[dict]:
+    """Stable sort by severity high->low; unknown severities sink to the bottom."""
+    return sorted(findings, key=lambda f: SEVERITY_RANK.get(f.get("severity"), 99))
+
+
+def format_comment_body(finding: dict, signature: str = DEFAULT_SIGNATURE) -> str:
+    """One finding -> one comment body. Signature is caller-built (engine models vary)."""
+    sev = finding.get("severity", "low")
+    emoji = SEVERITY_EMOJI.get(sev, "🟡")
+    label = SEVERITY_LABEL.get(sev, "Low")
+    title = (finding.get("title") or "").strip()
+    body = (finding.get("body") or "").strip()
+    return f"{emoji} [{label}] {title}\n\n{body}\n\n{signature}"
+
+
+def build_position(finding: dict, diff_refs: dict) -> dict | None:
+    """Build a GitLab inline-discussion position; None when no line (falls back to a note)."""
+    line = finding.get("line")
+    if line is None:
+        return None
+    return {
+        "base_sha": diff_refs["base_sha"],
+        "start_sha": diff_refs["start_sha"],
+        "head_sha": diff_refs["head_sha"],
+        "position_type": "text",
+        "new_path": finding["file"],
+        "new_line": line,
+    }
+
+
+def position_form(position: dict) -> dict:
+    """position dict -> GitLab form fields position[key]=value."""
+    return {f"position[{k}]": v for k, v in position.items()}
+
+
+def has_own_award_emoji(emojis: list[dict], user_id: int, name: str = "eyes") -> bool:
+    """Idempotency check: our own :eyes: on the MR means it is already claimed."""
+    return any(e.get("name") == name and e.get("user", {}).get("id") == user_id for e in emojis)
+
+
+def slack_ts_for(state: dict, mr_id) -> str | None:
+    return state.get("slack_ts", {}).get(str(mr_id))

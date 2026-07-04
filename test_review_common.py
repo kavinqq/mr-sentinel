@@ -77,5 +77,65 @@ class TestNoiseAndSize(unittest.TestCase):
         self.assertEqual(reason, "")
 
 
+DIFF_REFS = {"base_sha": "b", "start_sha": "s", "head_sha": "h"}
+
+
+class TestFindingFormat(unittest.TestCase):
+    def test_sort_high_first(self):
+        fs = [{"severity": "low"}, {"severity": "high"}, {"severity": "medium"}]
+        self.assertEqual([f["severity"] for f in rc.sort_findings(fs)], ["high", "medium", "low"])
+
+    def test_sort_stable_unknown_last(self):
+        fs = [{"severity": "weird"}, {"severity": "high"}]
+        self.assertEqual([f["severity"] for f in rc.sort_findings(fs)], ["high", "weird"])
+
+    def test_format_body_emoji_label_and_signature(self):
+        body = rc.format_comment_body(
+            {"severity": "high", "title": "SQL injection", "file": "a.py", "line": 10,
+             "body": "User input is concatenated into the query.\nFix: use parameterized queries."},
+            signature="🤖 mr-sentinel (scanned by opus, vetted by sonnet)")
+        self.assertIn("🔴", body)
+        self.assertIn("[High]", body)
+        self.assertIn("SQL injection", body)
+        self.assertIn("parameterized", body)
+        self.assertIn("mr-sentinel", body)
+
+    def test_format_body_default_signature(self):
+        body = rc.format_comment_body(
+            {"severity": "low", "title": "t", "file": "a.py", "line": 1, "body": "b"})
+        self.assertIn("🟡", body)
+        self.assertIn("mr-sentinel", body)
+
+
+class TestPositionEmojiTs(unittest.TestCase):
+    def test_build_position_inline(self):
+        pos = rc.build_position({"file": "a.py", "line": 12}, DIFF_REFS)
+        self.assertEqual(pos["new_path"], "a.py")
+        self.assertEqual(pos["new_line"], 12)
+        self.assertEqual(pos["position_type"], "text")
+        self.assertEqual(pos["head_sha"], "h")
+
+    def test_build_position_none_when_no_line(self):
+        self.assertIsNone(rc.build_position({"file": "a.py", "line": None}, DIFF_REFS))
+
+    def test_position_form_flattens(self):
+        form = rc.position_form({"new_path": "a.py", "new_line": 12, "position_type": "text"})
+        self.assertEqual(form["position[new_path]"], "a.py")
+        self.assertEqual(form["position[new_line]"], 12)
+
+    def test_has_own_emoji_true(self):
+        emojis = [{"name": "thumbsup", "user": {"id": 5}}, {"name": "eyes", "user": {"id": 9}}]
+        self.assertTrue(rc.has_own_award_emoji(emojis, 9))
+
+    def test_has_own_emoji_false_other_user(self):
+        emojis = [{"name": "eyes", "user": {"id": 5}}]
+        self.assertFalse(rc.has_own_award_emoji(emojis, 9))
+
+    def test_slack_ts_for(self):
+        state = {"slack_ts": {"2451": "1700000000.001"}}
+        self.assertEqual(rc.slack_ts_for(state, 2451), "1700000000.001")
+        self.assertIsNone(rc.slack_ts_for(state, 9999))
+
+
 if __name__ == "__main__":
     unittest.main()
