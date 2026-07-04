@@ -4,8 +4,13 @@
   macOS launchd template for mr-sentinel.
 
   1. Replace /PATH/TO/mr-sentinel with your clone path (twice below).
-  2. cp this file to ~/Library/LaunchAgents/com.example.mr-sentinel.plist
-  3. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.mr-sentinel.plist
+  2. IMPORTANT: launchd runs with a minimal PATH, so `env python3` resolves to
+     the SYSTEM Python (3.9 on modern macOS), which is too old — the poller
+     will crash instantly with `TypeError: unsupported operand type(s) for |`.
+     Replace the two ProgramArguments lines below with the ABSOLUTE path of a
+     Python 3.10+ interpreter (find yours with: which python3).
+  3. cp this file to ~/Library/LaunchAgents/com.example.mr-sentinel.plist
+  4. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.mr-sentinel.plist
   Stop: launchctl bootout gui/$(id -u)/com.example.mr-sentinel
 -->
 <plist version="1.0">
