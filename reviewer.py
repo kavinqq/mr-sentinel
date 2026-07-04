@@ -57,11 +57,13 @@ def build_signature(engine_label: str) -> str:
 
 def _slack_say(config: dict, text: str) -> None:
     slack = config.get("slack", {})
-    if slack.get("bot_token") and slack.get("channel_id"):
-        try:
+    try:
+        if slack.get("bot_token") and slack.get("channel_id"):
             slack_client.chat_post_message(slack["bot_token"], slack["channel_id"], text)
-        except Exception:
-            log.exception("Slack notify failed (ignored)")
+        elif slack.get("webhook_url"):
+            slack_client.post_webhook(slack["webhook_url"], text)
+    except Exception:
+        log.exception("Slack notify failed (ignored)")
 
 
 def _run_git(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:

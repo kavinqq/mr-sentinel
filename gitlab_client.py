@@ -35,6 +35,15 @@ def list_opened_mrs(base: str, token: str, project, per_page: int = 100) -> list
     return json.loads(_call(f"{_project(base, project)}/merge_requests?{params}", token))
 
 
+def list_group_opened_mrs(base: str, token: str, group_id, per_page: int = 100) -> list:
+    """All opened MRs across a group (subgroups included) — one call covers many projects."""
+    params = urllib.parse.urlencode(
+        {"state": "opened", "scope": "all", "per_page": str(per_page),
+         "order_by": "created_at", "sort": "asc"}
+    )
+    return json.loads(_call(f"{base}/api/v4/groups/{group_id}/merge_requests?{params}", token))
+
+
 def get_mr_changes(base: str, token: str, project, iid) -> dict:
     return json.loads(_call(f"{_mr(base, project, iid)}/changes", token))
 

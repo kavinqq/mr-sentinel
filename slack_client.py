@@ -24,6 +24,19 @@ def chat_post_message(token: str, channel: str, text: str) -> str:
     return resp["ts"]
 
 
+def post_webhook(webhook_url: str, text: str) -> None:
+    """Incoming-webhook fallback: can post messages but returns no ts (so no reactions)."""
+    req = urllib.request.Request(
+        webhook_url,
+        data=json.dumps({"text": text, "unfurl_links": False}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        status, body = resp.status, resp.read().decode()
+    if status != 200 or body != "ok":
+        raise RuntimeError(f"Slack webhook failed: {status} {body}")
+
+
 def add_reaction(token: str, channel: str, ts: str, name: str = "eyes") -> None:
     """already_reacted counts as success (idempotent claims)."""
     resp = _post("reactions.add", token, {"channel": channel, "timestamp": ts, "name": name})

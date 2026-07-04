@@ -37,6 +37,10 @@ def load_config(path: Path | None = None) -> dict:
     codex_cfg = review.setdefault("codex", {})
     codex_cfg.setdefault("model", "")           # empty = codex CLI default
     codex_cfg.setdefault("skeptic_model", "")
+
+    watch = config.setdefault("watch", {})
+    watch.setdefault("group_ids", [])           # set -> group polling mode (notify whole groups)
+    watch.setdefault("path_prefixes", [])       # group mode: keep only real member projects
     return config
 
 

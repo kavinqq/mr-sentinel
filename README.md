@@ -72,7 +72,9 @@ leave the `slack` block empty to disable notifications entirely.
 | `gitlab_url` | Your GitLab base URL (self-hosted or gitlab.com) |
 | `gitlab_token` | PAT with `api` scope (read MRs, post comments, award emoji) |
 | `slack.bot_token` / `channel_id` | Optional; enables new-MR messages, 👀 reactions, completion pings |
-| `review.project_map` | **The allowlist**: `"group/project": "/local/clone/path"` — only mapped projects are reviewed |
+| `slack.webhook_url` | Simpler Slack alternative (incoming webhook): messages work, reactions don't. Bot token wins when both are set |
+| `watch.group_ids` / `path_prefixes` | Optional: poll whole GitLab groups (one API call each) and notify for every member project; reviews still run only for `project_map` entries |
+| `review.project_map` | **The review allowlist**: `"group/project": "/local/clone/path"` — only mapped projects are reviewed |
 | `review.language` | Language for review comments (`en`, `zh-TW`, `ja`, …) |
 | `review.engine` | `claude` (default) or `codex` (experimental) |
 | `review.max_changed_files` / `max_diff_lines` | Size guard: oversized MRs are skipped with a warning instead of burning budget |

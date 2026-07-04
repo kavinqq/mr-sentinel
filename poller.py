@@ -74,10 +74,13 @@ def build_notification(mr: dict, project_path: str, config: dict) -> str:
 
 
 def notify_slack(config: dict, text: str) -> str | None:
-    """Return the message ts when Slack is configured; None in GitLab-only mode."""
+    """Bot token first (returns ts, enables reactions); webhook fallback (no ts);
+    neither configured -> GitLab-only mode."""
     slack = config.get("slack", {})
     if slack.get("bot_token") and slack.get("channel_id"):
         return slack_client.chat_post_message(slack["bot_token"], slack["channel_id"], text)
+    if slack.get("webhook_url"):
+        slack_client.post_webhook(slack["webhook_url"], text)
     return None
 
 
@@ -103,26 +106,56 @@ def maybe_spawn_review(config: dict, mr: dict, project_path: str) -> None:
 # ---------- main flow ----------
 
 
-def poll_opened(config: dict) -> dict[str, list[dict]]:
-    """Poll every allowlisted project; a failing project logs and is skipped."""
+def poll_opened(config: dict) -> tuple[dict[str, list[dict]], int]:
+    """Poll opened MRs and return ({project_path: [mrs]}, error_count).
+
+    Two watch modes:
+    - watch.group_ids set: one API call per group covers every project inside
+      (path_prefixes filters out projects merely shared into the group).
+    - otherwise: poll each project in review.project_map individually.
+    A failing source logs, bumps error_count and is skipped.
+    """
+    base, token = config["gitlab_url"], config["gitlab_token"]
+    watch = config.get("watch", {})
     result: dict[str, list[dict]] = {}
-    for project_path in config["review"]["project_map"]:
-        try:
-            result[project_path] = gitlab_client.list_opened_mrs(
-                config["gitlab_url"], config["gitlab_token"], project_path
-            )
-        except (urllib.error.URLError, OSError) as exc:
-            log.warning("poll failed for %s: %s", project_path, exc)
-    return result
+    errors = 0
+    if watch.get("group_ids"):
+        for group_id in watch["group_ids"]:
+            try:
+                mrs = gitlab_client.list_group_opened_mrs(base, token, group_id)
+            except (urllib.error.URLError, OSError) as exc:
+                log.warning("poll failed for group %s: %s", group_id, exc)
+                errors += 1
+                continue
+            if len(mrs) >= 100:
+                log.warning("group %s returned a full page; some MRs may be missed", group_id)
+            for mr in mrs:
+                path = review_common.project_path_from_mr(mr, base)
+                if review_common.is_in_scope(path, watch.get("path_prefixes", [])):
+                    result.setdefault(path, []).append(mr)
+    else:
+        for project_path in config["review"]["project_map"]:
+            try:
+                result[project_path] = gitlab_client.list_opened_mrs(base, token, project_path)
+            except (urllib.error.URLError, OSError) as exc:
+                log.warning("poll failed for %s: %s", project_path, exc)
+                errors += 1
+    return result, errors
 
 
 def run_once(config: dict, state_path: Path, dry_run: bool) -> int:
     now = datetime.now(timezone.utc)
-    opened_by_project = poll_opened(config)
+    opened_by_project, poll_errors = poll_opened(config)
     opened_ids = {str(mr["id"]) for mrs in opened_by_project.values() for mr in mrs}
 
     state = load_state(state_path)
     if state is None:
+        if poll_errors:
+            # never build a baseline from a failed poll: an empty/partial baseline
+            # would flag every existing MR as "new" once the network recovers
+            log.warning("initialization aborted: %s source(s) failed, retrying next run",
+                        poll_errors)
+            return 1
         seen = {str(mr["id"]): mr["created_at"]
                 for mrs in opened_by_project.values() for mr in mrs}
         save_state({"seen": seen, "slack_ts": {}}, state_path)
@@ -152,10 +185,13 @@ def run_once(config: dict, state_path: Path, dry_run: bool) -> int:
 
     if dry_run:
         return 0
-    state["seen"] = prune_seen(state["seen"], opened_ids, now, SEEN_RETENTION_DAYS)
-    prune_slack_ts(state)
+    if not poll_errors:
+        # prune only on a fully-successful poll: a failed source would make its
+        # still-opened MRs look gone and eligible for premature pruning
+        state["seen"] = prune_seen(state["seen"], opened_ids, now, SEEN_RETENTION_DAYS)
+        prune_slack_ts(state)
     save_state(state, state_path)
-    return 1 if failed else 0
+    return 1 if failed or poll_errors else 0
 
 
 def main() -> int:

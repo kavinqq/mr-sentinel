@@ -54,6 +54,50 @@ class TestNotifyAndSpawn(unittest.TestCase):
         self.assertIsNone(ts)
         m.assert_not_called()
 
+    def test_notify_slack_falls_back_to_webhook(self):
+        cfg = dict(CFG, slack={"webhook_url": "https://hooks.slack.com/x"})
+        with mock.patch("slack_client.post_webhook") as m:
+            ts = poller.notify_slack(cfg, "hi")
+        self.assertIsNone(ts)  # webhook 拿不到 ts
+        m.assert_called_once_with("https://hooks.slack.com/x", "hi")
+
+    def test_notify_slack_prefers_bot_token_over_webhook(self):
+        cfg = dict(CFG, slack={"bot_token": "xoxb", "channel_id": "C1",
+                               "webhook_url": "https://hooks.slack.com/x"})
+        with mock.patch("slack_client.chat_post_message", return_value="9.9") as bot, \
+             mock.patch("slack_client.post_webhook") as hook:
+            ts = poller.notify_slack(cfg, "hi")
+        self.assertEqual(ts, "9.9")
+        hook.assert_not_called()
+
+
+class TestGroupPollingAndInitGuard(unittest.TestCase):
+    def test_poll_opened_group_mode_filters_and_groups_by_path(self):
+        cfg = {"gitlab_url": "https://gl", "gitlab_token": "t",
+               "watch": {"group_ids": [5], "path_prefixes": ["dev/backend/"]},
+               "review": {"project_map": {}}}
+        mrs = [
+            {"id": 1, "web_url": "https://gl/dev/backend/app-a/-/merge_requests/1"},
+            {"id": 2, "web_url": "https://gl/dev/backend/app-b/-/merge_requests/2"},
+            {"id": 3, "web_url": "https://gl/other/x/-/merge_requests/3"},  # 不在 prefix 範圍
+        ]
+        with mock.patch("gitlab_client.list_group_opened_mrs", return_value=mrs):
+            result, errors = poller.poll_opened(cfg)
+        self.assertEqual(errors, 0)
+        self.assertEqual(set(result), {"dev/backend/app-a", "dev/backend/app-b"})
+
+    def test_run_once_aborts_init_when_poll_failed(self):
+        """斷網時絕不建基線——空基線會讓恢復後所有現存 MR 被當成新的。"""
+        cfg = {"gitlab_url": "https://gl", "gitlab_token": "t", "slack": {},
+               "watch": {"group_ids": [], "path_prefixes": []},
+               "review": {"project_map": {"p": "/x"}}}
+        with mock.patch.object(poller, "poll_opened", return_value=({}, 1)), \
+             mock.patch.object(poller, "load_state", return_value=None), \
+             mock.patch.object(poller, "save_state") as save:
+            rc_ = poller.run_once(cfg, mock.Mock(), dry_run=False)
+        self.assertEqual(rc_, 1)
+        save.assert_not_called()  # 關鍵:沒建出空基線
+
     def test_spawn_review_only_for_mapped_projects(self):
         import pathlib
         import tempfile

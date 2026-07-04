@@ -10,6 +10,20 @@ def is_review_target(project_path: str, review_cfg: dict) -> bool:
     return project_path in review_cfg.get("project_map", {})
 
 
+def project_path_from_mr(mr: dict, gitlab_url: str) -> str:
+    """Derive the full project path (group/sub/repo) from an MR's web_url."""
+    path = mr["web_url"][len(gitlab_url):].lstrip("/")
+    return path.split("/-/")[0]
+
+
+def is_in_scope(project_path: str, path_prefixes: list) -> bool:
+    """Group polling returns MRs from shared projects too; keep only real members.
+    An empty prefix list means no filtering."""
+    if not path_prefixes:
+        return True
+    return project_path.startswith(tuple(path_prefixes))
+
+
 def resolve_local_path(project_path: str, review_cfg: dict) -> str | None:
     """GitLab project path -> local clone path; None if not allowlisted."""
     return review_cfg.get("project_map", {}).get(project_path)

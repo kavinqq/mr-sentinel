@@ -77,6 +77,19 @@ class TestNoiseAndSize(unittest.TestCase):
         self.assertEqual(reason, "")
 
 
+class TestProjectPathAndScope(unittest.TestCase):
+    def test_project_path_from_mr(self):
+        mr = {"web_url": "https://gl.example.com/group/sub/repo/-/merge_requests/7"}
+        self.assertEqual(rc.project_path_from_mr(mr, "https://gl.example.com"), "group/sub/repo")
+
+    def test_is_in_scope_empty_prefixes_accepts_all(self):
+        self.assertTrue(rc.is_in_scope("any/project", []))
+
+    def test_is_in_scope_prefix_match(self):
+        self.assertTrue(rc.is_in_scope("group/backend/app", ["group/backend/", "group/frontend/"]))
+        self.assertFalse(rc.is_in_scope("other/app", ["group/backend/"]))
+
+
 DIFF_REFS = {"base_sha": "b", "start_sha": "s", "head_sha": "h"}
 
 
