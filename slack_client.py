@@ -25,10 +25,16 @@ def chat_post_message(token: str, channel: str, text: str) -> str:
 
 
 def post_webhook(webhook_url: str, text: str) -> None:
-    """Incoming-webhook fallback: can post messages but returns no ts (so no reactions)."""
+    """Incoming-webhook fallback: can post messages but returns no ts (so no reactions).
+
+    username/icon override the display name on legacy custom-integration webhooks
+    (so messages are branded as this tool, not the webhook's original app name);
+    app-type webhooks silently ignore these fields.
+    """
     req = urllib.request.Request(
         webhook_url,
-        data=json.dumps({"text": text, "unfurl_links": False}).encode(),
+        data=json.dumps({"text": text, "unfurl_links": False,
+                         "username": "mr-sentinel", "icon_emoji": ":robot_face:"}).encode(),
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
