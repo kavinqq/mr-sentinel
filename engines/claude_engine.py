@@ -87,12 +87,15 @@ def run_review(work_dir: Path, context_file: Path, output_file: Path,
     cmd = build_cmd(prompt, build_agents_json(skeptic, review_cfg), str(repo_dir), review_cfg)
 
     try:
+        from engines import resolve_cli
+        cmd[0] = resolve_cli(cmd[0])  # schedulers run with a minimal PATH
         with open(work_dir / "claude.log", "w") as logf:
             proc = subprocess.run(cmd, cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
                                   timeout=review_cfg["review_timeout_seconds"])
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError) as exc:
         # must not raise past the engine contract, or the reviewer's
         # "review did not finish" warning path never fires
+        (work_dir / "claude.log").write_text(f"engine error: {exc}\n")
         return 1
     if proc.returncode != 0 or not output_file.exists():
         return 1

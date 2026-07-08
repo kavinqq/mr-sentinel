@@ -72,11 +72,14 @@ def label(review_cfg: dict) -> str:
 
 def _exec_pass(prompt: str, work_dir: Path, model: str, timeout: int) -> str:
     """Run one codex exec pass and return the model's last message."""
+    from engines import resolve_cli
     last = work_dir / ".codex_last_message.txt"
     if last.exists():
         last.unlink()
+    cmd = build_cmd(prompt, str(work_dir), str(last), model)
+    cmd[0] = resolve_cli(cmd[0])  # schedulers run with a minimal PATH
     with open(work_dir / "codex.log", "a") as logf:
-        proc = subprocess.run(build_cmd(prompt, str(work_dir), str(last), model),
+        proc = subprocess.run(cmd,
                               cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
                               stdin=subprocess.DEVNULL,  # codex waits on stdin otherwise
                               timeout=timeout)
@@ -128,5 +131,5 @@ def run_review(work_dir: Path, context_file: Path, output_file: Path,
             "findings": review_common.sort_findings(findings),
         }, ensure_ascii=False, indent=1))
         return 0
-    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError):
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
         return 1

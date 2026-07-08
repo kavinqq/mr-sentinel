@@ -24,6 +24,38 @@ class TestRegistry(unittest.TestCase):
             engines.get_engine("gpt-magic")
 
 
+class TestResolveCli(unittest.TestCase):
+    def test_resolves_from_path(self):
+        # python3 一定在 PATH → 應回絕對路徑
+        self.assertTrue(engines.resolve_cli("python3").startswith("/"))
+
+    def test_falls_back_to_extra_dirs(self):
+        import tempfile, os, stat
+        with tempfile.TemporaryDirectory() as d:
+            fake = os.path.join(d, "somecli")
+            open(fake, "w").write("#!/bin/sh\n")
+            os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+            with mock.patch("shutil.which", return_value=None):
+                self.assertEqual(engines.resolve_cli("somecli", extra_dirs=(d,)), fake)
+
+    def test_missing_cli_raises_with_hint(self):
+        with mock.patch("shutil.which", return_value=None):
+            with self.assertRaises(FileNotFoundError) as ctx:
+                engines.resolve_cli("no-such-cli", extra_dirs=())
+        self.assertIn("PATH", str(ctx.exception))  # 錯誤訊息要提示 launchd PATH 問題
+
+    def test_run_review_returns_1_when_cli_missing(self):
+        """CLI 缺失必須回 rc=1（讓 reviewer 的 Slack 告警路徑生效），不能讓例外飛出 engine。"""
+        import pathlib, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            (work / "mr_context.json").write_text("{}")
+            with mock.patch("subprocess.run", side_effect=FileNotFoundError("claude")):
+                rc = claude_engine.run_review(work, work / "mr_context.json",
+                                              work / "final_findings.json", "/tmp/wt", CFG)
+        self.assertEqual(rc, 1)
+
+
 class TestPromptRendering(unittest.TestCase):
     def test_render_replaces_all_tokens(self):
         out = claude_engine.render_prompt(
