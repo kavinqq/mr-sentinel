@@ -46,7 +46,7 @@ new MR opened
 ## Quick start
 
 ```bash
-git clone https://github.com/YOU/mr-sentinel.git && cd mr-sentinel
+git clone https://github.com/kavinqq/mr-sentinel.git && cd mr-sentinel
 
 cp config.example.json config.json
 $EDITOR config.json           # gitlab_url, gitlab_token, review.project_map
