@@ -56,6 +56,11 @@ def add_award_emoji(base: str, token: str, project, iid, name: str = "eyes") -> 
     _call(f"{_mr(base, project, iid)}/award_emoji", token, method="POST", form={"name": name})
 
 
+def delete_award_emoji(base: str, token: str, project, iid, award_id) -> None:
+    """Remove one of our own award emojis (ops helper: un-claim an MR to re-review it)."""
+    _call(f"{_mr(base, project, iid)}/award_emoji/{award_id}", token, method="DELETE")
+
+
 def post_discussion(base: str, token: str, project, iid, body: str, position: dict) -> None:
     form = {"body": body, **review_common.position_form(position)}
     _call(f"{_mr(base, project, iid)}/discussions", token, method="POST", form=form)
