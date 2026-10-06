@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for the mr-sentinel SLACK LISTENER (slack_bot.py).
+
+  This is a SECOND agent, alongside com.example.mr-sentinel (the MR poller).
+  Two entries on purpose:
+    - it ticks every 15s so a Slack command feels answered, while MR polling
+      stays on its own 60s rhythm;
+    - a Slack outage or a revoked token can never slow or wedge the poller —
+      separate processes, separate flocks (.lock-bot vs .lock).
+
+  1. Replace /PATH/TO/mr-sentinel with your clone path (twice below).
+  2. IMPORTANT: launchd runs with a minimal PATH, so `env python3` resolves to
+     the SYSTEM Python (3.9 on modern macOS), which is too old. Use the ABSOLUTE
+     path of a Python 3.10+ interpreter (find yours with: which python3).
+  3. cp this file to ~/Library/LaunchAgents/com.example.mr-sentinel-bot.plist
+  4. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.mr-sentinel-bot.plist
+  Stop: launchctl bootout gui/$(id -u)/com.example.mr-sentinel-bot
+
+  Requires Slack bot scopes: chat:write, reactions:write, reactions:read,
+  channels:history (+ groups:history for a private channel), and the bot must be
+  invited to the channel.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.mr-sentinel-bot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/PATH/TO/mr-sentinel/slack_bot.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>15</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/PATH/TO/mr-sentinel/launchd-bot.err.log</string>
+</dict>
+</plist>

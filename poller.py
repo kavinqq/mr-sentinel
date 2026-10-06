@@ -20,9 +20,11 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import gitlab_client
+import overrides
 import review_common
+import reviewer
 import slack_client
-from sentinel_config import SCRIPT_DIR, load_config, load_state, save_state
+from sentinel_config import OVERRIDES_PATH, SCRIPT_DIR, load_config, load_state, save_state
 
 SEEN_RETENTION_DAYS = 7
 
@@ -57,6 +59,54 @@ def prune_slack_ts(state: dict) -> None:
     state["slack_ts"] = {mid: ts for mid, ts in state.get("slack_ts", {}).items() if mid in seen}
 
 
+def prune_mrs(state: dict) -> None:
+    seen = state.get("seen", {})
+    state["mrs"] = {mid: info for mid, info in state.get("mrs", {}).items() if mid in seen}
+
+
+def record_identities(state: dict, opened_by_project: dict[str, list[dict]]) -> None:
+    """Remember project/iid/title per MR id.
+
+    `slack_ts` only maps an MR id to a message timestamp, which is not enough to
+    act on an MR: GitLab calls need project + iid. Recording it here is what lets
+    `@bot rerun` inside a notification thread resolve its own target.
+    """
+    mrs = state.setdefault("mrs", {})
+    for project_path, items in opened_by_project.items():
+        for mr in items:
+            mrs[str(mr["id"])] = {
+                "project": project_path, "iid": mr["iid"],
+                "title": mr.get("title", ""), "web_url": mr.get("web_url", ""),
+                "author": (mr.get("author") or {}).get("name", ""),
+                "source_branch": mr.get("source_branch", ""),
+                "target_branch": mr.get("target_branch", ""),
+            }
+
+
+def baseline_projects(state: dict, opened_by_project: dict, pending: dict,
+                      now: datetime) -> list[str]:
+    """Silence the pre-existing MRs of projects added from Slack.
+
+    Only MRs created at or before the moment the project was added get marked
+    seen, so a `_baseline_pending` entry that fails to clear can never suppress
+    genuinely new MRs — it just re-silences the same old ones.
+    """
+    done = []
+    for project_path, requested_at in pending.items():
+        try:
+            cutoff = parse_dt(str(requested_at))
+        except ValueError:
+            cutoff = now
+        silenced = 0
+        for mr in opened_by_project.get(project_path, []):
+            if parse_dt(mr["created_at"]) <= cutoff and str(mr["id"]) not in state["seen"]:
+                state["seen"][str(mr["id"])] = mr["created_at"]
+                silenced += 1
+        log.info("baselined project %s: %s existing MR(s) silenced", project_path, silenced)
+        done.append(project_path)
+    return done
+
+
 def build_notification(mr: dict, project_path: str, config: dict) -> str:
     lines = [
         f":new: <{mr['web_url']}|MR !{mr['iid']} {mr['title']}>",
@@ -88,16 +138,8 @@ def maybe_spawn_review(config: dict, mr: dict, project_path: str) -> None:
     """Detached spawn so a multi-minute review never blocks the 60s poll loop."""
     if not review_common.is_review_target(project_path, config.get("review", {})):
         return
-    reviews_dir = SCRIPT_DIR / "reviews"
-    reviews_dir.mkdir(exist_ok=True)
     try:
-        spawn_log = open(reviews_dir / f"{mr['id']}.spawn.log", "a")
-        subprocess.Popen(
-            [sys.executable, str(SCRIPT_DIR / "reviewer.py"),
-             "--project", project_path, "--iid", str(mr["iid"]), "--mr-id", str(mr["id"])],
-            stdout=spawn_log, stderr=subprocess.STDOUT,
-            start_new_session=True, cwd=str(SCRIPT_DIR),
-        )
+        reviewer.spawn_detached(project_path, mr["iid"], mr["id"])
         log.info("spawned review: %s !%s", project_path, mr["iid"])
     except Exception:
         log.exception("failed to spawn review (notification unaffected): !%s", mr["iid"])
@@ -158,14 +200,32 @@ def run_once(config: dict, state_path: Path, dry_run: bool) -> int:
             return 1
         seen = {str(mr["id"]): mr["created_at"]
                 for mrs in opened_by_project.values() for mr in mrs}
-        save_state({"seen": seen, "slack_ts": {}}, state_path)
+        fresh = {"seen": seen, "slack_ts": {}, "last_poll": now.isoformat(), "poll_errors": 0}
+        record_identities(fresh, opened_by_project)
+        save_state(fresh, state_path)
         log.info("initialized: %s existing opened MR(s) marked seen, none notified", len(seen))
         return 0
     state.setdefault("slack_ts", {})
+    record_identities(state, opened_by_project)
 
+    # a project added from Slack must not flood the channel with its backlog
+    if not poll_errors:
+        pending = overrides.baseline_pending(overrides.load(OVERRIDES_PATH))
+        done = baseline_projects(state, opened_by_project, pending, now) if pending else []
+        if done:
+            overrides.update(OVERRIDES_PATH,
+                             lambda ov: overrides.clear_baseline_pending(ov, done))
+
+    paused = overrides.is_paused(config, now)
+    held = 0
     failed = False
     for project_path, mrs in opened_by_project.items():
         for mr in select_new(mrs, state["seen"]):
+            # paused: deliberately do NOT mark seen, so nothing is lost — the
+            # backlog is delivered on resume (status reports how much is waiting)
+            if paused:
+                held += 1
+                continue
             text = build_notification(mr, project_path, config)
             if dry_run:
                 print(f"--- dry-run (not sent) ---\n{text}\n")
@@ -185,11 +245,19 @@ def run_once(config: dict, state_path: Path, dry_run: bool) -> int:
 
     if dry_run:
         return 0
+    if paused:
+        log.info("paused until %s: %s new MR(s) held", config.get("paused_until"), held)
+    # facts the Slack `status` command reports (it never polls GitLab itself)
+    state["last_poll"] = now.isoformat()
+    state["poll_errors"] = poll_errors
+    state["opened_count"] = len(opened_ids)
+    state["held_while_paused"] = held
     if not poll_errors:
         # prune only on a fully-successful poll: a failed source would make its
         # still-opened MRs look gone and eligible for premature pruning
         state["seen"] = prune_seen(state["seen"], opened_ids, now, SEEN_RETENTION_DAYS)
         prune_slack_ts(state)
+        prune_mrs(state)
     save_state(state, state_path)
     return 1 if failed or poll_errors else 0
 

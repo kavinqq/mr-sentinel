@@ -121,5 +121,102 @@ class TestGroupPollingAndInitGuard(unittest.TestCase):
         self.assertIn("<@U1>", text)
 
 
+class TestIdentities(unittest.TestCase):
+    def test_records_everything_needed_to_describe_an_mr_later(self):
+        state = {}
+        poller.record_identities(state, {"g/app": [
+            {"id": 100, "iid": 7, "title": "T", "web_url": "u",
+             "author": {"name": "Ann"}, "source_branch": "f", "target_branch": "develop"}]})
+        self.assertEqual(state["mrs"]["100"],
+                         {"project": "g/app", "iid": 7, "title": "T", "web_url": "u",
+                          "author": "Ann", "source_branch": "f", "target_branch": "develop"})
+
+    def test_a_payload_missing_optional_fields_does_not_crash(self):
+        state = {}
+        poller.record_identities(state, {"g/app": [{"id": 100, "iid": 7}]})
+        self.assertEqual(state["mrs"]["100"]["author"], "")
+
+    def test_prune_mrs_follows_seen(self):
+        state = {"seen": {"1": "x"}, "mrs": {"1": {}, "2": {}}}
+        poller.prune_mrs(state)
+        self.assertEqual(list(state["mrs"]), ["1"])
+
+
+class TestBaselineProjects(unittest.TestCase):
+    NOW = poller.parse_dt("2026-07-30T10:00:00Z")
+    ADDED_AT = "2026-07-30T09:00:00+00:00"
+
+    def opened(self, *created):
+        return {"g/new": [{"id": 100 + i, "created_at": ts} for i, ts in enumerate(created)]}
+
+    def test_pre_existing_mrs_are_silenced(self):
+        state = {"seen": {}}
+        done = poller.baseline_projects(state, self.opened("2026-07-29T00:00:00Z"),
+                                       {"g/new": self.ADDED_AT}, self.NOW)
+        self.assertEqual(done, ["g/new"])
+        self.assertIn("100", state["seen"])
+
+    def test_mrs_created_after_the_request_are_left_to_be_notified(self):
+        # the timestamp is the whole point: a flag that fails to clear must never
+        # be able to swallow a genuinely new MR
+        state = {"seen": {}}
+        poller.baseline_projects(state, self.opened("2026-07-30T09:30:00Z"),
+                                {"g/new": self.ADDED_AT}, self.NOW)
+        self.assertEqual(state["seen"], {})
+
+    def test_already_seen_entries_keep_their_original_timestamp(self):
+        state = {"seen": {"100": "2026-07-01T00:00:00Z"}}
+        poller.baseline_projects(state, self.opened("2026-07-29T00:00:00Z"),
+                                {"g/new": self.ADDED_AT}, self.NOW)
+        self.assertEqual(state["seen"]["100"], "2026-07-01T00:00:00Z")
+
+    def test_a_junk_timestamp_falls_back_to_now(self):
+        state = {"seen": {}}
+        poller.baseline_projects(state, self.opened("2026-07-29T00:00:00Z"),
+                                {"g/new": "nonsense"}, self.NOW)
+        self.assertIn("100", state["seen"])
+
+    def test_a_project_with_no_open_mrs_still_clears(self):
+        state = {"seen": {}}
+        self.assertEqual(
+            poller.baseline_projects(state, {}, {"g/new": self.ADDED_AT}, self.NOW), ["g/new"])
+
+
+class TestPause(unittest.TestCase):
+    MRS = {"group/backend-app": [{"id": 1, "iid": 7, "title": "T", "web_url": "u",
+                                  "created_at": "2026-07-30T09:00:00Z",
+                                  "author": {"name": "A"},
+                                  "source_branch": "f", "target_branch": "main"}]}
+
+    def run_once(self, cfg, state):
+        with mock.patch.object(poller, "poll_opened", return_value=(self.MRS, 0)), \
+             mock.patch.object(poller, "load_state", return_value=state), \
+             mock.patch.object(poller, "save_state"), \
+             mock.patch.object(poller, "notify_slack", return_value="1.0") as notify, \
+             mock.patch.object(poller, "maybe_spawn_review") as spawn, \
+             mock.patch.object(poller.overrides, "load", return_value={}):
+            poller.run_once(cfg, mock.Mock(), dry_run=False)
+        return notify, spawn
+
+    def test_paused_holds_the_mr_without_marking_it_seen(self):
+        cfg = dict(CFG, paused_until="2099-01-01T00:00:00+00:00")
+        state = {"seen": {}}
+        notify, spawn = self.run_once(cfg, state)
+        notify.assert_not_called()
+        spawn.assert_not_called()
+        self.assertEqual(state["seen"], {})        # nothing lost: delivered on resume
+        self.assertEqual(state["held_while_paused"], 1)
+
+    def test_an_expired_pause_notifies_normally(self):
+        cfg = dict(CFG, paused_until="2020-01-01T00:00:00+00:00")
+        notify, spawn = self.run_once(cfg, {"seen": {}})
+        notify.assert_called_once()
+        spawn.assert_called_once()
+
+    def test_without_a_pause_it_notifies(self):
+        notify, _ = self.run_once(dict(CFG), {"seen": {}})
+        notify.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
