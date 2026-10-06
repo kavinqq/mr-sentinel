@@ -9,7 +9,11 @@ deploy/local/
 # runtime state / locks / logs
 state.json
 state.tmp
+bot_state.json
+overrides.json
+overrides.lock
 .lock
+.lock-bot
 reviews/
 *.log
 *.log.*

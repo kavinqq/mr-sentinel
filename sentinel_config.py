@@ -3,12 +3,15 @@ import json
 import logging
 from pathlib import Path
 
+import overrides
+
 SCRIPT_DIR = Path(__file__).resolve().parent
+OVERRIDES_PATH = SCRIPT_DIR / "overrides.json"
 
 log = logging.getLogger("mr_sentinel")
 
 
-def load_config(path: Path | None = None) -> dict:
+def load_config(path: Path | None = None, with_overrides: bool = True) -> dict:
     path = path or SCRIPT_DIR / "config.json"
     if not path.exists():
         raise SystemExit(f"config not found at {path}; copy config.example.json and fill it in")
@@ -21,7 +24,8 @@ def load_config(path: Path | None = None) -> dict:
     config["gitlab_url"] = config["gitlab_url"].rstrip("/")
 
     # slack is entirely optional (GitLab-only mode)
-    config.setdefault("slack", {})
+    slack = config.setdefault("slack", {})
+    slack.setdefault("admin_user_ids", [])      # empty -> falls back to mention_user_ids
 
     review = config.setdefault("review", {})
     review.setdefault("project_map", {})
@@ -41,6 +45,11 @@ def load_config(path: Path | None = None) -> dict:
     watch = config.setdefault("watch", {})
     watch.setdefault("group_ids", [])           # set -> group polling mode (notify whole groups)
     watch.setdefault("path_prefixes", [])       # group mode: keep only real member projects
+
+    # Slack-side edits land last so they win over the defaults above; the
+    # whitelist in overrides.py keeps them away from tokens and urls.
+    if with_overrides:
+        config = overrides.apply(config, overrides.load(OVERRIDES_PATH))
     return config
 
 

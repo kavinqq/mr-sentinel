@@ -48,6 +48,16 @@ def get_mr_changes(base: str, token: str, project, iid) -> dict:
     return json.loads(_call(f"{_mr(base, project, iid)}/changes", token))
 
 
+def get_mr(base: str, token: str, project, iid) -> dict:
+    """Single-MR read (draft flag, merge_status, head pipeline) for the merge rails."""
+    return json.loads(_call(_mr(base, project, iid), token))
+
+
+def merge_mr(base: str, token: str, project, iid) -> dict:
+    """Merge the MR with project defaults. Raises (HTTPError) if GitLab refuses."""
+    return json.loads(_call(f"{_mr(base, project, iid)}/merge", token, method="PUT"))
+
+
 def get_award_emojis(base: str, token: str, project, iid) -> list:
     return json.loads(_call(f"{_mr(base, project, iid)}/award_emoji", token))
 
@@ -59,6 +69,21 @@ def add_award_emoji(base: str, token: str, project, iid, name: str = "eyes") -> 
 def delete_award_emoji(base: str, token: str, project, iid, award_id) -> None:
     """Remove one of our own award emojis (ops helper: un-claim an MR to re-review it)."""
     _call(f"{_mr(base, project, iid)}/award_emoji/{award_id}", token, method="DELETE")
+
+
+def get_project(base: str, token: str, project) -> dict:
+    """Existence/visibility probe before adding a project to the watch list."""
+    return json.loads(_call(_project(base, project), token))
+
+
+def list_discussions(base: str, token: str, project, iid, per_page: int = 100) -> list:
+    """Discussions with their notes — used to find our own reviewable comments."""
+    return json.loads(_call(f"{_mr(base, project, iid)}/discussions?per_page={per_page}", token))
+
+
+def delete_note(base: str, token: str, project, iid, note_id) -> None:
+    """Delete one of our own notes (re-review cleanup). Only note authors may."""
+    _call(f"{_mr(base, project, iid)}/notes/{note_id}", token, method="DELETE")
 
 
 def post_discussion(base: str, token: str, project, iid, body: str, position: dict) -> None:
