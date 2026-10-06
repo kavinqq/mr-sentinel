@@ -38,10 +38,11 @@ log = logging.getLogger("mr_sentinel.reviewer")
 
 
 def completion_text(project_path: str, iid, web_url, findings: list, posted: int,
-                    language: str = "en") -> str:
+                    language: str = "en", mode: str = "deep") -> str:
     c = Counter(f.get("severity") for f in findings)
     headline = "AI Review 完成!" if language.startswith("zh") else "AI review complete!"
-    text = (f":white_check_mark: {headline} {project_path} MR !{iid} — "
+    tag = f" [{mode}]"  # lite = 1 gate (scan only); deep = 3 gates
+    text = (f":white_check_mark: {headline}{tag} {project_path} MR !{iid} — "
             f"{posted} comment(s) (🔴{c['high']} 🟠{c['medium']} 🟡{c['low']})")
     if web_url:
         text += f"\n{web_url}"
@@ -55,28 +56,95 @@ def build_signature(engine_label: str) -> str:
 # ---------- IO ----------
 
 
-def _slack_say(config: dict, text: str) -> None:
+def _slack_say(config: dict, text: str, thread_ts: str | None = None) -> None:
+    """Post a reviewer message. thread_ts (the MR notification's ts) replies in
+    that thread; the webhook fallback has no ts, so it always posts top-level."""
     slack = config.get("slack", {})
     try:
         if slack.get("bot_token") and slack.get("channel_id"):
-            slack_client.chat_post_message(slack["bot_token"], slack["channel_id"], text)
+            slack_client.chat_post_message(slack["bot_token"], slack["channel_id"], text, thread_ts)
         elif slack.get("webhook_url"):
             slack_client.post_webhook(slack["webhook_url"], text)
     except Exception:
         log.exception("Slack notify failed (ignored)")
 
 
+def _maybe_auto_merge(config: dict, base: str, token: str,
+                      project_path: str, iid, web_url, thread_ts: str | None = None) -> None:
+    """Merge a clean MR, honoring the hard rails. Every path warns; none raises.
+
+    Rails (in review_common.auto_merge_blocker): never merge a draft, an MR
+    GitLab won't cleanly merge, or one whose head pipeline isn't green.
+    """
+    try:
+        mr = gitlab_client.get_mr(base, token, project_path, iid)
+    except Exception as exc:
+        log.exception("auto-merge: get_mr failed")
+        _slack_say(config, f":warning: {project_path} MR !{iid}: AI clean but "
+                           f"mergeability check failed ({exc}) — merge manually\n{web_url}", thread_ts)
+        return
+
+    blocker = review_common.auto_merge_blocker(mr)
+    if blocker:
+        log.info("MR !%s clean but not auto-merged: %s", iid, blocker)
+        _slack_say(config, f":warning: {project_path} MR !{iid}: AI review clean but "
+                           f"{blocker} — merge manually\n{web_url}", thread_ts)
+        try:
+            gitlab_client.post_note(base, token, project_path, iid,
+                f"🤖 mr-sentinel: AI review 無發現問題,但因「{blocker}」未自動合併,請手動處理。")
+        except Exception:
+            log.exception("auto-merge: note failed (ignored)")
+        return
+
+    try:
+        gitlab_client.merge_mr(base, token, project_path, iid)
+    except Exception as exc:
+        log.exception("auto-merge: merge failed")
+        _slack_say(config, f":warning: {project_path} MR !{iid}: AI clean but "
+                           f"auto-merge failed ({exc}) — merge manually\n{web_url}", thread_ts)
+        return
+
+    log.info("MR !%s auto-merged (AI review clean)", iid)
+    _slack_say(config, f":white_check_mark: {project_path} MR !{iid} auto-merged "
+                       f"(AI review clean)\n{web_url}", thread_ts)
+
+
 def _run_git(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
 
 
-def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run: bool) -> int:
+def spawn_detached(project_path: str, iid, mr_id, mode: str = "auto") -> None:
+    """Launch one review in its own session.
+
+    Shared by the poller (must not block its 60s loop) and the Slack listener
+    (must answer a `rerun` within its 15s tick), so neither ever waits on a
+    multi-minute model run.
+    """
+    REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    # Popen dups the fd for the child, so the parent's copy can be closed right
+    # away instead of leaking for the life of the caller
+    with open(REVIEWS_DIR / f"{mr_id}.spawn.log", "a") as spawn_log:
+        subprocess.Popen(
+            [sys.executable, str(SCRIPT_DIR / "reviewer.py"),
+             "--project", project_path, "--iid", str(iid), "--mr-id", str(mr_id),
+             "--mode", mode],
+            stdout=spawn_log, stderr=subprocess.STDOUT,
+            start_new_session=True, cwd=str(SCRIPT_DIR),
+        )
+
+
+def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run: bool,
+               force_mode: str = "auto") -> int:
     base = config["gitlab_url"]
     token = config["gitlab_token"]
     review_cfg = config["review"]
     language = review_cfg["language"]
     work = REVIEWS_DIR / str(mr_id)
     work.mkdir(parents=True, exist_ok=True)
+
+    # every Slack message about this MR replies in the original notification's
+    # thread; None (webhook mode, or an MR seen before ts tracking) -> top-level
+    thread_ts = review_common.slack_ts_for(state, mr_id)
 
     # 1. idempotency: our own :eyes: on the MR means it was already claimed
     me = gitlab_client.get_current_user(base, token)
@@ -92,23 +160,26 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
     # 3. claim: :eyes: on the MR + optional Slack reaction on the notification
     if not dry_run:
         gitlab_client.add_award_emoji(base, token, project_path, iid, "eyes")
-        ts = review_common.slack_ts_for(state, mr_id)
         slack = config.get("slack", {})
-        if ts and slack.get("bot_token") and slack.get("channel_id"):
+        if thread_ts and slack.get("bot_token") and slack.get("channel_id"):
             try:
-                slack_client.add_reaction(slack["bot_token"], slack["channel_id"], ts, "eyes")
+                slack_client.add_reaction(slack["bot_token"], slack["channel_id"], thread_ts, "eyes")
             except Exception:
                 log.exception("Slack reaction failed (ignored)")
 
-    # 4. size guard
-    skip, reason = review_common.should_skip_for_size(
+    # 4. size guard sets the review depth: small -> "lite" (1 gate), large ->
+    #    "deep" (3 gates). No MR is dropped; a giant MR that can't finish in time
+    #    falls through to the "review did not finish" warning below.
+    mode, reason = review_common.plan_review(
         ctx["stats"]["files"], ctx["stats"]["lines"], review_cfg)
-    if skip:
-        log.info("MR !%s skipped: %s", iid, reason)
-        if not dry_run:
-            _slack_say(config, f":warning: {project_path} MR !{iid} skipped ({reason}), "
-                               f"please review manually\n{ctx.get('web_url')}")
-        return 0
+    if force_mode in ("lite", "deep"):
+        # a human asked for this depth from Slack; the size guard is advisory then
+        log.info("MR !%s: %s review (forced, size guard said %s)", iid, force_mode, mode)
+        mode = force_mode
+    elif mode == "deep":
+        log.info("MR !%s large (%s): deep 3-gate review", iid, reason)
+    else:
+        log.info("MR !%s: lite single-pass review", iid)
 
     # 5. local clone + fetch MR ref + disposable worktree
     local = review_common.resolve_local_path(project_path, review_cfg)
@@ -116,14 +187,14 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         log.error("local clone not found for %s", project_path)
         if not dry_run:
             _slack_say(config, f":warning: local clone not found for {project_path}, "
-                               f"MR !{iid} skipped")
+                               f"MR !{iid} skipped", thread_ts)
         return 1
     fetch = _run_git(["git", "-C", local, "fetch", "-q", "origin",
                       f"+refs/merge-requests/{iid}/head:refs/mr-sentinel/{iid}"])
     if fetch.returncode != 0:
         log.error("git fetch failed: %s", fetch.stderr)
         if not dry_run:
-            _slack_say(config, f":warning: git fetch failed for {project_path} MR !{iid}")
+            _slack_say(config, f":warning: git fetch failed for {project_path} MR !{iid}", thread_ts)
         return 1
 
     wt = work / "wt"
@@ -135,7 +206,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             # the MR is already claimed (:eyes:) and will never be retried;
             # every failure branch must produce a human-visible signal
             _slack_say(config, f":warning: worktree setup failed for {project_path} MR !{iid}, "
-                               f"please review manually\n{ctx.get('web_url')}")
+                               f"please review manually\n{ctx.get('web_url')}", thread_ts)
         return 1
 
     try:
@@ -150,28 +221,33 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         if dry_run:
             print("--- dry-run ---")
             print("work dir :", work)
-            print("engine   :", review_cfg["engine"], f"({engine.label(review_cfg)})")
+            print("engine   :", review_cfg["engine"], f"({engine.label(review_cfg, mode)})")
+            print("mode     :", mode)
             print("worktree :", wt)
             print("stats    :", ctx["stats"])
             return 0
 
-        rc = engine.run_review(work, ctx_path, out_path, wt, review_cfg)
+        rc = engine.run_review(work, ctx_path, out_path, wt, review_cfg, mode)
         if rc != 0:
             log.error("engine failed for MR !%s (rc=%s)", iid, rc)
             _slack_say(config, f":warning: {project_path} MR !{iid} review did not finish, "
-                               f"please review manually\n{ctx.get('web_url')}")
+                               f"please review manually\n{ctx.get('web_url')}", thread_ts)
             return 1
 
         # 7. post comments (scripts post; the AI never does)
         findings = json.loads(out_path.read_text()).get("findings", [])
         posted = post_comment.post_findings(
             base, token, project_path, iid, findings, ctx["diff_refs"],
-            signature=build_signature(engine.label(review_cfg)))
+            signature=build_signature(engine.label(review_cfg, mode)))
 
         # 8. completion message
         _slack_say(config, completion_text(project_path, iid, ctx.get("web_url"),
-                                           findings, posted, language))
+                                           findings, posted, language, mode), thread_ts)
         log.info("MR !%s reviewed: %s comment(s) posted", iid, posted)
+
+        # 9. auto-merge on a completely clean review (opt-in; hard-railed)
+        if not findings and review_cfg.get("auto_merge_on_clean"):
+            _maybe_auto_merge(config, base, token, project_path, iid, ctx.get("web_url"), thread_ts)
         return 0
     finally:
         _run_git(["git", "-C", local, "worktree", "remove", "--force", str(wt)])
@@ -182,6 +258,8 @@ def main() -> int:
     ap.add_argument("--project", required=True, help="project path (group/name)")
     ap.add_argument("--iid", required=True)
     ap.add_argument("--mr-id", required=True)
+    ap.add_argument("--mode", choices=("auto", "lite", "deep"), default="auto",
+                    help="force review depth (default: pick by MR size)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -206,7 +284,8 @@ def main() -> int:
             log.info("review for MR !%s already running, skipping", args.iid)
             return 0
         try:
-            return run_review(args.project, args.iid, args.mr_id, config, state, args.dry_run)
+            return run_review(args.project, args.iid, args.mr_id, config, state, args.dry_run,
+                              force_mode=args.mode)
         except urllib.error.HTTPError as exc:
             log.error("API error (token scope?): %s", exc)
             return 1

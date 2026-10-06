@@ -61,20 +61,58 @@ class TestNoiseAndSize(unittest.TestCase):
         self.assertEqual(files, 1)
         self.assertEqual(lines, 2)  # +added / -removed only; headers and context excluded
 
-    def test_size_guard_files(self):
-        skip, reason = rc.should_skip_for_size(61, 10, CFG)
-        self.assertTrue(skip)
+    def test_plan_small_is_lite(self):
+        # small MR -> a single scan pass (no adversarial vetting)
+        self.assertEqual(rc.plan_review(3, 100, CFG), ("lite", ""))
+
+    def test_plan_deep_when_files_exceed(self):
+        mode, reason = rc.plan_review(61, 10, CFG)
+        self.assertEqual(mode, "deep")  # large MR -> 3-gate escalation
         self.assertIn("61", reason)
 
-    def test_size_guard_lines(self):
-        skip, reason = rc.should_skip_for_size(1, 3001, CFG)
-        self.assertTrue(skip)
+    def test_plan_deep_when_lines_exceed(self):
+        mode, reason = rc.plan_review(1, 3001, CFG)
+        self.assertEqual(mode, "deep")
         self.assertIn("3001", reason)
 
-    def test_size_guard_ok(self):
-        skip, reason = rc.should_skip_for_size(3, 100, CFG)
-        self.assertFalse(skip)
-        self.assertEqual(reason, "")
+
+class TestAutoMergeBlocker(unittest.TestCase):
+    OK_MR = {"detailed_merge_status": "mergeable",
+             "head_pipeline": {"status": "success"}}
+
+    def test_clean_and_green_has_no_blocker(self):
+        self.assertIsNone(rc.auto_merge_blocker(self.OK_MR))
+
+    def test_draft_blocks(self):
+        self.assertIn("draft", rc.auto_merge_blocker({**self.OK_MR, "draft": True}))
+
+    def test_work_in_progress_blocks(self):
+        self.assertIn("draft", rc.auto_merge_blocker({**self.OK_MR, "work_in_progress": True}))
+
+    def test_not_mergeable_blocks(self):
+        mr = {"detailed_merge_status": "conflict", "head_pipeline": {"status": "success"}}
+        self.assertIn("mergeable", rc.auto_merge_blocker(mr))
+
+    def test_unchecked_merge_status_blocks(self):
+        # GitLab hasn't computed mergeability yet -> refuse (conservative)
+        mr = {"merge_status": "unchecked", "head_pipeline": {"status": "success"}}
+        self.assertIsNotNone(rc.auto_merge_blocker(mr))
+
+    def test_red_pipeline_blocks(self):
+        mr = {"detailed_merge_status": "mergeable", "head_pipeline": {"status": "failed"}}
+        self.assertIn("pipeline", rc.auto_merge_blocker(mr))
+
+    def test_running_pipeline_blocks(self):
+        mr = {"detailed_merge_status": "mergeable", "head_pipeline": {"status": "running"}}
+        self.assertIn("pipeline", rc.auto_merge_blocker(mr))
+
+    def test_no_pipeline_falls_back_to_merge_status(self):
+        # a project without CI: nothing to gate on, mergeability alone decides
+        self.assertIsNone(rc.auto_merge_blocker({"merge_status": "can_be_merged"}))
+
+    def test_legacy_merge_status_accepted(self):
+        mr = {"merge_status": "can_be_merged", "pipeline": {"status": "success"}}
+        self.assertIsNone(rc.auto_merge_blocker(mr))
 
 
 class TestProjectPathAndScope(unittest.TestCase):
@@ -108,7 +146,7 @@ class TestFindingFormat(unittest.TestCase):
              "body": "User input is concatenated into the query.\nFix: use parameterized queries."},
             signature="🤖 mr-sentinel (scanned by opus, vetted by sonnet)")
         self.assertIn("🔴", body)
-        self.assertIn("[High]", body)
+        self.assertIn("High", body)
         self.assertIn("SQL injection", body)
         self.assertIn("parameterized", body)
         self.assertIn("mr-sentinel", body)
@@ -118,6 +156,79 @@ class TestFindingFormat(unittest.TestCase):
             {"severity": "low", "title": "t", "file": "a.py", "line": 1, "body": "b"})
         self.assertIn("🟡", body)
         self.assertIn("mr-sentinel", body)
+
+
+class TestStructuredCommentBody(unittest.TestCase):
+    FINDING = {
+        "severity": "medium", "title": "ES 查詢失敗被當成命中 0 人",
+        "file": "audience.py", "line": 245,
+        "problem": "`get_existing_ino_list` 重試全敗後 `return []` 不拋例外。",
+        "impact": "ES 逾時 → 有效名單被回「沒有任何有效會員」擋下上架。",
+        "fix": "重試全敗時 re-raise,讓外層 except 接住回 None。",
+        "evidence": "DATE 路徑走 `dsl.get_count()` 會拋例外,兩條路徑不對稱。",
+    }
+
+    def test_the_three_lines_are_labelled_and_in_order(self):
+        body = rc.format_comment_body(self.FINDING)
+        self.assertLess(body.index("問題"), body.index("後果"))
+        self.assertLess(body.index("後果"), body.index("修正"))
+
+    def test_the_fix_is_visible_without_expanding_anything(self):
+        body = rc.format_comment_body(self.FINDING)
+        head = body.split("<details>")[0]
+        self.assertIn("re-raise", head)          # the whole point of the redesign
+
+    def test_each_labelled_line_is_its_own_paragraph(self):
+        # GitLab treats a single newline as a space, merging the three into one blob
+        head = rc.format_comment_body(self.FINDING).split("<details>")[0]
+        self.assertIn("\n\n**後果**", head)
+        self.assertIn("\n\n**修正**", head)
+
+    def test_evidence_is_collapsed(self):
+        body = rc.format_comment_body(self.FINDING)
+        self.assertIn("<details>", body)
+        self.assertIn(rc.EVIDENCE_SUMMARY, body)
+        self.assertIn("不對稱", body.split("<details>")[1])
+
+    def test_markdown_inside_details_gets_its_blank_lines(self):
+        # without them GitLab renders the evidence as one literal blob
+        block = rc.format_comment_body(self.FINDING).split("<details>")[1]
+        self.assertTrue(block.startswith(f"\n<summary>{rc.EVIDENCE_SUMMARY}</summary>\n\n"))
+        self.assertIn("\n\n</details>", block)
+
+    def test_no_evidence_means_no_details_block(self):
+        body = rc.format_comment_body({k: v for k, v in self.FINDING.items()
+                                       if k != "evidence"})
+        self.assertNotIn("<details>", body)
+        self.assertIn("re-raise", body)
+
+    def test_partial_fields_render_only_what_exists(self):
+        body = rc.format_comment_body({"severity": "high", "title": "t",
+                                       "problem": "壞了"})
+        self.assertIn("問題", body)
+        self.assertNotIn("後果", body)
+        self.assertNotIn("修正", body)
+
+    def test_legacy_body_only_findings_still_render(self):
+        # findings files written before the split must remain re-postable
+        body = rc.format_comment_body({"severity": "low", "title": "t",
+                                       "body": "舊格式的一大段散文"})
+        self.assertIn("舊格式的一大段散文", body)
+        self.assertNotIn("問題", body)
+
+    def test_structured_fields_win_over_a_stale_body(self):
+        body = rc.format_comment_body({**self.FINDING, "body": "不該出現的舊文字"})
+        self.assertNotIn("不該出現的舊文字", body)
+
+    def test_signature_is_last(self):
+        body = rc.format_comment_body(self.FINDING, signature="— SIG")
+        self.assertTrue(body.rstrip().endswith("— SIG"))
+
+    def test_location_is_not_repeated_in_the_body(self):
+        # inline comments are already attached to the line; the note fallback
+        # prepends it separately (post_comment._note_prefix)
+        body = rc.format_comment_body(self.FINDING)
+        self.assertNotIn("audience.py", body)
 
 
 class TestPositionEmojiTs(unittest.TestCase):
@@ -156,6 +267,46 @@ class TestPositionEmojiTs(unittest.TestCase):
         state = {"slack_ts": {"2451": "1700000000.001"}}
         self.assertEqual(rc.slack_ts_for(state, 2451), "1700000000.001")
         self.assertIsNone(rc.slack_ts_for(state, 9999))
+
+
+class TestDeletableAiNotes(unittest.TestCase):
+    """Re-review cleanup: delete our own noise, never anyone's conversation."""
+    ME = 42
+
+    def ai_note(self, note_id, author=ME):
+        return {"id": note_id, "author": {"id": author},
+                "body": f"🔴 [High] x\n\n{rc.DEFAULT_SIGNATURE} (model)"}
+
+    def test_our_unanswered_comment_is_deletable(self):
+        discussions = [{"notes": [self.ai_note(1)]}]
+        self.assertEqual(rc.deletable_ai_notes(discussions, self.ME), [1])
+
+    def test_a_discussion_a_human_joined_is_left_completely_alone(self):
+        discussions = [{"notes": [self.ai_note(1),
+                                  {"id": 2, "author": {"id": 99}, "body": "其實沒問題"}]}]
+        self.assertEqual(rc.deletable_ai_notes(discussions, self.ME), [])
+
+    def test_our_own_unsigned_notes_survive(self):
+        # e.g. the auto-merge explanation note, or anything hand-written
+        discussions = [{"notes": [{"id": 1, "author": {"id": self.ME},
+                                   "body": "🤖 mr-sentinel: 未自動合併"}]}]
+        self.assertEqual(rc.deletable_ai_notes(discussions, self.ME), [])
+
+    def test_someone_elses_signed_looking_note_is_not_ours_to_delete(self):
+        discussions = [{"notes": [self.ai_note(1, author=99)]}]
+        self.assertEqual(rc.deletable_ai_notes(discussions, self.ME), [])
+
+    def test_system_notes_are_ignored_when_judging_authorship(self):
+        # "changed the description" system notes are authored by the actor, and
+        # would otherwise make every discussion look like a conversation
+        discussions = [{"notes": [self.ai_note(1),
+                                  {"id": 2, "author": {"id": 99}, "body": "changed",
+                                   "system": True}]}]
+        self.assertEqual(rc.deletable_ai_notes(discussions, self.ME), [1])
+
+    def test_empty_and_noteless_discussions(self):
+        self.assertEqual(rc.deletable_ai_notes([], self.ME), [])
+        self.assertEqual(rc.deletable_ai_notes([{"notes": []}, {}], self.ME), [])
 
 
 if __name__ == "__main__":

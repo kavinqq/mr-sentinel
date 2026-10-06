@@ -63,9 +63,11 @@ def build_cmd(prompt: str, work_dir: str, last_message_file: str, model: str) ->
     return cmd
 
 
-def label(review_cfg: dict) -> str:
+def label(review_cfg: dict, mode: str = "deep") -> str:
     c = review_cfg["codex"]
     scan = c.get("model") or "codex default"
+    if mode == "lite":
+        return f"scanned by {scan} · single-pass (codex)"
     vet = c.get("skeptic_model") or scan
     return f"scanned by {scan}, vetted by {vet} (codex)"
 
@@ -89,7 +91,7 @@ def _exec_pass(prompt: str, work_dir: Path, model: str, timeout: int) -> str:
 
 
 def run_review(work_dir: Path, context_file: Path, output_file: Path,
-               repo_dir, review_cfg: dict) -> int:
+               repo_dir, review_cfg: dict, mode: str = "deep") -> int:
     codex_cfg = review_cfg["codex"]
     language = review_cfg.get("language", "en")
     timeout = review_cfg["review_timeout_seconds"]
@@ -104,8 +106,11 @@ def run_review(work_dir: Path, context_file: Path, output_file: Path,
             _exec_pass(scan_prompt, work_dir, codex_cfg.get("model", ""), timeout)
         ).get("findings", [])
 
-        # pass 2: adversarial vetting (skipped when there is nothing to vet)
-        if candidates:
+        # pass 2: adversarial vetting. Skipped when there is nothing to vet, or
+        # in lite mode (small MR) where the single scan pass is kept as-is.
+        if not candidates or mode == "lite":
+            findings = candidates
+        else:
             skeptic_tpl = (PROMPTS_DIR / "skeptic.md").read_text()
             persona = render_prompt(skeptic_tpl, language, str(repo_dir),
                                     context_file.name, output_file.name)
@@ -120,8 +125,6 @@ def run_review(work_dir: Path, context_file: Path, output_file: Path,
                            timeout)
             ).get("verdicts", [])
             findings = apply_verdicts(candidates, verdicts)
-        else:
-            findings = []
 
         # finalize: mechanical — no third AI call
         import review_common

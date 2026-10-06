@@ -19,6 +19,30 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 # Read-only tools + Task (skeptic dispatch) + Write (the findings file only,
 # enforced by the prompt; blast radius is the disposable worktree).
 ALLOWED_TOOLS = "Read,Grep,Glob,Task,Write"
+# Lite mode has no skeptic subagent to dispatch, so Task is dropped.
+LITE_ALLOWED_TOOLS = "Read,Grep,Glob,Write"
+
+# Steps 4-5 of prompts/review.md, injected via the __VETTING__ token.
+#
+# DEEP (large MRs) = 3 gates: gate 1 is the scan (step 3), gate 2 dispatches the
+# Sonnet skeptic subagent, gate 3 is this Opus session's own final adjudication.
+# LITE (small MRs) = 1 gate: the scan only, with a strict self-review. Either way
+# the "when in doubt, DROP" bar is identical.
+DEEP_VETTING = """4. ADVERSARIAL VETTING (gate 2): use the Task tool to dispatch the "skeptic"
+   agent EXACTLY ONCE, passing ALL candidate findings together with only their
+   relevant diff hunks. It returns keep/drop verdicts with reasons.
+5. FINAL ADJUDICATION (gate 3 — you decide): this is a large, high-risk MR, so
+   make the final call yourself. Start from the skeptic's verdicts, but RESCUE
+   any dropped finding you are confident is a real defect, discard the rest, and
+   finalize each severity. These comments post publicly and automatically:
+   when still in doubt, DROP — a false positive costs more than a miss."""
+
+LITE_VETTING = """4. SELF-REVIEW (mandatory): this is a small MR reviewed in a SINGLE pass —
+   there is NO second reviewer. Be your own skeptic: re-read every candidate
+   against the checkout at __WORKTREE__ and drop anything you are not highly
+   confident is a real, actionable defect.
+5. WHEN IN DOUBT, DROP — these comments are posted publicly and automatically;
+   a false positive costs more than a miss. Prefer few, high-signal findings."""
 
 LANGUAGE_NAMES = {
     "en": "English",
@@ -34,9 +58,14 @@ def language_name(code: str) -> str:
 
 
 def render_prompt(template: str, language: str, worktree: str,
-                  context_file: str, output_file: str) -> str:
-    """Token replacement, not str.format(): the templates are full of JSON braces."""
+                  context_file: str, output_file: str, vetting: str = "") -> str:
+    """Token replacement, not str.format(): the templates are full of JSON braces.
+
+    __VETTING__ is expanded first because the injected block itself may contain
+    other tokens (e.g. __WORKTREE__) that must still be resolved.
+    """
     return (template
+            .replace("__VETTING__", vetting)
             .replace("__LANGUAGE__", language_name(language))
             .replace("__WORKTREE__", worktree)
             .replace("__CONTEXT_FILE__", context_file)
@@ -55,36 +84,52 @@ def build_agents_json(skeptic_prompt: str, review_cfg: dict) -> str:
     }, ensure_ascii=False)
 
 
-def build_cmd(prompt: str, agents_json: str, worktree: str, review_cfg: dict) -> list[str]:
+def build_cmd(prompt: str, agents_json, worktree: str, review_cfg: dict) -> list[str]:
+    """agents_json falsy -> lite mode: no skeptic subagent, no Task tool."""
     claude_cfg = review_cfg["claude"]
-    return [
+    cmd = [
         "claude", "-p", prompt,
         "--model", claude_cfg["model"],
         "--effort", claude_cfg["effort"],
-        "--agents", agents_json,
-        "--add-dir", worktree,
-        "--allowedTools", ALLOWED_TOOLS,
-        "--output-format", "json",
     ]
+    if agents_json:
+        cmd += ["--agents", agents_json, "--allowedTools", ALLOWED_TOOLS]
+    else:
+        cmd += ["--allowedTools", LITE_ALLOWED_TOOLS]
+    cmd += ["--add-dir", worktree, "--output-format", "json"]
+    return cmd
 
 
-def label(review_cfg: dict) -> str:
+def label(review_cfg: dict, mode: str = "deep") -> str:
     c = review_cfg["claude"]
-    return f"scanned by {c['model']}, vetted by {c['skeptic_model']}"
+    if mode == "lite":
+        return f"scanned by {c['model']} · single-pass"
+    return (f"scanned by {c['model']}, vetted by {c['skeptic_model']}, "
+            f"adjudicated by {c['model']}")
 
 
 def run_review(work_dir: Path, context_file: Path, output_file: Path,
-               repo_dir, review_cfg: dict) -> int:
-    """Engine contract: read context_file, write findings to output_file, return rc."""
+               repo_dir, review_cfg: dict, mode: str = "deep") -> int:
+    """Engine contract: read context_file, write findings to output_file, return rc.
+
+    mode="lite" runs a single scan pass (small MRs, no skeptic subagent);
+    mode="deep" runs scan -> Sonnet skeptic -> Opus adjudication (large MRs).
+    """
     review_tpl = (PROMPTS_DIR / "review.md").read_text()
-    skeptic_tpl = (PROMPTS_DIR / "skeptic.md").read_text()
     language = review_cfg.get("language", "en")
+    lite = mode == "lite"
 
     prompt = render_prompt(review_tpl, language, str(repo_dir),
-                           context_file.name, output_file.name)
-    skeptic = render_prompt(skeptic_tpl, language, str(repo_dir),
-                            context_file.name, output_file.name)
-    cmd = build_cmd(prompt, build_agents_json(skeptic, review_cfg), str(repo_dir), review_cfg)
+                           context_file.name, output_file.name,
+                           vetting=LITE_VETTING if lite else DEEP_VETTING)
+    if lite:
+        cmd = build_cmd(prompt, None, str(repo_dir), review_cfg)
+    else:
+        skeptic_tpl = (PROMPTS_DIR / "skeptic.md").read_text()
+        skeptic = render_prompt(skeptic_tpl, language, str(repo_dir),
+                                context_file.name, output_file.name)
+        cmd = build_cmd(prompt, build_agents_json(skeptic, review_cfg),
+                        str(repo_dir), review_cfg)
 
     try:
         from engines import resolve_cli

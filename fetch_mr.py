@@ -16,6 +16,9 @@ def build_context(base: str, token: str, project, iid) -> dict:
         "iid": iid,
         "title": raw.get("title"),
         "web_url": raw.get("web_url"),
+        # who/where, so a review can be described later without re-querying GitLab
+        # (this file outlives state.json's 7-day identity map)
+        "author": (raw.get("author") or {}).get("name"),
         "source_branch": raw.get("source_branch"),
         "target_branch": raw.get("target_branch"),
         "diff_refs": raw["diff_refs"],

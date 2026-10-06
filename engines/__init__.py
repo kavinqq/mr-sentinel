@@ -1,7 +1,11 @@
 """AI engine registry. An engine is any module exposing:
 
-    run_review(work_dir, context_file, output_file, repo_dir, review_cfg) -> int
-    label(review_cfg) -> str   # short human-readable models note for the signature
+    run_review(work_dir, context_file, output_file, repo_dir, review_cfg,
+               mode="deep") -> int
+    label(review_cfg, mode="deep") -> str   # models note for the signature
+
+`mode` is "lite" (small MR: a single scan pass) or "deep" (large MR: scan +
+adversarial vetting + final adjudication). The reviewer picks it by MR size.
 
 The contract between reviewer and engine is purely file-based: the engine reads
 mr_context.json and writes final_findings.json. Any headless AI CLI that can do

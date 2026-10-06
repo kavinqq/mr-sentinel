@@ -56,15 +56,47 @@ def diff_stats(changes: list[dict]) -> tuple[int, int]:
     return len(changes), lines
 
 
-def should_skip_for_size(files: int, lines: int, review_cfg: dict) -> tuple[bool, str]:
-    """Oversized MRs are skipped: one huge MR could burn the whole review budget."""
+def plan_review(files: int, lines: int, review_cfg: dict) -> tuple[str, str]:
+    """Pick a review depth by size, returning (mode, reason).
+
+    The more a change touches, the more scrutiny it earns:
+      - small (within both limits) -> ("lite", ""): a single scan pass.
+      - large (over either limit)  -> ("deep", <which limit tripped>): three
+        gates (scan -> adversarial vet -> final adjudication).
+    reason is non-empty only for "deep" (used in the escalation log line).
+    """
     max_files = review_cfg.get("max_changed_files", 60)
     max_lines = review_cfg.get("max_diff_lines", 3000)
     if files > max_files:
-        return True, f"{files} files changed (limit {max_files})"
+        return "deep", f"{files} files changed (limit {max_files})"
     if lines > max_lines:
-        return True, f"{lines} lines changed (limit {max_lines})"
-    return False, ""
+        return "deep", f"{lines} lines changed (limit {max_lines})"
+    return "lite", ""
+
+
+# GitLab reports mergeability as "can_be_merged" (legacy merge_status) or
+# "mergeable" (detailed_merge_status, GitLab >= 15.6). Anything else — including
+# "unchecked"/"checking" — means "not safe to merge right now".
+_MERGEABLE = {"can_be_merged", "mergeable"}
+
+
+def auto_merge_blocker(mr: dict) -> str | None:
+    """Return why an MR must NOT be auto-merged, or None if it is safe.
+
+    Hard rails for auto-merge-on-clean: never merge a draft, an MR GitLab does
+    not consider mergeable right now, or one whose head pipeline is not green.
+    (No pipeline in the payload -> nothing to gate on; mergeability alone decides.)
+    """
+    if mr.get("draft") or mr.get("work_in_progress"):
+        return "draft MR"
+    status = mr.get("detailed_merge_status") or mr.get("merge_status")
+    if status not in _MERGEABLE:
+        return f"not mergeable ({status})"
+    pipeline = mr.get("head_pipeline") or mr.get("pipeline") or {}
+    pstatus = pipeline.get("status")
+    if pstatus and pstatus != "success":
+        return f"pipeline {pstatus}"
+    return None
 
 
 SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -79,14 +111,41 @@ def sort_findings(findings: list[dict]) -> list[dict]:
     return sorted(findings, key=lambda f: SEVERITY_RANK.get(f.get("severity"), 99))
 
 
+FIELD_LABELS = (("problem", "問題"), ("impact", "後果"), ("fix", "修正"))
+EVIDENCE_SUMMARY = "完整依據與失敗情境"
+
+
 def format_comment_body(finding: dict, signature: str = DEFAULT_SIGNATURE) -> str:
-    """One finding -> one comment body. Signature is caller-built (engine models vary)."""
+    """One finding -> one comment body. Signature is caller-built (engine models vary).
+
+    Three scannable lines (問題 / 後果 / 修正) with the full reasoning folded into a
+    `<details>` block: a reviewer sees the verdict at a glance, and the evidence is
+    one click away for when they want to argue with it.
+
+    The layout is guaranteed here rather than requested from the model — the engine
+    fills separate fields, so no amount of prose drift can bury the suggested fix
+    in paragraph five. A finding carrying only the older freeform `body` still
+    renders, so findings files written before the split can be re-posted.
+    """
     sev = finding.get("severity", "low")
     emoji = SEVERITY_EMOJI.get(sev, "🟡")
     label = SEVERITY_LABEL.get(sev, "Low")
     title = (finding.get("title") or "").strip()
-    body = (finding.get("body") or "").strip()
-    return f"{emoji} [{label}] {title}\n\n{body}\n\n{signature}"
+
+    parts = [f"{emoji} **{label}** · {title}", ""]
+
+    rows = [f"**{zh}**　{(finding.get(key) or '').strip()}"
+            for key, zh in FIELD_LABELS if (finding.get(key) or "").strip()]
+    parts.append("\n\n".join(rows) if rows else (finding.get("body") or "").strip())
+
+    evidence = (finding.get("evidence") or "").strip()
+    if evidence:
+        # GitLab needs the blank lines for markdown inside <details> to render
+        parts += ["", f"<details>\n<summary>{EVIDENCE_SUMMARY}</summary>\n\n"
+                      f"{evidence}\n\n</details>"]
+
+    parts += ["", signature]
+    return "\n".join(parts)
 
 
 def build_position(finding: dict, diff_refs: dict) -> dict | None:
@@ -122,3 +181,34 @@ def has_own_award_emoji(emojis: list[dict], user_id: int, name: str = "eyes") ->
 
 def slack_ts_for(state: dict, mr_id) -> str | None:
     return state.get("slack_ts", {}).get(str(mr_id))
+
+
+# Every AI *finding* comment carries this marker (see DEFAULT_SIGNATURE /
+# build_signature), which is what makes our own previous round identifiable on a
+# re-review. Deliberately narrower than "🤖 mr-sentinel": operational notes we
+# also post start "🤖 mr-sentinel: ..." (e.g. the auto-merge explanation) and
+# must survive a cleanup — they are records, not review noise.
+SIGNATURE_MARKER = "🤖 mr-sentinel AI review"
+
+
+def deletable_ai_notes(discussions: list[dict], user_id: int,
+                       marker: str = SIGNATURE_MARKER) -> list:
+    """Note ids of our own AI comments that nobody has replied to.
+
+    Re-reviewing an MR would otherwise stack a second round of comments on top of
+    the first. Two rails keep the cleanup from destroying context:
+      - a discussion any *other* author has joined is left completely alone, so a
+        human's reply (and the comment it answers) never disappears;
+      - only notes carrying the AI signature are deleted, so operational notes
+        and anything hand-written by us survive.
+    """
+    deletable = []
+    for discussion in discussions:
+        notes = [n for n in (discussion.get("notes") or []) if not n.get("system")]
+        if not notes:
+            continue
+        authors = {(n.get("author") or {}).get("id") for n in notes}
+        if authors != {user_id}:
+            continue
+        deletable += [n["id"] for n in notes if marker in (n.get("body") or "")]
+    return deletable

@@ -6,7 +6,10 @@
     "bot_token": "",
     "channel_id": "",
     "webhook_url": "",
-    "mention_user_ids": []
+    "mention_user_ids": [],
+    "admin_user_ids": [],
+    "display_name": "",
+    "icon_emoji": ""
   },
 
   "watch": {
@@ -24,7 +27,7 @@
     "max_diff_lines": 3000,
     "review_timeout_seconds": 900,
     "claude": {
-      "model": "claude-opus-4-8",
+      "model": "opus",
       "skeptic_model": "sonnet",
       "effort": "medium"
     },

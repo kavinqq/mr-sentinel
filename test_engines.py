@@ -109,5 +109,81 @@ class TestCommand(unittest.TestCase):
         self.assertEqual(rc, 1)  # timeout must not raise past the engine contract
 
 
+class TestTierModes(unittest.TestCase):
+    def test_label_lite_marks_single_pass(self):
+        lite = claude_engine.label(CFG, mode="lite")
+        self.assertNotIn("vetted", lite)
+        self.assertIn("single-pass", lite)
+
+    def test_label_deep_names_all_three_gates(self):
+        deep = claude_engine.label(CFG, mode="deep")
+        self.assertIn("scanned by claude-opus-4-8", deep)  # gate 1
+        self.assertIn("sonnet", deep)                      # gate 2
+        self.assertIn("adjudicated", deep)                 # gate 3
+
+    def test_render_prompt_fills_vetting_token(self):
+        out = claude_engine.render_prompt("a __VETTING__ b", "en", "/wt",
+                                          "c", "o", vetting="VET BLOCK")
+        self.assertIn("VET BLOCK", out)
+        self.assertNotIn("__VETTING__", out)
+
+    def test_deep_vetting_dispatches_skeptic_and_adjudicates(self):
+        self.assertIn("Task tool", claude_engine.DEEP_VETTING)      # gate 2 dispatch
+        self.assertIn("ADJUDICAT", claude_engine.DEEP_VETTING.upper())  # gate 3
+        self.assertNotIn("Task tool", claude_engine.LITE_VETTING)   # no gate 2 in lite
+
+    def test_build_cmd_deep_allows_task_and_agents(self):
+        cmd = claude_engine.build_cmd("PROMPT", "{}", "/tmp/wt", CFG)
+        self.assertIn("--agents", cmd)
+        tools = cmd[cmd.index("--allowedTools") + 1]
+        self.assertIn("Task", tools)  # deep mode dispatches the skeptic subagent
+
+    def test_build_cmd_lite_omits_agents_and_task(self):
+        cmd = claude_engine.build_cmd("PROMPT", None, "/tmp/wt", CFG)
+        self.assertNotIn("--agents", cmd)  # no skeptic persona injected
+        tools = cmd[cmd.index("--allowedTools") + 1]
+        self.assertNotIn("Task", tools)  # nothing to dispatch
+        self.assertIn("Write", tools)    # but still writes the findings file
+        self.assertIn("claude-opus-4-8", cmd)  # same scanning model
+
+    def test_run_review_lite_issues_single_agentless_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            (work / "mr_context.json").write_text("{}")
+            captured = {}
+
+            def fake_run(cmd, **kw):
+                captured["cmd"] = cmd
+                (work / "final_findings.json").write_text('{"findings": []}')
+                return mock.Mock(returncode=0)
+
+            with mock.patch("subprocess.run", side_effect=fake_run), \
+                 mock.patch("engines.resolve_cli", side_effect=lambda name: name):
+                rc = claude_engine.run_review(work, work / "mr_context.json",
+                                              work / "final_findings.json", "/tmp/wt",
+                                              CFG, mode="lite")
+            self.assertEqual(rc, 0)
+            self.assertNotIn("--agents", captured["cmd"])
+
+    def test_run_review_deep_issues_agents_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            (work / "mr_context.json").write_text("{}")
+            captured = {}
+
+            def fake_run(cmd, **kw):
+                captured["cmd"] = cmd
+                (work / "final_findings.json").write_text('{"findings": []}')
+                return mock.Mock(returncode=0)
+
+            with mock.patch("subprocess.run", side_effect=fake_run), \
+                 mock.patch("engines.resolve_cli", side_effect=lambda name: name):
+                rc = claude_engine.run_review(work, work / "mr_context.json",
+                                              work / "final_findings.json", "/tmp/wt",
+                                              CFG, mode="deep")
+            self.assertEqual(rc, 0)
+            self.assertIn("--agents", captured["cmd"])
+
+
 if __name__ == "__main__":
     unittest.main()

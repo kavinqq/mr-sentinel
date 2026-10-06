@@ -99,6 +99,27 @@ class TestRunReview(unittest.TestCase):
             out = json.loads((work / "final_findings.json").read_text())
             self.assertEqual(out["findings"], [])
 
+    def test_lite_mode_keeps_candidates_without_skeptic(self):
+        scan_reply = json.dumps({"findings": [
+            {"severity": "high", "title": "B", "file": "b.py", "line": 2, "body": "y"}]})
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            ctx = {"project": "g/p", "iid": 5, "diff_refs": {},
+                   "changes": [{"new_path": "b.py", "diff": "+y\n"}]}
+            (work / "mr_context.json").write_text(json.dumps(ctx))
+            with mock.patch.object(codex_engine, "_exec_pass",
+                                   side_effect=[scan_reply]) as m:
+                rc = codex_engine.run_review(work, work / "mr_context.json",
+                                             work / "final_findings.json", "/tmp/wt",
+                                             CFG, mode="lite")
+            self.assertEqual(rc, 0)
+            self.assertEqual(m.call_count, 1)  # lite -> scan only, no skeptic pass
+            out = json.loads((work / "final_findings.json").read_text())
+            self.assertEqual(len(out["findings"]), 1)  # candidate kept as-is
+
+    def test_label_lite_marks_single_pass(self):
+        self.assertIn("single-pass", codex_engine.label(CFG, mode="lite"))
+
 
 if __name__ == "__main__":
     unittest.main()
