@@ -110,9 +110,48 @@ class TestAutoMergeBlocker(unittest.TestCase):
         # a project without CI: nothing to gate on, mergeability alone decides
         self.assertIsNone(rc.auto_merge_blocker({"merge_status": "can_be_merged"}))
 
+    def test_missing_pipeline_blocks_when_project_has_ci(self):
+        self.assertIn("pipeline", rc.auto_merge_blocker({"merge_status": "can_be_merged"},
+                                                        has_ci=True))
+
+    def test_green_pipeline_passes_when_project_has_ci(self):
+        self.assertIsNone(rc.auto_merge_blocker(self.OK_MR, has_ci=True))
+
+    def test_new_commits_since_review_block(self):
+        mr = {**self.OK_MR, "sha": "new"}
+        self.assertIn("new commits", rc.auto_merge_blocker(mr, reviewed_sha="old"))
+
+    def test_reviewed_head_passes(self):
+        self.assertIsNone(rc.auto_merge_blocker({**self.OK_MR, "sha": "h"}, reviewed_sha="h"))
+
     def test_legacy_merge_status_accepted(self):
         mr = {"merge_status": "can_be_merged", "pipeline": {"status": "success"}}
         self.assertIsNone(rc.auto_merge_blocker(mr))
+
+
+class TestIsCleanResult(unittest.TestCase):
+    def test_empty_findings_list_is_clean(self):
+        self.assertTrue(rc.is_clean_result({"findings": []}))
+
+    def test_any_finding_is_not_clean(self):
+        self.assertFalse(rc.is_clean_result({"findings": [{"severity": "low"}]}))
+
+    def test_missing_findings_key_is_not_clean(self):
+        self.assertFalse(rc.is_clean_result({}))
+
+    def test_non_list_findings_is_not_clean(self):
+        self.assertFalse(rc.is_clean_result({"findings": None}))
+
+
+class TestAutoMergeEligible(unittest.TestCase):
+    def test_clean_deep_is_eligible(self):
+        self.assertTrue(rc.auto_merge_eligible("deep", {"findings": []}))
+
+    def test_clean_lite_is_not_eligible(self):
+        self.assertFalse(rc.auto_merge_eligible("lite", {"findings": []}))
+
+    def test_deep_with_findings_is_not_eligible(self):
+        self.assertFalse(rc.auto_merge_eligible("deep", {"findings": [{"severity": "low"}]}))
 
 
 class TestProjectPathAndScope(unittest.TestCase):
@@ -307,6 +346,28 @@ class TestDeletableAiNotes(unittest.TestCase):
     def test_empty_and_noteless_discussions(self):
         self.assertEqual(rc.deletable_ai_notes([], self.ME), [])
         self.assertEqual(rc.deletable_ai_notes([{"notes": []}, {}], self.ME), [])
+
+
+class TestVerdict(unittest.TestCase):
+    def test_tier_follows_worst_severity(self):
+        self.assertEqual(rc.verdict_tier([]), "clean")
+        self.assertEqual(rc.verdict_tier([{"severity": "low"}]), "minor")
+        self.assertEqual(rc.verdict_tier([{"severity": "low"}, {"severity": "medium"}]), "moderate")
+        self.assertEqual(rc.verdict_tier([{"severity": "medium"}, {"severity": "high"}]), "major")
+
+    def test_unknown_severity_counts_as_minor(self):
+        self.assertEqual(rc.verdict_tier([{"severity": "weird"}, {}]), "minor")
+
+    def test_every_tier_has_a_folder(self):
+        self.assertEqual(set(rc.VERDICT_IMAGE_DIR), {"clean", "minor", "moderate", "major"})
+
+    def test_picks_any_image_name_skipping_non_images(self):
+        names = ["cat.JPG", "funny meme.png", "x.gif", "notes.txt", ".DS_Store"]
+        self.assertEqual(rc.pick_image(names, choice=lambda xs: xs),
+                         ["cat.JPG", "funny meme.png", "x.gif"])
+
+    def test_none_when_no_candidates(self):
+        self.assertIsNone(rc.pick_image([".DS_Store", "readme.md"]))
 
 
 if __name__ == "__main__":

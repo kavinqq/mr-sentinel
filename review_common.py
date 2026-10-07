@@ -1,4 +1,5 @@
 """Pure functions for the MR review pipeline (unit-testable, no IO)."""
+import random
 
 NOISE_SUFFIXES = (".lock", "-lock.json", ".min.js", ".min.css", ".map", ".svg", ".png", ".jpg", ".gif")
 NOISE_NAMES = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock", "composer.lock", "Cargo.lock", "go.sum")
@@ -80,13 +81,19 @@ def plan_review(files: int, lines: int, review_cfg: dict) -> tuple[str, str]:
 _MERGEABLE = {"can_be_merged", "mergeable"}
 
 
-def auto_merge_blocker(mr: dict) -> str | None:
+def auto_merge_blocker(mr: dict, reviewed_sha: str | None = None,
+                       has_ci: bool = False) -> str | None:
     """Return why an MR must NOT be auto-merged, or None if it is safe.
 
-    Hard rails for auto-merge-on-clean: never merge a draft, an MR GitLab does
-    not consider mergeable right now, or one whose head pipeline is not green.
-    (No pipeline in the payload -> nothing to gate on; mergeability alone decides.)
+    Hard rails for auto-merge-on-clean: never merge a draft, a head that moved
+    since `reviewed_sha` (a push during the review would land unreviewed code),
+    an MR GitLab does not consider mergeable right now, or one whose head
+    pipeline is not green. A project with CI config but no pipeline in the
+    payload is blocked too (skipped, not yet created, or an API hiccup); only a
+    project with no CI at all lets mergeability alone decide.
     """
+    if reviewed_sha and mr.get("sha") != reviewed_sha:
+        return "new commits since review"
     if mr.get("draft") or mr.get("work_in_progress"):
         return "draft MR"
     status = mr.get("detailed_merge_status") or mr.get("merge_status")
@@ -94,9 +101,22 @@ def auto_merge_blocker(mr: dict) -> str | None:
         return f"not mergeable ({status})"
     pipeline = mr.get("head_pipeline") or mr.get("pipeline") or {}
     pstatus = pipeline.get("status")
+    if has_ci and not pstatus:
+        return "pipeline missing"
     if pstatus and pstatus != "success":
         return f"pipeline {pstatus}"
     return None
+
+
+def is_clean_result(result: dict) -> bool:
+    """True only for an explicit empty findings list: a malformed engine output
+    must never read as "clean", because clean is what triggers auto-merge."""
+    return result.get("findings") == []
+
+
+def auto_merge_eligible(mode: str, result: dict) -> bool:
+    """Only a clean 3-gate deep review may merge; a clean lite pass is one gate."""
+    return mode == "deep" and is_clean_result(result)
 
 
 SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -113,6 +133,25 @@ def sort_findings(findings: list[dict]) -> list[dict]:
 
 FIELD_LABELS = (("problem", "問題"), ("impact", "後果"), ("fix", "修正"))
 EVIDENCE_SUMMARY = "完整依據與失敗情境"
+
+
+VERDICT_IMAGE_DIR = {"clean": "no_bug", "minor": "high_grade",
+                     "moderate": "medium_grade", "major": "low_grade"}
+IMAGE_SUFFIXES = (".jpeg", ".jpg", ".png", ".gif", ".webp")
+
+
+def verdict_tier(findings: list[dict]) -> str:
+    """clean / minor / moderate / major, decided by the single worst finding."""
+    if not findings:
+        return "clean"
+    worst = min(SEVERITY_RANK.get(f.get("severity"), 2) for f in findings)
+    return ("major", "moderate", "minor")[worst]
+
+
+def pick_image(names: list[str], choice=random.choice) -> str | None:
+    """Random image among a folder's file names; non-images (.DS_Store etc.) are skipped."""
+    candidates = sorted(n for n in names if n.lower().endswith(IMAGE_SUFFIXES))
+    return choice(candidates) if candidates else None
 
 
 def format_comment_body(finding: dict, signature: str = DEFAULT_SIGNATURE) -> str:

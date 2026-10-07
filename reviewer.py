@@ -5,7 +5,7 @@ Spawned detached by the poller (or run manually). Flow:
 per-MR lock → idempotency check (:eyes: award emoji) → fetch context →
 claim (:eyes: on the MR + optional Slack reaction) → size guard →
 disposable git worktree → AI engine (scan → adversarial vet → finalize) →
-post comments → optional Slack completion message → cleanup.
+post comments → optional Slack completion message (+ verdict image) → cleanup.
 
 The user's clone is never touched: `git fetch` only updates refs/objects and
 the checkout happens in a throwaway worktree that is removed afterwards.
@@ -30,6 +30,7 @@ import slack_client
 from sentinel_config import SCRIPT_DIR, load_config, load_state
 
 REVIEWS_DIR = SCRIPT_DIR / "reviews"
+VERDICT_DIR = SCRIPT_DIR / "assets" / "verdict"
 
 log = logging.getLogger("mr_sentinel.reviewer")
 
@@ -69,22 +70,44 @@ def _slack_say(config: dict, text: str, thread_ts: str | None = None) -> None:
         log.exception("Slack notify failed (ignored)")
 
 
+def _slack_say_verdict(config: dict, text: str, findings: list,
+                       thread_ts: str | None = None) -> None:
+    """Completion message with a random image from the verdict tier's folder. The image is
+    decoration: no bot token, no matching file, or a failed upload (e.g. the app
+    lacks `files:write`) all degrade to the plain text message."""
+    slack = config.get("slack", {})
+    folder = VERDICT_DIR / review_common.VERDICT_IMAGE_DIR[review_common.verdict_tier(findings)]
+    image = review_common.pick_image([p.name for p in folder.iterdir()] if folder.is_dir() else [])
+    if image and slack.get("bot_token") and slack.get("channel_id"):
+        try:
+            slack_client.upload_file(slack["bot_token"], slack["channel_id"], image,
+                                     (folder / image).read_bytes(),
+                                     initial_comment=text, thread_ts=thread_ts)
+            return
+        except Exception:
+            log.exception("verdict image upload failed, sending text only")
+    _slack_say(config, text, thread_ts)
+
+
 def _maybe_auto_merge(config: dict, base: str, token: str,
-                      project_path: str, iid, web_url, thread_ts: str | None = None) -> None:
+                      project_path: str, iid, web_url, thread_ts: str | None = None,
+                      *, reviewed_sha: str) -> None:
     """Merge a clean MR, honoring the hard rails. Every path warns; none raises.
 
-    Rails (in review_common.auto_merge_blocker): never merge a draft, an MR
-    GitLab won't cleanly merge, or one whose head pipeline isn't green.
+    Rails (in review_common.auto_merge_blocker): never merge a draft, a head
+    other than `reviewed_sha`, an MR GitLab won't cleanly merge, or one whose
+    head pipeline isn't green.
     """
     try:
         mr = gitlab_client.get_mr(base, token, project_path, iid)
+        has_ci = gitlab_client.has_ci_config(base, token, project_path, reviewed_sha)
     except Exception as exc:
         log.exception("auto-merge: get_mr failed")
         _slack_say(config, f":warning: {project_path} MR !{iid}: AI clean but "
                            f"mergeability check failed ({exc}) — merge manually\n{web_url}", thread_ts)
         return
 
-    blocker = review_common.auto_merge_blocker(mr)
+    blocker = review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
     if blocker:
         log.info("MR !%s clean but not auto-merged: %s", iid, blocker)
         _slack_say(config, f":warning: {project_path} MR !{iid}: AI review clean but "
@@ -97,7 +120,7 @@ def _maybe_auto_merge(config: dict, base: str, token: str,
         return
 
     try:
-        gitlab_client.merge_mr(base, token, project_path, iid)
+        gitlab_client.merge_mr(base, token, project_path, iid, sha=reviewed_sha)
     except Exception as exc:
         log.exception("auto-merge: merge failed")
         _slack_say(config, f":warning: {project_path} MR !{iid}: AI clean but "
@@ -107,6 +130,48 @@ def _maybe_auto_merge(config: dict, base: str, token: str,
     log.info("MR !%s auto-merged (AI review clean)", iid)
     _slack_say(config, f":white_check_mark: {project_path} MR !{iid} auto-merged "
                        f"(AI review clean)\n{web_url}", thread_ts)
+    _mark_notification_merged(config, thread_ts)
+
+
+MERGED_REACTIONS = ("done", "white_check_mark")
+
+
+def _mark_notification_merged(config: dict, notification_ts: str | None) -> None:
+    """React on the MR notification so a merged MR is visible without opening the thread.
+
+    `:done:` is a custom emoji and may not exist in a workspace (reading the emoji
+    list needs `emoji:read`, which the app doesn't have), so fall back on any failure.
+    """
+    slack = config.get("slack", {})
+    if not (notification_ts and slack.get("bot_token") and slack.get("channel_id")):
+        return
+    for name in MERGED_REACTIONS:
+        try:
+            slack_client.add_reaction(slack["bot_token"], slack["channel_id"], notification_ts, name)
+            return
+        except Exception:
+            log.exception("merged reaction :%s: failed", name)
+
+
+def _review_with_confirmation(run, mode: str, auto_merge: bool) -> tuple[dict | None, str]:
+    """Run the engine at `mode`; when auto-merge is on and a lite pass comes back
+    clean, confirm with a deep pass before anything can merge.
+
+    `run(mode)` returns the engine's result dict, or None if the engine failed.
+    Returns (result, mode it came from); result is None only if the first pass
+    failed. A failed deep confirmation keeps the lite result, which is never
+    merge-eligible.
+    """
+    result = run(mode)
+    if result is None or not (auto_merge and mode == "lite"
+                              and review_common.is_clean_result(result)):
+        return result, mode
+    log.info("lite review clean; deep pass to confirm before auto-merge")
+    deep = run("deep")
+    if deep is None:
+        log.error("deep confirmation failed; not auto-merging")
+        return result, mode
+    return deep, "deep"
 
 
 def _run_git(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
@@ -227,27 +292,38 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             print("stats    :", ctx["stats"])
             return 0
 
-        rc = engine.run_review(work, ctx_path, out_path, wt, review_cfg, mode)
-        if rc != 0:
-            log.error("engine failed for MR !%s (rc=%s)", iid, rc)
+        def run(m: str) -> dict | None:
+            if out_path.exists():
+                out_path.unlink()
+            rc = engine.run_review(work, ctx_path, out_path, wt, review_cfg, m)
+            if rc != 0:
+                log.error("engine failed for MR !%s (%s, rc=%s)", iid, m, rc)
+                return None
+            return json.loads(out_path.read_text())
+
+        auto_merge = bool(review_cfg.get("auto_merge_on_clean"))
+        result, mode = _review_with_confirmation(run, mode, auto_merge)
+        if result is None:
             _slack_say(config, f":warning: {project_path} MR !{iid} review did not finish, "
                                f"please review manually\n{ctx.get('web_url')}", thread_ts)
             return 1
 
         # 7. post comments (scripts post; the AI never does)
-        findings = json.loads(out_path.read_text()).get("findings", [])
+        findings = result.get("findings", [])
         posted = post_comment.post_findings(
             base, token, project_path, iid, findings, ctx["diff_refs"],
             signature=build_signature(engine.label(review_cfg, mode)))
 
         # 8. completion message
-        _slack_say(config, completion_text(project_path, iid, ctx.get("web_url"),
-                                           findings, posted, language, mode), thread_ts)
+        _slack_say_verdict(config, completion_text(project_path, iid, ctx.get("web_url"),
+                                                   findings, posted, language, mode),
+                           findings, thread_ts)
         log.info("MR !%s reviewed: %s comment(s) posted", iid, posted)
 
-        # 9. auto-merge on a completely clean review (opt-in; hard-railed)
-        if not findings and review_cfg.get("auto_merge_on_clean"):
-            _maybe_auto_merge(config, base, token, project_path, iid, ctx.get("web_url"), thread_ts)
+        # 9. auto-merge on a clean deep review (opt-in; hard-railed)
+        if auto_merge and review_common.auto_merge_eligible(mode, result):
+            _maybe_auto_merge(config, base, token, project_path, iid, ctx.get("web_url"),
+                              thread_ts, reviewed_sha=ctx["diff_refs"]["head_sha"])
         return 0
     finally:
         _run_git(["git", "-C", local, "worktree", "remove", "--force", str(wt)])

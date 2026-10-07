@@ -25,7 +25,9 @@ scheduler (launchd / cron / systemd, every 60s)
        6. AI engine        engines/<engine>.run_review(context, mode → findings)   ← only AI step
        7. post             post_comment.py: inline discussion first, note fallback
        8. notify           optional Slack completion message
-       9. auto-merge       if clean + auto_merge_on_clean: merge (unless draft/unmergeable/CI not green)
+       9. auto-merge       if deep-clean + auto_merge_on_clean (a clean lite pass is re-run deep first):
+                           merge pinned to the reviewed sha (unless draft/head moved/unmergeable/
+                           CI not green/CI config but no pipeline), then :done: on the notification
       10. cleanup          worktree removed (finally-block, even on crash)
 
 scheduler (second entry, every 15s)

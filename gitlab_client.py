@@ -1,5 +1,6 @@
 """Thin GitLab REST v4 wrapper (urllib only). Write calls need an `api`-scope token."""
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -53,9 +54,30 @@ def get_mr(base: str, token: str, project, iid) -> dict:
     return json.loads(_call(_mr(base, project, iid), token))
 
 
-def merge_mr(base: str, token: str, project, iid) -> dict:
-    """Merge the MR with project defaults. Raises (HTTPError) if GitLab refuses."""
-    return json.loads(_call(f"{_mr(base, project, iid)}/merge", token, method="PUT"))
+def merge_mr(base: str, token: str, project, iid, sha: str | None = None) -> dict:
+    """Merge the MR with project defaults. Raises (HTTPError) if GitLab refuses.
+
+    `sha` makes GitLab refuse (409) unless the head is still that commit, closing
+    the race between our last check and the merge itself."""
+    form = {"sha": sha} if sha else None
+    return json.loads(_call(f"{_mr(base, project, iid)}/merge", token, method="PUT", form=form))
+
+
+def has_ci_config(base: str, token: str, project, ref: str) -> bool:
+    """Whether the project has a CI config at `ref`. Raises on anything but a 404,
+    so a failed lookup can't be mistaken for "no CI"."""
+    path = json.loads(_call(_project(base, project), token)).get("ci_config_path") or ".gitlab-ci.yml"
+    if "@" in path or "://" in path:
+        return True  # config lives in another project or a URL; we can't see it, so assume CI
+    url = (f"{_project(base, project)}/repository/files/{urllib.parse.quote(path, safe='')}"
+           f"?ref={urllib.parse.quote(ref, safe='')}")
+    try:
+        _call(url, token)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+    return True
 
 
 def get_award_emojis(base: str, token: str, project, iid) -> list:

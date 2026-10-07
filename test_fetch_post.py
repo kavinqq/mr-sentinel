@@ -96,3 +96,46 @@ class TestPostFindings(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMergeMr(unittest.TestCase):
+    def test_sha_is_sent_so_gitlab_rejects_a_moved_head(self):
+        import gitlab_client
+        with mock.patch.object(gitlab_client, "_call", return_value="{}") as call:
+            gitlab_client.merge_mr("https://gl", "tok", "g/p", 3, sha="abc")
+        self.assertEqual(call.call_args.kwargs["form"], {"sha": "abc"})
+
+
+class TestHasCiConfig(unittest.TestCase):
+    def _run(self, project, file_result):
+        import gitlab_client
+        def call(url, token, method="GET", form=None):
+            if "/repository/files/" in url:
+                if isinstance(file_result, Exception):
+                    raise file_result
+                return "{}"
+            return json.dumps(project)
+        with mock.patch.object(gitlab_client, "_call", side_effect=call) as m:
+            return gitlab_client.has_ci_config("https://gl", "tok", "g/p", "abc"), m
+
+    def _404(self):
+        return urllib.error.HTTPError("u", 404, "nf", {}, None)
+
+    def test_default_ci_file_present(self):
+        found, m = self._run({"ci_config_path": ""}, None)
+        self.assertTrue(found)
+        self.assertIn(".gitlab-ci.yml", m.call_args_list[-1].args[0])
+
+    def test_default_ci_file_absent(self):
+        self.assertFalse(self._run({"ci_config_path": None}, self._404())[0])
+
+    def test_custom_ci_path_is_checked(self):
+        _, m = self._run({"ci_config_path": "ci/main.yml"}, None)
+        self.assertIn("ci%2Fmain.yml", m.call_args_list[-1].args[0])
+
+    def test_external_ci_config_counts_as_ci(self):
+        self.assertTrue(self._run({"ci_config_path": "ci.yml@group/ci-templates"}, None)[0])
+
+    def test_other_http_errors_propagate(self):
+        with self.assertRaises(urllib.error.HTTPError):
+            self._run({}, urllib.error.HTTPError("u", 500, "x", {}, None))

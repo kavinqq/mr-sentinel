@@ -43,7 +43,8 @@ new MR opened
 - [Claude Code CLI](https://claude.com/claude-code) logged in (default engine),
   and/or the Codex CLI for the experimental `codex` engine
 - A GitLab personal access token with `api` scope
-- Optional: a Slack bot token for notifications (`chat:write`, `reactions:write`)
+- Optional: a Slack bot token for notifications (`chat:write`, `reactions:write`,
+  `files:write` for verdict images)
   and, to also *control* it from Slack, `channels:history` (or `groups:history`
   for a private channel) + `reactions:read` — plus the bot invited to the channel
 
@@ -81,13 +82,14 @@ leave the `slack` block empty to disable notifications entirely.
 | `slack.bot_token` / `channel_id` | Optional; enables new-MR messages, 👀 reactions, completion pings, and the command listener |
 | `slack.webhook_url` | Simpler Slack alternative (incoming webhook): messages work, reactions don't, commands don't. Bot token wins when both are set |
 | `slack.admin_user_ids` | Who may change settings from Slack. Empty falls back to `mention_user_ids` — set it explicitly, or cc'ing a teammate on notifications silently grants them admin |
+| `assets/verdict/<tier>/` | Optional fun: the completion message attaches a random image from one folder — `no_bug/` (0 findings), `high_grade/` (worst is low), `medium_grade/` (worst is medium), `low_grade/` (any high). Drop in any jpg/png/gif/webp to add more. Needs a bot token with `files:write`; an empty folder or missing scope falls back to text |
 | `slack.display_name` / `icon_emoji` | Optional branding for bot messages; needs the `chat:write.customize` scope, and is only sent when set |
 | `watch.group_ids` / `path_prefixes` | Optional: poll whole GitLab groups (one API call each) and notify for every member project; reviews still run only for `project_map` entries |
 | `review.project_map` | **The review allowlist**: `"group/project": "/local/clone/path"` — only mapped projects are reviewed |
 | `review.language` | Language for review comments (`en`, `zh-TW`, `ja`, …) |
 | `review.engine` | `claude` (default) or `codex` (experimental) |
 | `review.max_changed_files` / `max_diff_lines` | Tier boundary: within both limits an MR gets a 1-gate `lite` review (scan only); over either limit it escalates to a 3-gate `deep` review (scan → vet → adjudicate) |
-| `review.auto_merge_on_clean` | `false` (default) or `true`: when a review finds **zero** problems, auto-merge the MR — but never a draft, a non-mergeable MR, or one with a non-green pipeline |
+| `review.auto_merge_on_clean` | `false` (default) or `true`: when a **deep** review finds **zero** problems, auto-merge the MR and mark the Slack notification `:done:` (falls back to `:white_check_mark:`). A clean lite review is first confirmed by a deep pass. Never merges a draft, a head that moved since the review, a non-mergeable MR, a non-green pipeline, or a project with CI config but no pipeline |
 | `review.claude.model` / `skeptic_model` / `effort` | Scanner + adjudicator model (gates 1 & 3), skeptic subagent model (gate 2), reasoning effort |
 | `review.codex.model` / `skeptic_model` | Codex models (empty = CLI default) |
 

@@ -6,6 +6,15 @@ config.json
 本機使用說明.html
 deploy/local/
 
+# verdict images are the operator's own pick (may not be redistributable);
+# the per-tier folders themselves are tracked via .gitkeep
+assets/verdict/*/*
+!assets/verdict/*/.gitkeep
+
+# review history DB: per-person aggregation of findings, never commit
+sentinel.db
+sentinel.db-*
+
 # runtime state / locks / logs
 state.json
 state.tmp

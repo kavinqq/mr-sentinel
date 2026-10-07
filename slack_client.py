@@ -1,6 +1,7 @@
 """Thin Slack Web API wrapper (urllib only).
 
-Scopes: `chat:write` + `reactions:write` to notify and claim; `channels:history`
+Scopes: `chat:write` + `reactions:write` to notify and claim
+(+ `files:write` for verdict images); `channels:history`
 (+ `groups:history` for private channels) and `reactions:read` for the command
 listener. Reading a channel also requires the bot to be *in* it.
 """
@@ -40,6 +41,26 @@ def _post(method: str, token: str, payload: dict) -> dict:
         return json.loads(resp.read().decode())
 
 
+def _post_form(method: str, token: str, params: dict) -> dict:
+    """files.getUploadURLExternal rejects JSON bodies; it only takes form fields."""
+    req = urllib.request.Request(
+        f"https://slack.com/api/{method}",
+        data=urllib.parse.urlencode(params).encode(),
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _put_bytes(url: str, data: bytes) -> None:
+    req = urllib.request.Request(url, data=data,
+                                 headers={"Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"Slack file upload failed: HTTP {resp.status}")
+
+
 def chat_post_message(token: str, channel: str, text: str, thread_ts: str | None = None,
                       username: str | None = None, icon_emoji: str | None = None) -> str:
     """Post a message and return its ts (needed later for reactions/threading).
@@ -59,6 +80,26 @@ def chat_post_message(token: str, channel: str, text: str, thread_ts: str | None
     if not resp.get("ok"):
         raise RuntimeError(f"Slack chat.postMessage failed: {resp.get('error')}")
     return resp["ts"]
+
+
+def upload_file(token: str, channel: str, filename: str, data: bytes,
+                initial_comment: str = "", thread_ts: str | None = None) -> None:
+    """Share a file into the channel (or a thread) as one message with
+    initial_comment as its text. Needs the `files:write` scope.
+
+    Uses the external-upload flow because files.upload was retired in 2025."""
+    ticket = _post_form("files.getUploadURLExternal", token,
+                        {"filename": filename, "length": len(data)})
+    if not ticket.get("ok"):
+        raise RuntimeError(f"Slack files.getUploadURLExternal failed: {ticket.get('error')}")
+    _put_bytes(ticket["upload_url"], data)
+    payload = {"files": [{"id": ticket["file_id"], "title": filename}],
+               "channel_id": channel, "initial_comment": initial_comment}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    resp = _post("files.completeUploadExternal", token, payload)
+    if not resp.get("ok"):
+        raise RuntimeError(f"Slack files.completeUploadExternal failed: {resp.get('error')}")
 
 
 def post_webhook(webhook_url: str, text: str) -> None:
