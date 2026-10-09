@@ -2,7 +2,11 @@
 
     run_review(work_dir, context_file, output_file, repo_dir, review_cfg,
                mode="deep") -> int
+    run_appeal(work_dir, context_file, output_file, repo_dir, review_cfg) -> int
     label(review_cfg, mode="deep") -> str   # models note for the signature
+
+run_appeal re-judges findings a developer disputed (appeal_context.json in →
+appeal_verdicts.json out, see prompts/appeal.md).
 
 `mode` is "lite" (small MR: a single scan pass) or "deep" (large MR: scan +
 adversarial vetting + final adjudication). The reviewer picks it by MR size.

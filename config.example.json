@@ -4,6 +4,7 @@
 
   "slack": {
     "bot_token": "",
+    "app_token": "",
     "channel_id": "",
     "webhook_url": "",
     "mention_user_ids": [],

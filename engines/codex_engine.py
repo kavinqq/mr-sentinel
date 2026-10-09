@@ -136,3 +136,26 @@ def run_review(work_dir: Path, context_file: Path, output_file: Path,
         return 0
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
         return 1
+
+
+READ_ONLY_REPLY = ("\n\nIMPORTANT: you run in a read-only sandbox and cannot write files. "
+                   "Do NOT try to write the output file; reply with exactly that JSON "
+                   "object as your final message instead.")
+
+
+def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
+               repo_dir, review_cfg: dict) -> int:
+    """Re-judge disputed findings (prompts/appeal.md) in one codex pass; the script
+    writes the verdicts file from the reply, as the sandbox is read-only."""
+    prompt = render_prompt((PROMPTS_DIR / "appeal.md").read_text(),
+                           review_cfg.get("language", "en"), str(repo_dir),
+                           context_file.name, output_file.name) + READ_ONLY_REPLY
+    try:
+        reply = parse_json_reply(_exec_pass(prompt, work_dir,
+                                            review_cfg["codex"].get("model", ""),
+                                            review_cfg["review_timeout_seconds"]))
+        output_file.write_text(json.dumps({"verdicts": reply.get("verdicts", [])},
+                                          ensure_ascii=False, indent=1))
+        return 0
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
+        return 1

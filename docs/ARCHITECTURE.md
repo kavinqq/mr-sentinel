@@ -30,8 +30,14 @@ scheduler (launchd / cron / systemd, every 60s)
                            CI not green/CI config but no pipeline), then :done: on the notification
       10. cleanup          worktree removed (finally-block, even on crash)
 
-scheduler (second entry, every 15s)
+scheduler (second entry, every 15s)          — or long-lived with --socket
   └─ slack_bot.py         own flock (.lock-bot); polls Slack for mentions
+       │                  (--socket: Socket Mode WebSocket — @mentions and button
+       │                  clicks pushed in; a history tick on each connect catches up)
+       ├─ buttons         click → Command → same authorize/rate limit → chat.update
+       └─ appeal          💬 button → appeal.py (detached, shares the per-MR lock):
+                          threads a human answered → engine.run_appeal → reply +
+                          resolve accepted → summary → auto-merge rails if none open
        ├─ usage           bare mention -> the command list for that user
        ├─ settings        writes overrides.json (whitelisted keys only)
        └─ rerun           un-claim → delete its own unanswered comments → spawn
@@ -159,7 +165,10 @@ prose is not. The final message is used for nothing.
 |---|---|
 | `poller.py` | detect new MRs, notify, spawn reviews |
 | `reviewer.py` | orchestrate one MR review end to end (+ `spawn_detached`) |
-| `slack_bot.py` | poll Slack for mentions, dispatch commands (IO only) |
+| `slack_bot.py` | poll Slack (or listen on Socket Mode) for mentions and clicks, dispatch commands (IO only) |
+| `socket_mode.py` | stdlib WebSocket client + Socket Mode envelope loop (ack-first, reconnect) |
+| `appeal.py` | re-judge findings the developer disputed; verdict replies, resolve, summary |
+| `blocks.py` | Block Kit buttons: build, retire after a click, parse a click back to a Command (pure) |
 | `commands.py` | parse / authorize / render usage, settings, status (pure) |
 | `overrides.py` | Slack-settable config layer: whitelist, validate, merge |
 | `engines/` | AI engines (claude, codex) behind one contract |

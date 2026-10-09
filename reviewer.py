@@ -16,18 +16,21 @@ import json
 import logging
 import subprocess
 import sys
+import time
 import urllib.error
 from collections import Counter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import blocks
 import engines
 import fetch_mr
 import gitlab_client
 import post_comment
 import review_common
 import slack_client
-from sentinel_config import SCRIPT_DIR, load_config, load_state
+from sentinel_config import (SCRIPT_DIR, SOCKET_HEARTBEAT_MAX_AGE, SOCKET_HEARTBEAT_PATH,
+                             load_config, load_state)
 
 REVIEWS_DIR = SCRIPT_DIR / "reviews"
 VERDICT_DIR = SCRIPT_DIR / "assets" / "verdict"
@@ -57,13 +60,35 @@ def build_signature(engine_label: str) -> str:
 # ---------- IO ----------
 
 
-def _slack_say(config: dict, text: str, thread_ts: str | None = None) -> None:
+def socket_listener_alive(path=SOCKET_HEARTBEAT_PATH, now=None) -> bool:
+    try:
+        age = (time.time() if now is None else now) - path.stat().st_mtime
+    except OSError:
+        return False
+    return age < SOCKET_HEARTBEAT_MAX_AGE
+
+
+def buttons_enabled(config: dict) -> bool:
+    """Buttons only work while slack_bot.py --socket is connected: it needs the
+    app-level token *and* a fresh heartbeat. Otherwise a click would just show
+    Slack's "app did not respond" error, so plain text is posted instead."""
+    slack = config.get("slack", {})
+    return bool(slack.get("app_token") and slack.get("bot_token")
+                and slack.get("channel_id") and socket_listener_alive())
+
+
+def _slack_say(config: dict, text: str, thread_ts: str | None = None,
+               buttons: list | None = None) -> None:
     """Post a reviewer message. thread_ts (the MR notification's ts) replies in
-    that thread; the webhook fallback has no ts, so it always posts top-level."""
+    that thread; the webhook fallback has no ts, so it always posts top-level.
+    `buttons` are attached only when the socket listener can answer them."""
     slack = config.get("slack", {})
     try:
         if slack.get("bot_token") and slack.get("channel_id"):
-            slack_client.chat_post_message(slack["bot_token"], slack["channel_id"], text, thread_ts)
+            extra = ({"blocks": blocks.message(text, buttons)}
+                     if buttons and buttons_enabled(config) else {})
+            slack_client.chat_post_message(slack["bot_token"], slack["channel_id"], text,
+                                           thread_ts, **extra)
         elif slack.get("webhook_url"):
             slack_client.post_webhook(slack["webhook_url"], text)
     except Exception:
@@ -71,22 +96,28 @@ def _slack_say(config: dict, text: str, thread_ts: str | None = None) -> None:
 
 
 def _slack_say_verdict(config: dict, text: str, findings: list,
-                       thread_ts: str | None = None) -> None:
+                       thread_ts: str | None = None, buttons: list | None = None) -> None:
     """Completion message with a random image from the verdict tier's folder. The image is
     decoration: no bot token, no matching file, or a failed upload (e.g. the app
-    lacks `files:write`) all degrade to the plain text message."""
+    lacks `files:write`) all degrade to the plain text message.
+
+    A file share can carry neither buttons nor a later chat.update, so with
+    buttons on, the image goes up bare and the text follows as its own message."""
     slack = config.get("slack", {})
     folder = VERDICT_DIR / review_common.VERDICT_IMAGE_DIR[review_common.verdict_tier(findings)]
     image = review_common.pick_image([p.name for p in folder.iterdir()] if folder.is_dir() else [])
+    with_buttons = bool(buttons) and buttons_enabled(config)
     if image and slack.get("bot_token") and slack.get("channel_id"):
         try:
             slack_client.upload_file(slack["bot_token"], slack["channel_id"], image,
                                      (folder / image).read_bytes(),
-                                     initial_comment=text, thread_ts=thread_ts)
-            return
+                                     initial_comment="" if with_buttons else text,
+                                     thread_ts=thread_ts)
+            if not with_buttons:
+                return
         except Exception:
             log.exception("verdict image upload failed, sending text only")
-    _slack_say(config, text, thread_ts)
+    _slack_say(config, text, thread_ts, buttons)
 
 
 def _maybe_auto_merge(config: dict, base: str, token: str,
@@ -110,8 +141,10 @@ def _maybe_auto_merge(config: dict, base: str, token: str,
     blocker = review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
     if blocker:
         log.info("MR !%s clean but not auto-merged: %s", iid, blocker)
+        retry = (blocks.rerun_buttons(project_path, iid, label="🔁 重審最新 commit")
+                 if blocker == "new commits since review" else None)
         _slack_say(config, f":warning: {project_path} MR !{iid}: AI review clean but "
-                           f"{blocker} — merge manually\n{web_url}", thread_ts)
+                           f"{blocker} — merge manually\n{web_url}", thread_ts, retry)
         try:
             gitlab_client.post_note(base, token, project_path, iid,
                 f"🤖 mr-sentinel: AI review 無發現問題,但因「{blocker}」未自動合併,請手動處理。")
@@ -176,6 +209,47 @@ def _review_with_confirmation(run, mode: str, auto_merge: bool) -> tuple[dict | 
 
 def _run_git(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+
+
+def prepare_worktree(project_path: str, iid, sha: str, wt: Path,
+                     review_cfg: dict) -> tuple[str | None, str | None]:
+    """Fetch the MR ref into the user's clone and check `sha` out into a
+    throwaway worktree. Returns (local clone, None) or (local, failure) where
+    failure is "no_clone" / "fetch" / "worktree". Shared with appeal.py."""
+    local = review_common.resolve_local_path(project_path, review_cfg)
+    if not local or not Path(local).exists():
+        log.error("local clone not found for %s", project_path)
+        return local, "no_clone"
+    fetch = _run_git(["git", "-C", local, "fetch", "-q", "origin",
+                      f"+refs/merge-requests/{iid}/head:refs/mr-sentinel/{iid}"])
+    if fetch.returncode != 0:
+        log.error("git fetch failed: %s", fetch.stderr)
+        return local, "fetch"
+    _run_git(["git", "-C", local, "worktree", "remove", "--force", str(wt)])  # clear leftovers
+    add = _run_git(["git", "-C", local, "worktree", "add", "--detach", "-q", str(wt), sha])
+    if add.returncode != 0:
+        log.error("worktree add failed: %s", add.stderr)
+        return local, "worktree"
+    return local, None
+
+
+REVIEW_META = "review_meta.json"
+
+
+def write_review_meta(work: Path, mode: str, head_sha: str, findings: int) -> None:
+    """What the last review actually covered. appeal.py reads it: merging after
+    accepted appeals must keep the same rails as a clean review (deep, and the
+    reviewed sha — never code pushed after the review)."""
+    (work / REVIEW_META).write_text(json.dumps(
+        {"mode": mode, "head_sha": head_sha, "findings": findings}, indent=1))
+
+
+def read_review_meta(work: Path) -> dict:
+    try:
+        meta = json.loads((work / REVIEW_META).read_text())
+    except (OSError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
 
 
 def spawn_detached(project_path: str, iid, mr_id, mode: str = "auto") -> None:
@@ -247,26 +321,18 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         log.info("MR !%s: lite single-pass review", iid)
 
     # 5. local clone + fetch MR ref + disposable worktree
-    local = review_common.resolve_local_path(project_path, review_cfg)
-    if not local or not Path(local).exists():
-        log.error("local clone not found for %s", project_path)
+    wt = work / "wt"
+    local, failure = prepare_worktree(project_path, iid, head_sha, wt, review_cfg)
+    if failure == "no_clone":
         if not dry_run:
             _slack_say(config, f":warning: local clone not found for {project_path}, "
                                f"MR !{iid} skipped", thread_ts)
         return 1
-    fetch = _run_git(["git", "-C", local, "fetch", "-q", "origin",
-                      f"+refs/merge-requests/{iid}/head:refs/mr-sentinel/{iid}"])
-    if fetch.returncode != 0:
-        log.error("git fetch failed: %s", fetch.stderr)
+    if failure == "fetch":
         if not dry_run:
             _slack_say(config, f":warning: git fetch failed for {project_path} MR !{iid}", thread_ts)
         return 1
-
-    wt = work / "wt"
-    _run_git(["git", "-C", local, "worktree", "remove", "--force", str(wt)])  # clear leftovers
-    add = _run_git(["git", "-C", local, "worktree", "add", "--detach", "-q", str(wt), head_sha])
-    if add.returncode != 0:
-        log.error("worktree add failed: %s", add.stderr)
+    if failure == "worktree":
         if not dry_run:
             # the MR is already claimed (:eyes:) and will never be retried;
             # every failure branch must produce a human-visible signal
@@ -305,7 +371,8 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         result, mode = _review_with_confirmation(run, mode, auto_merge)
         if result is None:
             _slack_say(config, f":warning: {project_path} MR !{iid} review did not finish, "
-                               f"please review manually\n{ctx.get('web_url')}", thread_ts)
+                               f"please review manually\n{ctx.get('web_url')}", thread_ts,
+                       blocks.rerun_buttons(project_path, iid, label="🔁 再試一次"))
             return 1
 
         # 7. post comments (scripts post; the AI never does)
@@ -314,10 +381,16 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             base, token, project_path, iid, findings, ctx["diff_refs"],
             signature=build_signature(engine.label(review_cfg, mode)))
 
+        write_review_meta(work, mode, head_sha, len(findings))
+
         # 8. completion message
+        buttons = blocks.rerun_buttons(project_path, iid,
+                                       label="🔁 修好了，重審" if findings else "🔁 重審")
+        if posted:
+            buttons += blocks.appeal_buttons(project_path, iid)
         _slack_say_verdict(config, completion_text(project_path, iid, ctx.get("web_url"),
                                                    findings, posted, language, mode),
-                           findings, thread_ts)
+                           findings, thread_ts, buttons)
         log.info("MR !%s reviewed: %s comment(s) posted", iid, posted)
 
         # 9. auto-merge on a clean deep review (opt-in; hard-railed)

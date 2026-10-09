@@ -22,6 +22,32 @@ class TestChatPostMessage(unittest.TestCase):
         self.assertNotIn("thread_ts", payload)
 
 
+class TestInteractive(unittest.TestCase):
+    def test_blocks_only_sent_when_given(self):
+        with mock.patch.object(slack_client, "_post", return_value={"ok": True, "ts": "1"}) as p:
+            slack_client.chat_post_message("tok", "C1", "hi", blocks=[{"type": "section"}])
+        self.assertEqual(p.call_args.args[2]["blocks"], [{"type": "section"}])
+
+    def test_chat_update_raises_on_error(self):
+        with mock.patch.object(slack_client, "_post",
+                               return_value={"ok": False, "error": "cant_update_message"}):
+            with self.assertRaises(RuntimeError):
+                slack_client.chat_update("tok", "C1", "1.1", "t", [])
+
+    def test_ephemeral_targets_one_user_in_thread(self):
+        with mock.patch.object(slack_client, "_post", return_value={"ok": True}) as p:
+            slack_client.post_ephemeral("tok", "C1", "U1", "no", thread_ts="1.1")
+        self.assertEqual(p.call_args.args[0], "chat.postEphemeral")
+        self.assertEqual(p.call_args.args[2],
+                         {"channel": "C1", "user": "U1", "text": "no", "thread_ts": "1.1"})
+
+    def test_connections_open_uses_the_app_token(self):
+        with mock.patch.object(slack_client, "_post_form",
+                               return_value={"ok": True, "url": "wss://x"}) as form:
+            self.assertEqual(slack_client.apps_connections_open("xapp-1"), "wss://x")
+        self.assertEqual(form.call_args.args[:2], ("apps.connections.open", "xapp-1"))
+
+
 class TestUploadFile(unittest.TestCase):
     def test_three_step_upload_threads_and_comments(self):
         with mock.patch.object(slack_client, "_post_form",

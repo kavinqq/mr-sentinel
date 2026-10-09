@@ -7,6 +7,10 @@ import overrides
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 OVERRIDES_PATH = SCRIPT_DIR / "overrides.json"
+# touched by `slack_bot.py --socket` while connected; buttons are only posted
+# while it is fresh, so a dead listener never leaves unanswerable buttons
+SOCKET_HEARTBEAT_PATH = SCRIPT_DIR / ".socket-alive"
+SOCKET_HEARTBEAT_MAX_AGE = 120
 
 log = logging.getLogger("mr_sentinel")
 

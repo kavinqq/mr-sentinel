@@ -381,6 +381,195 @@ class TestRerun(unittest.TestCase):
             self.assertIn("沒有認領標記", h.last)
 
 
+def click_payload(args, user=ADMIN, channel="C1", message_ts="3000.0", verb="rerun"):
+    import json as _json
+    buttons = slack_bot.blocks.rerun_buttons("g/app", 481)
+    return {
+        "type": "block_actions", "user": {"id": user}, "channel": {"id": channel},
+        "container": {"type": "message", "message_ts": message_ts, "channel_id": channel},
+        "message": {"ts": message_ts, "thread_ts": "1700.0", "text": "done",
+                    "blocks": slack_bot.blocks.message("done", buttons)},
+        "actions": [{"action_id": "mrs:rerun:auto",
+                     "value": _json.dumps({"verb": verb, "args": args})}],
+    }
+
+
+class TestButtons(unittest.TestCase):
+    def press(self, harness, payload, rerun_log=None):
+        if rerun_log is not None:
+            harness.bot.bot_state["rerun_log"] = rerun_log
+        gl = slack_bot.gitlab_client
+        with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
+             mock.patch.object(gl, "get_award_emojis", return_value=[]), \
+             mock.patch.object(gl, "delete_award_emoji"), \
+             mock.patch.object(gl, "list_discussions", return_value=[]), \
+             mock.patch.object(gl, "delete_note"), \
+             mock.patch.object(slack_bot.reviewer, "spawn_detached") as spawn, \
+             mock.patch.object(slack_bot.slack_client, "chat_update") as update, \
+             mock.patch.object(slack_bot.slack_client, "post_ephemeral") as whisper:
+            harness.bot.on_socket_event("interactive", payload)
+        return spawn, update, whisper
+
+    def test_click_reruns_in_the_thread_and_retires_the_buttons(self):
+        with BotHarness() as h:
+            spawn, update, _ = self.press(h, click_payload(["g/app!481", "deep"]))
+            spawn.assert_called_once_with("g/app", "481", "100", "deep")
+            self.assertEqual(h.posted[-1][1], "1700.0")          # reply lands in the MR thread
+            channel, ts, _, new_blocks = update.call_args.args[1:]
+            self.assertEqual((channel, ts), ("C1", "3000.0"))
+            self.assertNotIn("actions", [b["type"] for b in new_blocks])
+            self.assertIn(ADMIN, new_blocks[-1]["elements"][0]["text"])
+
+    def test_failed_message_update_is_retried_then_explained(self):
+        with BotHarness() as h:
+            gl = slack_bot.gitlab_client
+            with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
+                 mock.patch.object(gl, "get_award_emojis", return_value=[]), \
+                 mock.patch.object(gl, "list_discussions", return_value=[]), \
+                 mock.patch.object(slack_bot.reviewer, "spawn_detached"), \
+                 mock.patch.object(slack_bot.slack_client, "chat_update",
+                                   side_effect=RuntimeError("cant_update_message")) as update, \
+                 self.assertLogs("mr_sentinel.slack_bot", "ERROR"):
+                h.bot.on_socket_event("interactive", click_payload(["g/app!481"]))
+            self.assertEqual(update.call_count, 2)
+            self.assertIn("不會重複執行", h.last)
+            self.assertIn("3000.0", h.bot.bot_state["clicks"])      # still claimed: it ran
+            # even after the bounded click log forgets it, the visible button stays dead
+            h.bot.bot_state["clicks"] = {}
+            with mock.patch.object(slack_bot.reviewer, "spawn_detached") as spawn, \
+                 mock.patch.object(slack_bot.slack_client, "post_ephemeral"):
+                h.bot.on_socket_event("interactive", click_payload(["g/app!481"]))
+            spawn.assert_not_called()
+
+    def test_second_press_of_the_same_message_is_ignored(self):
+        with BotHarness() as h:
+            self.press(h, click_payload(["g/app!481"]))
+            spawn, _, whisper = self.press(h, click_payload(["g/app!481"], user=OTHER))
+            spawn.assert_not_called()
+            whisper.assert_called_once()
+
+    def test_rate_limited_press_keeps_the_buttons(self):
+        now = datetime.now(timezone.utc).isoformat()
+        with BotHarness() as h:
+            spawn, update, _ = self.press(h, click_payload(["g/app!481"], user=OTHER),
+                                          rerun_log=[now] * commands.RERUN_LIMIT_PER_HOUR)
+            spawn.assert_not_called()
+            update.assert_not_called()
+            self.assertIn("太頻繁", h.last)
+            self.assertNotIn("3000.0", h.bot.bot_state.get("clicks", {}))   # can press later
+
+    def test_forged_verb_is_refused(self):
+        """A button value is user-controlled data: it must not reach admin verbs."""
+        with BotHarness() as h:
+            with mock.patch.object(h.bot, "dispatch") as dispatch:
+                self.press(h, click_payload(["effort", "high"], verb="set"))
+            dispatch.assert_not_called()
+
+    def test_click_from_another_channel_is_ignored(self):
+        with BotHarness() as h:
+            spawn, _, _ = self.press(h, click_payload(["g/app!481"], channel="C999"))
+            spawn.assert_not_called()
+
+
+class TestAppeal(unittest.TestCase):
+    AI = "🟠 [Medium] x\n\n— 🤖 mr-sentinel AI review (m)"
+
+    def appeal(self, harness, discussions, args=("g/app!481",), via_button=False):
+        gl = slack_bot.gitlab_client
+        with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
+             mock.patch.object(gl, "list_discussions", return_value=discussions), \
+             mock.patch.object(slack_bot.appeal, "spawn_detached") as spawn, \
+             mock.patch.object(slack_bot.slack_client, "chat_update") as update, \
+             mock.patch.object(slack_bot.slack_client, "post_ephemeral"):
+            if via_button:
+                harness.bot.on_socket_event("interactive",
+                                            click_payload(list(args), verb="appeal"))
+            else:
+                harness.bot.dispatch(commands.Command("appeal", list(args)), ADMIN, None)
+        return spawn, update
+
+    def replied(self):
+        return [{"id": "d1", "notes": [{"author": {"id": 42}, "body": self.AI},
+                                       {"author": {"id": 99, "name": "dev"}, "body": "不用修"}]}]
+
+    def test_replies_waiting_spawn_the_judge(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, self.replied())
+            spawn.assert_called_once_with("g/app", "481", "100")
+            self.assertIn("1 則回覆", h.last)
+            self.assertEqual(len(h.bot.bot_state["rerun_log"]), 1)   # shares the budget
+
+    def test_no_reply_yet_explains_and_spends_nothing(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [{"id": "d1", "notes": [{"author": {"id": 42},
+                                                               "body": self.AI}]}])
+            spawn.assert_not_called()
+            self.assertIn("還沒看到新的回覆", h.last)
+            self.assertEqual(h.bot.bot_state.get("rerun_log", []), [])
+
+    def test_button_retires_with_appeal_note(self):
+        with BotHarness() as h:
+            _, update = self.appeal(h, self.replied(), via_button=True)
+            note = update.call_args.args[4][-1]["elements"][0]["text"]
+            self.assertIn("不用修", note)
+
+    def test_aliases_and_tier(self):
+        self.assertEqual(commands.parse(f"<@{BOT}> 不用修 !481", BOT).verb, "appeal")
+        self.assertIsNone(commands.authorize(commands.Command("appeal", []), OTHER, {}))
+
+
+class TestSocketEvents(unittest.TestCase):
+    def mention(self, ts, text=f"<@{BOT}> status", **extra):
+        return {"event": {"type": "app_mention", "channel": "C1", "user": ADMIN,
+                          "text": text, "ts": ts, **extra}}
+
+    def test_mention_is_handled_and_advances_the_cursor(self):
+        with BotHarness() as h:
+            with mock.patch.object(h.bot, "handle_message") as handle:
+                h.bot.on_socket_event("events_api", self.mention("2000.0"))
+            handle.assert_called_once()
+            self.assertEqual(h.bot.bot_state["cursor"], "2000.0")
+
+    def test_same_mention_twice_runs_once(self):
+        with BotHarness() as h:
+            with mock.patch.object(h.bot, "handle_message") as handle:
+                h.bot.on_socket_event("events_api", self.mention("2000.0"))
+                h.bot.on_socket_event("events_api", self.mention("2000.0"))
+            handle.assert_called_once()
+
+    def test_older_mention_arriving_late_still_runs(self):
+        """Socket delivery is not ordered: a cursor alone would drop this one."""
+        with BotHarness() as h:
+            with mock.patch.object(h.bot, "handle_message") as handle:
+                h.bot.on_socket_event("events_api", self.mention("2000.0"))
+                h.bot.on_socket_event("events_api", self.mention("1500.0"))
+            self.assertEqual(handle.call_count, 2)
+            self.assertEqual(h.bot.bot_state["cursor"], "2000.0")
+
+    def test_catch_up_tick_skips_what_the_socket_handled(self):
+        with BotHarness() as h:
+            with mock.patch.object(h.bot, "handle_message") as handle:
+                h.bot.on_socket_event("events_api", self.mention("2000.0"))
+                h.bot.bot_state["cursor"] = "1000.0"            # e.g. reconnect replays
+                with mock.patch.object(slack_bot.slack_client, "conversations_history",
+                                       return_value=[msg(f"<@{BOT}> status", "2000.0")]):
+                    h.bot.tick()
+            handle.assert_called_once()
+
+    def test_other_channels_and_event_types_are_ignored(self):
+        with BotHarness() as h:
+            with mock.patch.object(h.bot, "handle_message") as handle:
+                h.bot.on_socket_event("events_api", self.mention("2000.0", channel="C9"))
+                h.bot.on_socket_event("events_api", {"event": {"type": "message", "ts": "2001.0"}})
+            handle.assert_not_called()
+
+    def test_hello_runs_a_catch_up_tick(self):
+        with BotHarness() as h:
+            with mock.patch.object(h.bot, "tick") as tick:
+                h.bot.on_socket_event("hello", {})
+            tick.assert_called_once()
+
+
 class TestStatusGathering(unittest.TestCase):
     def test_running_reviews_come_from_live_locks(self):
         with BotHarness() as h, tempfile.TemporaryDirectory() as reviews:

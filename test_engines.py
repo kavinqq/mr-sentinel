@@ -87,6 +87,34 @@ class TestCommand(unittest.TestCase):
         # --bare would force API-key billing and bypass subscription auth
         self.assertNotIn("--bare", cmd)
 
+    def test_run_appeal_is_single_pass_with_appeal_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            out = work / "appeal_verdicts.json"
+
+            def fake_run(cmd, **kw):
+                out.write_text("{}")
+                return mock.Mock(returncode=0)
+
+            with mock.patch("engines.resolve_cli", return_value="claude"), \
+                 mock.patch("subprocess.run", side_effect=fake_run) as run:
+                rc = claude_engine.run_appeal(work, work / "appeal_context.json", out,
+                                              "/tmp/wt", CFG)
+        self.assertEqual(rc, 0)
+        cmd = run.call_args.args[0]
+        self.assertNotIn("--agents", cmd)                       # no skeptic pass
+        self.assertIn(claude_engine.LITE_ALLOWED_TOOLS, cmd)
+        prompt = cmd[cmd.index("-p") + 1]
+        self.assertIn("appeal_verdicts.json", prompt)
+        self.assertIn("When in doubt, ACCEPT", prompt)
+
+    def test_run_appeal_fails_without_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)):
+                self.assertEqual(claude_engine.run_appeal(
+                    work, work / "c.json", work / "o.json", "/tmp/wt", CFG), 1)
+
     def test_run_review_fails_when_no_output(self):
         with tempfile.TemporaryDirectory() as d:
             work = pathlib.Path(d)

@@ -106,6 +106,37 @@ class TestMergeMr(unittest.TestCase):
         self.assertEqual(call.call_args.kwargs["form"], {"sha": "abc"})
 
 
+class TestDiscussionWrites(unittest.TestCase):
+    def test_reply_and_resolve_hit_the_thread(self):
+        import gitlab_client
+        with mock.patch.object(gitlab_client, "_call", return_value="{}") as call:
+            gitlab_client.reply_discussion("https://gl", "tok", "g/p", 3, "abc", "hi")
+            gitlab_client.resolve_discussion("https://gl", "tok", "g/p", 3, "abc")
+        reply, resolve = call.call_args_list
+        self.assertTrue(reply.args[0].endswith("/merge_requests/3/discussions/abc/notes"))
+        self.assertEqual((reply.kwargs["method"], reply.kwargs["form"]), ("POST", {"body": "hi"}))
+        self.assertTrue(resolve.args[0].endswith("/merge_requests/3/discussions/abc"))
+        self.assertEqual((resolve.kwargs["method"], resolve.kwargs["form"]),
+                         ("PUT", {"resolved": "true"}))
+
+
+class TestListDiscussions(unittest.TestCase):
+    def test_reads_every_page(self):
+        import gitlab_client
+        pages = [json.dumps([{"id": i} for i in range(100)]), json.dumps([{"id": "last"}])]
+        with mock.patch.object(gitlab_client, "_call", side_effect=pages) as call:
+            got = gitlab_client.list_discussions("https://gl", "tok", "g/p", 3)
+        self.assertEqual(len(got), 101)
+        self.assertIn("page=2", call.call_args_list[1].args[0])
+
+    def test_runaway_pagination_raises_instead_of_truncating(self):
+        import gitlab_client
+        full = json.dumps([{"id": i} for i in range(100)])
+        with mock.patch.object(gitlab_client, "_call", return_value=full):
+            with self.assertRaises(RuntimeError):
+                gitlab_client.list_discussions("https://gl", "tok", "g/p", 3, max_pages=2)
+
+
 class TestHasCiConfig(unittest.TestCase):
     def _run(self, project, file_result):
         import gitlab_client

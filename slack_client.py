@@ -4,6 +4,8 @@ Scopes: `chat:write` + `reactions:write` to notify and claim
 (+ `files:write` for verdict images); `channels:history`
 (+ `groups:history` for private channels) and `reactions:read` for the command
 listener. Reading a channel also requires the bot to be *in* it.
+Buttons: an app-level token (`xapp-`, `connections:write`) for Socket Mode, and
+the `app_mentions:read` bot scope so @mentions arrive over the same socket.
 """
 import json
 import urllib.parse
@@ -62,14 +64,18 @@ def _put_bytes(url: str, data: bytes) -> None:
 
 
 def chat_post_message(token: str, channel: str, text: str, thread_ts: str | None = None,
-                      username: str | None = None, icon_emoji: str | None = None) -> str:
+                      username: str | None = None, icon_emoji: str | None = None,
+                      blocks: list | None = None) -> str:
     """Post a message and return its ts (needed later for reactions/threading).
 
     thread_ts replies inside an existing message's thread instead of top-level.
     username/icon_emoji need the `chat:write.customize` scope, so they are only
     sent when explicitly configured — passing them without the scope would make
-    every notification fail."""
+    every notification fail. With `blocks`, `text` stays as the notification /
+    fallback text."""
     payload = {"channel": channel, "text": text, "unfurl_links": False}
+    if blocks:
+        payload["blocks"] = blocks
     if thread_ts:
         payload["thread_ts"] = thread_ts
     if username:
@@ -80,6 +86,33 @@ def chat_post_message(token: str, channel: str, text: str, thread_ts: str | None
     if not resp.get("ok"):
         raise RuntimeError(f"Slack chat.postMessage failed: {resp.get('error')}")
     return resp["ts"]
+
+
+def chat_update(token: str, channel: str, ts: str, text: str, blocks: list) -> None:
+    """Rewrite one of our own messages (e.g. swap clicked buttons for an outcome)."""
+    resp = _post("chat.update", token, {"channel": channel, "ts": ts, "text": text,
+                                        "blocks": blocks})
+    if not resp.get("ok"):
+        raise RuntimeError(f"Slack chat.update failed: {resp.get('error')}")
+
+
+def post_ephemeral(token: str, channel: str, user: str, text: str,
+                   thread_ts: str | None = None) -> None:
+    """A reply only `user` sees — for refusals of a button click."""
+    payload = {"channel": channel, "user": user, "text": text}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    resp = _post("chat.postEphemeral", token, payload)
+    if not resp.get("ok"):
+        raise RuntimeError(f"Slack chat.postEphemeral failed: {resp.get('error')}")
+
+
+def apps_connections_open(app_token: str) -> str:
+    """A fresh single-use wss:// URL for Socket Mode (app-level token, not the bot's)."""
+    resp = _post_form("apps.connections.open", app_token, {})
+    if not resp.get("ok"):
+        raise RuntimeError(f"Slack apps.connections.open failed: {resp.get('error')}")
+    return resp["url"]
 
 
 def upload_file(token: str, channel: str, filename: str, data: bytes,

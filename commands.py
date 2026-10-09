@@ -32,6 +32,7 @@ ALIASES = {
     "help": "help", "?": "help", "h": "help", "說明": "help", "指令": "help",
     "status": "status", "stat": "status", "st": "status", "狀態": "status", "狀況": "status",
     "rerun": "rerun", "re": "rerun", "retry": "rerun", "重跑": "rerun", "重審": "rerun",
+    "appeal": "appeal", "nofix": "appeal", "申訴": "appeal", "不用修": "appeal",
     "set": "set", "設定": "set",
     "reset": "reset", "還原": "reset", "重設": "reset",
     "pause": "pause", "暫停": "pause", "mute": "pause",
@@ -44,7 +45,7 @@ ALIASES = {
 # its tier is declared here on purpose.
 TIERS = {
     "help": PUBLIC, "status": PUBLIC, "unknown": PUBLIC,
-    "rerun": MEMBER,
+    "rerun": MEMBER, "appeal": MEMBER,
     "set": ADMIN, "reset": ADMIN, "pause": ADMIN, "resume": ADMIN,
     "automerge": ADMIN, "projects": ADMIN,
 }
@@ -168,6 +169,8 @@ def format_help(is_admin: bool, handle: str = BOT_HANDLE) -> str:
         "• `rerun` — 列出可以重跑的 MR",
         "• `rerun !481` — 重跑(深度依 MR 大小自動決定)",
         "• `rerun !481 deep` — 強制三關對抗式審查(`lite` = 單關快掃)",
+        "• `appeal !481` — 已在 GitLab 回覆「不用修」的理由,請 AI 讀回覆重新判斷",
+        "  (理由成立就 resolve 討論串;和重跑共用每小時上限)",
         "  _在 MR 通知的 thread 裡回覆可以省略 MR 編號_",
     ]
     if is_admin:

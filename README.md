@@ -47,6 +47,9 @@ new MR opened
   `files:write` for verdict images)
   and, to also *control* it from Slack, `channels:history` (or `groups:history`
   for a private channel) + `reactions:read` — plus the bot invited to the channel
+- Optional, for **buttons**: Socket Mode on, an app-level token (`xapp-…`,
+  `connections:write`), Interactivity on, and the `app_mentions:read` scope with
+  the `app_mention` bot event subscribed (see *Buttons* below)
 
 ## Quick start
 
@@ -80,6 +83,7 @@ leave the `slack` block empty to disable notifications entirely.
 | `gitlab_url` | Your GitLab base URL (self-hosted or gitlab.com) |
 | `gitlab_token` | PAT with `api` scope (read MRs, post comments, award emoji) |
 | `slack.bot_token` / `channel_id` | Optional; enables new-MR messages, 👀 reactions, completion pings, and the command listener |
+| `slack.app_token` | Optional `xapp-` token; turns on buttons. Its presence is the switch: without it no button is ever posted (a click nobody answers just errors) |
 | `slack.webhook_url` | Simpler Slack alternative (incoming webhook): messages work, reactions don't, commands don't. Bot token wins when both are set |
 | `slack.admin_user_ids` | Who may change settings from Slack. Empty falls back to `mention_user_ids` — set it explicitly, or cc'ing a teammate on notifications silently grants them admin |
 | `assets/verdict/<tier>/` | Optional fun: the completion message attaches a random image from one folder — `no_bug/` (0 findings), `high_grade/` (worst is low), `medium_grade/` (worst is medium), `low_grade/` (any high). Drop in any jpg/png/gif/webp to add more. Needs a bot token with `files:write`; an empty folder or missing scope falls back to text |
@@ -114,6 +118,45 @@ you:  @mr-sentinel rerun !481 deep
 bot:  ♻️ 重跑中: g/app !481 (deep)
       (清掉 1 則沒人回覆的舊留言)
 ```
+
+### Buttons (Socket Mode)
+
+With `slack.app_token` set and `slack_bot.py --socket` connected (it keeps a
+`.socket-alive` heartbeat fresh; without one, messages go out as plain text), the bot's own
+messages carry buttons, so the common case needs no typing at all:
+
+| Message | Buttons |
+|---|---|
+| AI Review 完成 | 🔁 修好了，重審 (depth picked by MR size; type `rerun !N deep` to force deep) · 💬 已留言,我覺得不用修 (only when comments were posted) |
+| 申訴結果 (findings still open) | 🔁 修好了，重審 · 💬 已留言,我覺得不用修 |
+| review did not finish | 🔁 再試一次 |
+| auto-merge blocked by new commits | 🔁 重審最新 commit |
+
+A click is turned back into the typed command (`rerun g/app!481 deep`) and goes
+through the same permission check and hourly rerun budget. A permission refusal
+is shown only to the person who clicked; a rerun refusal (budget, unknown MR) is
+answered in the thread exactly like the typed command. Once it runs, the buttons are replaced by
+"♻️ @who 已觸發重審", so a message can only be pressed once. Typed commands keep
+working, and arrive instantly over the same socket.
+
+**💬 已留言,我覺得不用修 (appeal).** Reply under an AI comment on GitLab with
+why it needs no fix, then press the button (or `@bot appeal !N`). The AI reads
+every thread where someone replied after its last word, checks the argument
+against the code, and answers in that thread: ✅ accepted → the thread is
+resolved; ⚠️ rejected → the reason, thread stays open (reply again and press
+again). Unclear cases are accepted — the developer has context the model lacks.
+When nothing is left open and `auto_merge_on_clean` is on, the normal auto-merge
+rails apply, pinned to the sha the last *deep* review covered (a lite review,
+or code pushed after the review, is never merged this way). Appeals share the
+hourly rerun budget.
+
+Slack app setup (once): **Socket Mode** → enable, generate an app-level token
+with `connections:write` → `slack.app_token`. **Interactivity & Shortcuts** →
+on (no URL needed in Socket Mode). **Event Subscriptions** → on, bot event
+`app_mention`; add scope `app_mentions:read`; reinstall the app. Then run the
+listener as a long-lived process (`deploy/launchd/com.example.mr-sentinel-bot-socket.plist`)
+*instead of* the 15s one. Run only one listener per app: Slack spreads socket
+events across every open connection.
 
 | Command | Who | What |
 |---|---|---|

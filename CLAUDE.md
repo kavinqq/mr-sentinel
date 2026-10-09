@@ -29,5 +29,11 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
 - Slack-settable config is whitelisted in `overrides.SETTABLE` — that list is a
   security boundary (a chat message must never reach a token). Adding a key there
   needs a validator, not just a path.
+- Buttons need `slack_bot.py --socket` (Socket Mode, `slack.app_token`) running;
+  `reviewer.buttons_enabled()` keys off that token so no unanswerable button is
+  posted. Only one socket listener per Slack app — Slack load-balances events
+  across connections, so a second machine silently eats clicks. Button values
+  are user-controllable: they only ever name a verb in `slack_bot.BUTTON_VERBS`
+  and still pass `commands.authorize`.
 - Changing `slack.channel_id` invalidates `state.json`'s `slack_ts` (timestamps
   are per-channel): clear `slack_ts`, keep `seen`, or old MRs get re-notified.

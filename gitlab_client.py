@@ -98,9 +98,20 @@ def get_project(base: str, token: str, project) -> dict:
     return json.loads(_call(_project(base, project), token))
 
 
-def list_discussions(base: str, token: str, project, iid, per_page: int = 100) -> list:
-    """Discussions with their notes — used to find our own reviewable comments."""
-    return json.loads(_call(f"{_mr(base, project, iid)}/discussions?per_page={per_page}", token))
+def list_discussions(base: str, token: str, project, iid, per_page: int = 100,
+                     max_pages: int = 50) -> list:
+    """All discussions with their notes, every page (GitLab caps per_page at 100).
+
+    Callers decide "nothing left open" from this list — a second page silently
+    dropped would read as clean."""
+    out: list = []
+    for page in range(1, max_pages + 1):
+        batch = json.loads(_call(f"{_mr(base, project, iid)}/discussions"
+                                 f"?per_page={per_page}&page={page}", token))
+        out += batch
+        if len(batch) < per_page:
+            return out
+    raise RuntimeError(f"MR !{iid} has more than {per_page * max_pages} discussions")
 
 
 def delete_note(base: str, token: str, project, iid, note_id) -> None:
@@ -115,3 +126,15 @@ def post_discussion(base: str, token: str, project, iid, body: str, position: di
 
 def post_note(base: str, token: str, project, iid, body: str) -> None:
     _call(f"{_mr(base, project, iid)}/notes", token, method="POST", form={"body": body})
+
+
+def reply_discussion(base: str, token: str, project, iid, discussion_id, body: str) -> None:
+    """Add a note to an existing thread (appeal verdicts answer the developer in place)."""
+    _call(f"{_mr(base, project, iid)}/discussions/{discussion_id}/notes", token,
+          method="POST", form={"body": body})
+
+
+def resolve_discussion(base: str, token: str, project, iid, discussion_id) -> None:
+    """Raises (HTTPError) for a thread that is not resolvable, e.g. a plain note."""
+    _call(f"{_mr(base, project, iid)}/discussions/{discussion_id}", token,
+          method="PUT", form={"resolved": "true"})

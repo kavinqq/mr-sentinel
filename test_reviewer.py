@@ -190,6 +190,44 @@ class TestVerdictImage(unittest.TestCase):
         up.assert_not_called()
         msg.assert_called_once_with("xoxb", "C1", "done", None)
 
+    BTN_CFG = {"slack": {"bot_token": "xoxb", "channel_id": "C1", "app_token": "xapp"}}
+    BUTTONS = [{"type": "button", "action_id": "mrs:rerun:auto"}]
+
+    def test_buttons_split_image_and_text(self):
+        """A file share cannot hold buttons: image goes up bare, text+buttons follow."""
+        with mock.patch.object(reviewer, "VERDICT_DIR", self.dir), \
+             mock.patch.object(reviewer, "socket_listener_alive", return_value=True), \
+             mock.patch("slack_client.upload_file") as up, \
+             mock.patch("slack_client.chat_post_message") as msg:
+            reviewer._slack_say_verdict(self.BTN_CFG, "done", [], "1.2", self.BUTTONS)
+        self.assertEqual(up.call_args.kwargs["initial_comment"], "")
+        sent = msg.call_args.kwargs["blocks"]
+        self.assertEqual([b["type"] for b in sent], ["section", "actions"])
+        self.assertEqual(msg.call_args.args[:4], ("xoxb", "C1", "done", "1.2"))
+
+    def test_buttons_dropped_without_app_token(self):
+        """No socket listener -> a click could not be answered, so show none."""
+        with mock.patch.object(reviewer, "VERDICT_DIR", self.dir / "nope"), \
+             mock.patch("slack_client.chat_post_message") as msg:
+            reviewer._slack_say_verdict(self.BOT_CFG, "done", [], "1.2", self.BUTTONS)
+        msg.assert_called_once_with("xoxb", "C1", "done", "1.2")
+
+    def test_buttons_dropped_when_listener_heartbeat_is_stale(self):
+        """Token configured but the socket listener is down: no dead buttons."""
+        with mock.patch.object(reviewer, "VERDICT_DIR", self.dir / "nope"), \
+             mock.patch.object(reviewer, "socket_listener_alive", return_value=False), \
+             mock.patch("slack_client.chat_post_message") as msg:
+            reviewer._slack_say_verdict(self.BTN_CFG, "done", [], "1.2", self.BUTTONS)
+        msg.assert_called_once_with("xoxb", "C1", "done", "1.2")
+
+    def test_heartbeat_freshness(self):
+        beat = self.dir / ".socket-alive"
+        self.assertFalse(reviewer.socket_listener_alive(beat))          # never written
+        beat.touch()
+        mtime = beat.stat().st_mtime
+        self.assertTrue(reviewer.socket_listener_alive(beat, now=mtime + 10))
+        self.assertFalse(reviewer.socket_listener_alive(beat, now=mtime + 600))
+
     def test_text_only_when_dir_missing(self):
         with mock.patch.object(reviewer, "VERDICT_DIR", self.dir / "nope"), \
              mock.patch("slack_client.upload_file") as up, \

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for the mr-sentinel SLACK LISTENER in Socket Mode
+  (slack_bot.py --socket): buttons + instant @mentions over one WebSocket.
+
+  Use this INSTEAD OF com.example.mr-sentinel-bot (the 15s polling tick), not
+  alongside it: both take the same .lock-bot, and the poller plist stays as is.
+  KeepAlive restarts it if it ever exits; on every (re)connect it runs one
+  history tick first, so mentions sent while it was down are still answered.
+
+  Needs, besides the bot scopes of the polling listener:
+    - slack.app_token in config.json (xapp-…, scope connections:write)
+    - Slack app: Socket Mode on, Interactivity on, bot event `app_mention`
+      (+ scope app_mentions:read), app reinstalled
+  Only ONE socket listener per Slack app: Slack spreads events across every
+  open connection, so a second machine would silently swallow clicks.
+
+  1. Replace /PATH/TO/mr-sentinel with your clone path (twice below), and use the
+     ABSOLUTE path of a Python 3.10+ interpreter (launchd's PATH is minimal).
+  2. launchctl bootout gui/$(id -u)/com.example.mr-sentinel-bot   (stop the 15s tick)
+  3. cp this file to ~/Library/LaunchAgents/com.example.mr-sentinel-bot-socket.plist
+  4. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.mr-sentinel-bot-socket.plist
+  Stop: launchctl bootout gui/$(id -u)/com.example.mr-sentinel-bot-socket
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.mr-sentinel-bot-socket</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/PATH/TO/mr-sentinel/slack_bot.py</string>
+        <string>--socket</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/PATH/TO/mr-sentinel/launchd-bot-socket.err.log</string>
+</dict>
+</plist>

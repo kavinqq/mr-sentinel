@@ -106,6 +106,16 @@ class TestAutoMergeBlocker(unittest.TestCase):
         mr = {"detailed_merge_status": "mergeable", "head_pipeline": {"status": "running"}}
         self.assertIn("pipeline", rc.auto_merge_blocker(mr))
 
+    def test_green_pipeline_of_an_older_commit_blocks(self):
+        mr = {"sha": "new", "detailed_merge_status": "mergeable",
+              "pipeline": {"status": "success", "sha": "old"}}
+        self.assertIn("older commit", rc.auto_merge_blocker(mr, reviewed_sha="new"))
+
+    def test_green_pipeline_of_the_head_passes(self):
+        mr = {"sha": "new", "detailed_merge_status": "mergeable",
+              "head_pipeline": {"status": "success", "sha": "new"}}
+        self.assertIsNone(rc.auto_merge_blocker(mr, reviewed_sha="new", has_ci=True))
+
     def test_no_pipeline_falls_back_to_merge_status(self):
         # a project without CI: nothing to gate on, mergeability alone decides
         self.assertIsNone(rc.auto_merge_blocker({"merge_status": "can_be_merged"}))
@@ -368,6 +378,100 @@ class TestVerdict(unittest.TestCase):
 
     def test_none_when_no_candidates(self):
         self.assertIsNone(rc.pick_image([".DS_Store", "readme.md"]))
+
+
+
+ME, DEV = 42, 7
+AI_BODY = "🟠 [Medium] x\n\n— 🤖 mr-sentinel AI review (m)"
+
+
+def note(author, body, **extra):
+    return {"author": {"id": author, "name": f"u{author}"}, "body": body, **extra}
+
+
+def thread(*notes, did="d1"):
+    return {"id": did, "notes": list(notes)}
+
+
+class TestAppeals(unittest.TestCase):
+    def status(self, *notes):
+        return rc.discussion_status(thread(*notes), ME)
+
+    def test_status_lifecycle(self):
+        finding = note(ME, AI_BODY, position={"new_path": "a.py", "new_line": 3})
+        reply = note(DEV, "這是刻意的,上游已驗證")
+        accept = note(ME, rc.appeal_reply_body("accept", "ok", "m"))
+        reject = note(ME, rc.appeal_reply_body("reject", "still broken", "m"))
+        self.assertEqual(self.status(finding), "unanswered")
+        self.assertEqual(self.status(finding, reply), "appeal")
+        self.assertEqual(self.status(finding, reply, accept), "closed")
+        self.assertEqual(self.status(finding, reply, reject), "rejected")
+        self.assertEqual(self.status(finding, reply, reject, note(DEV, "再看一次")), "appeal")
+
+    def test_accepted_but_unresolved_resolvable_thread_stays_open(self):
+        finding = note(ME, AI_BODY, resolvable=True)
+        accept = note(ME, rc.appeal_reply_body("accept", "ok", "m"))
+        self.assertEqual(self.status(finding, note(DEV, "x"), accept), "accepted")
+        from collections import Counter
+        self.assertEqual(rc.open_findings(Counter(accepted=1)), 1)
+
+    def test_resolved_thread_is_closed(self):
+        """Shape as GitLab returns it (verified live on a merged MR): every note
+        of a resolvable thread carries resolvable/resolved."""
+        r = {"resolvable": True, "resolved": True}
+        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "x", **r)), "closed")
+
+    def test_partly_resolved_thread_is_not_closed(self):
+        self.assertEqual(self.status(note(ME, AI_BODY, resolvable=True, resolved=True),
+                                     note(DEV, "x", resolvable=True, resolved=False)), "appeal")
+
+    def test_unresolved_accepts_lists_only_stuck_threads(self):
+        accept = rc.appeal_reply_body("accept", "ok", "m")
+        stuck = thread(note(ME, AI_BODY, resolvable=True), note(DEV, "x", resolvable=True),
+                       note(ME, accept, resolvable=True), did="stuck")
+        plain = thread(note(ME, AI_BODY), note(DEV, "x"), note(ME, accept), did="plain")
+        self.assertEqual(rc.unresolved_accepts([stuck, plain], ME), ["stuck"])
+
+    def test_non_ai_threads_are_ignored(self):
+        self.assertIsNone(self.status(note(DEV, "human review")))
+        self.assertIsNone(self.status(note(ME, "🤖 mr-sentinel: auto-merge note")))
+        self.assertIsNone(rc.discussion_status({"notes": [{"system": True, "body": "x"}]}, ME))
+
+    def test_collect_appeals_shapes_engine_input(self):
+        ds = [thread(note(ME, AI_BODY, position={"new_path": "a.py", "new_line": 3}),
+                     note(DEV, "不用修"), did="d1"),
+              thread(note(ME, AI_BODY), did="d2")]
+        appeals, counts = rc.collect_appeals(ds, ME)
+        self.assertEqual(counts, {"appeal": 1, "unanswered": 1})
+        (a,) = appeals
+        self.assertEqual((a["id"], a["file"], a["line"]), ("d1", "a.py", 3))
+        self.assertEqual(a["thread"], [{"role": "developer", "author": "u7", "body": "不用修"}])
+
+    def test_valid_verdicts_drops_malformed(self):
+        result = {"verdicts": [
+            {"id": "d1", "verdict": "accept", "reason": "ok"},
+            {"id": "d2", "verdict": "maybe", "reason": "?"},
+            {"id": "d3", "verdict": "reject", "reason": ""},
+            {"id": "zz", "verdict": "accept", "reason": "not asked"},
+            "junk"]}
+        self.assertEqual(rc.valid_verdicts(result, ["d1", "d2", "d3"]), {"d1": ("accept", "ok")})
+        self.assertEqual(rc.valid_verdicts(None, ["d1"]), {})
+
+    def test_reply_markers_never_look_like_findings(self):
+        """A verdict reply must not carry the finding marker, or a re-review
+        cleanup could mistake it for a deletable AI finding."""
+        for verdict in ("accept", "reject"):
+            self.assertNotIn(rc.SIGNATURE_MARKER, rc.appeal_reply_body(verdict, "r", "m"))
+
+    def test_summary_and_open_count(self):
+        from collections import Counter
+        judged = {"d1": ("accept", "a"), "d2": ("reject", "b")}
+        text = rc.appeal_summary_text("g/app", 5, "http://mr", judged,
+                                      Counter(closed=1, rejected=1, unanswered=2))
+        self.assertIn("理由成立 1", text)
+        self.assertIn("2 則 AI 留言沒人回覆", text)
+        self.assertEqual(rc.open_findings(Counter(closed=3)), 0)
+        self.assertIn(":tada:", rc.appeal_summary_text("g/app", 5, None, judged, Counter(closed=2)))
 
 
 if __name__ == "__main__":

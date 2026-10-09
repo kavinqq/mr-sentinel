@@ -64,6 +64,28 @@ class TestCommand(unittest.TestCase):
         self.assertIn("o4-mini", cmd)
 
 
+class TestRunAppeal(unittest.TestCase):
+    def test_reply_becomes_the_verdicts_file(self):
+        reply = '```json\n{"verdicts": [{"id": "d1", "verdict": "accept", "reason": "ok"}]}\n```'
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            (work / "appeal_context.json").write_text("{}")
+            with mock.patch.object(codex_engine, "_exec_pass", return_value=reply) as run:
+                rc = codex_engine.run_appeal(work, work / "appeal_context.json",
+                                             work / "appeal_verdicts.json", "/tmp/wt", CFG)
+            self.assertEqual(rc, 0)
+            self.assertIn("read-only sandbox", run.call_args.args[0])
+            out = json.loads((work / "appeal_verdicts.json").read_text())
+            self.assertEqual(out["verdicts"][0]["id"], "d1")
+
+    def test_failed_pass_returns_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch.object(codex_engine, "_exec_pass", side_effect=RuntimeError("x")):
+                self.assertEqual(codex_engine.run_appeal(work, work / "c.json", work / "o.json",
+                                                         "/tmp/wt", CFG), 1)
+
+
 class TestRunReview(unittest.TestCase):
     def test_two_pass_flow_writes_final_findings(self):
         scan_reply = json.dumps({"findings": [

@@ -1,5 +1,6 @@
 """Pure functions for the MR review pipeline (unit-testable, no IO)."""
 import random
+from collections import Counter
 
 NOISE_SUFFIXES = (".lock", "-lock.json", ".min.js", ".min.css", ".map", ".svg", ".png", ".jpg", ".gif")
 NOISE_NAMES = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock", "composer.lock", "Cargo.lock", "go.sum")
@@ -103,6 +104,10 @@ def auto_merge_blocker(mr: dict, reviewed_sha: str | None = None,
     pstatus = pipeline.get("status")
     if has_ci and not pstatus:
         return "pipeline missing"
+    # a green pipeline only vouches for the commit it ran on: GitLab can hand back
+    # an older one while the new head's pipeline does not exist yet
+    if pstatus and pipeline.get("sha") and pipeline["sha"] != mr.get("sha"):
+        return "pipeline is for an older commit"
     if pstatus and pstatus != "success":
         return f"pipeline {pstatus}"
     return None
@@ -251,3 +256,133 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
             continue
         deletable += [n["id"] for n in notes if marker in (n.get("body") or "")]
     return deletable
+
+
+# ---------- appeals: "I replied, I don't think this needs fixing" ----------
+#
+# A developer answers an AI comment on GitLab; a Slack button asks the AI to
+# re-judge that finding in light of the reply. Each verdict is posted back as a
+# reply carrying one of these invisible markers (GitLab renders HTML comments
+# as nothing), so a thread's state is always re-derivable from GitLab itself —
+# no local bookkeeping that could drift from what people see.
+APPEAL_ACCEPT = "<!-- mr-sentinel:appeal=accept -->"
+APPEAL_REJECT = "<!-- mr-sentinel:appeal=reject -->"
+APPEAL_SIGNATURE = "— ⚖️ mr-sentinel appeal"
+
+
+def _human_notes(discussion: dict) -> list[dict]:
+    return [n for n in (discussion.get("notes") or []) if not n.get("system")]
+
+
+def discussion_status(discussion: dict, user_id) -> str | None:
+    """State of one AI finding thread, or None if it is not one.
+
+    closed     — resolved on GitLab, or (for a plain note GitLab cannot resolve)
+                 our latest verdict accepted the reply
+    accepted   — we accepted, but a resolvable thread is still unresolved (the
+                 resolve call failed): still open, so nothing merges on it
+    appeal     — someone replied after our last word: ready to be judged
+    rejected   — we judged the last reply and still think it needs a fix
+    unanswered — nobody has replied to the finding yet
+    """
+    notes = _human_notes(discussion)
+    if not notes:
+        return None
+    first = notes[0]
+    if (first.get("author") or {}).get("id") != user_id or \
+            SIGNATURE_MARKER not in (first.get("body") or ""):
+        return None
+    # GitLab's own rule: a thread is resolved when every resolvable note in it is
+    resolvable = [n for n in notes if n.get("resolvable")]
+    if resolvable and all(n.get("resolved") for n in resolvable):
+        return "closed"
+    last_ours = max((i for i, n in enumerate(notes)
+                     if (n.get("author") or {}).get("id") == user_id), default=0)
+    replied_after = any((n.get("author") or {}).get("id") != user_id
+                        for n in notes[last_ours + 1:])
+    if replied_after:
+        return "appeal"
+    body = notes[last_ours].get("body") or ""
+    if APPEAL_ACCEPT in body:
+        return "accepted" if resolvable else "closed"
+    if APPEAL_REJECT in body:
+        return "rejected"
+    return "unanswered"
+
+
+def collect_appeals(discussions: list[dict], user_id) -> tuple[list[dict], Counter]:
+    """Threads ready to be judged (as the engine's input) + a count per status."""
+    appeals, counts = [], Counter()
+    for discussion in discussions:
+        status = discussion_status(discussion, user_id)
+        if status is None:
+            continue
+        counts[status] += 1
+        if status != "appeal":
+            continue
+        notes = _human_notes(discussion)
+        position = notes[0].get("position") or {}
+        appeals.append({
+            "id": str(discussion.get("id")),
+            "notes": len(notes),          # snapshot: a reply added mid-run voids the verdict
+            "file": position.get("new_path"),
+            "line": position.get("new_line"),
+            "finding": notes[0].get("body", ""),
+            "thread": [{"role": "ai" if (n.get("author") or {}).get("id") == user_id
+                        else "developer",
+                        "author": (n.get("author") or {}).get("name"),
+                        "body": n.get("body", "")} for n in notes[1:]],
+        })
+    return appeals, counts
+
+
+def unresolved_accepts(discussions: list[dict], user_id) -> list[str]:
+    """Threads we accepted that GitLab still shows open — the resolve call failed
+    (e.g. 403). Retried on every appeal press, so they cannot get stuck."""
+    return [str(d.get("id")) for d in discussions
+            if discussion_status(d, user_id) == "accepted"]
+
+
+def valid_verdicts(result: dict, appeal_ids) -> dict:
+    """Engine output -> {id: (verdict, reason)}; anything malformed is dropped,
+    so a thread the model failed to judge simply stays open."""
+    out = {}
+    wanted = set(appeal_ids)
+    for v in (result or {}).get("verdicts") or []:
+        if not isinstance(v, dict):
+            continue
+        vid, verdict, reason = str(v.get("id")), v.get("verdict"), v.get("reason")
+        if vid in wanted and verdict in ("accept", "reject") and isinstance(reason, str) \
+                and reason.strip():
+            out[vid] = (verdict, reason.strip())
+    return out
+
+
+def appeal_reply_body(verdict: str, reason: str, engine_label: str) -> str:
+    if verdict == "accept":
+        head, marker = "✅ **理由成立**,這則就不用修了。", APPEAL_ACCEPT
+    else:
+        head, marker = "⚠️ **仍建議修正**", APPEAL_REJECT
+    return f"{head}\n\n{reason}\n\n{APPEAL_SIGNATURE} ({engine_label})\n{marker}"
+
+
+def appeal_summary_text(project: str, iid, web_url, judged: dict, counts_after: Counter) -> str:
+    accepted = sum(1 for v, _ in judged.values() if v == "accept")
+    rejected = len(judged) - accepted
+    text = f":scales: 申訴結果 `{project}` !{iid} — ✅ 理由成立 {accepted} · ⚠️ 仍建議修 {rejected}"
+    stuck = counts_after.get("accepted", 0)
+    if stuck:
+        text += (f"\n:warning: {stuck} 則判定成立但 GitLab 拒絕 resolve(權限不足?)—"
+                 f"請手動 resolve,或修好權限後再按一次「不用修」重試")
+    pending = counts_after.get("unanswered", 0)
+    if pending:
+        text += f"\n_(還有 {pending} 則 AI 留言沒人回覆)_"
+    if not open_findings(counts_after):
+        text += "\n全部 AI 留言都處理完了 :tada:"
+    if web_url:
+        text += f"\n{web_url}"
+    return text
+
+
+def open_findings(counts: Counter) -> int:
+    return sum(n for status, n in counts.items() if status != "closed")
