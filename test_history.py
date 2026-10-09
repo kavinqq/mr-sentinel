@@ -281,7 +281,7 @@ class TestRatingScore(unittest.TestCase):
     """Scores come from per-MR grades (history/rate.py), capped by findings."""
 
     def mrs(self, n):
-        return [{"mr_id": i, "reviewed": 1} for i in range(n)]
+        return [{"mr_id": i, "reviewed": 1, "created_at": "2026-10-01T00:00:00Z"} for i in range(n)]
 
     def ratings(self, n, grade=None, **per_cat):
         """mr_id -> category -> {score}: every category `grade`, or per category."""
@@ -300,14 +300,21 @@ class TestRatingScore(unittest.TestCase):
         self.assertIn("還沒有評分", r["explain"])
 
     def test_a_five_has_to_be_earned_many_times(self):
-        # 20 MRs all graded 5: (10×3 + 20×5) / 30 = 4.33 per item
+        # 20 MRs all graded 5: (3×3 + 20×5) / 23 = 4.74 per item — but under 30
+        # graded MRs, so mid+ at best
         r = score.person_report(self.mrs(20), [], [], CFG, 1, NOW, self.ratings(20, 5))
-        self.assertEqual(r["items"]["security"]["score"], 4.33)
-        self.assertEqual(r["score"], 34.7)
-        self.assertEqual(r["level"], "mid+")
+        self.assertEqual((r["items"]["security"]["score"], r["score"], r["level"]), (4.74, 37.9, "mid+"))
+        self.assertIsNone(r["sample"])
         r30 = score.person_report(self.mrs(30), [], [], CFG, 1, NOW, self.ratings(30, 5))
-        self.assertEqual((r30["items"]["security"]["score"], r30["score"], r30["level"]),
-                         (4.5, 36.0, "senior"))
+        self.assertEqual((r30["items"]["security"]["score"], r30["level"]), (4.82, "senior"))
+        few = score.person_report(self.mrs(6), [], [], CFG, 1, NOW, self.ratings(6, 3))
+        self.assertEqual((few["sample"], few["level"]), ("暫定", "junior"))   # all 3s = 24 < 25.5
+
+    def test_a_level_needs_recent_evidence(self):
+        old = [{**m, "created_at": "2026-05-01T00:00:00Z"} for m in self.mrs(20)]
+        r = score.person_report(old, [], [], CFG, 1, NOW, self.ratings(20, 5))
+        self.assertEqual(r["level"], "junior")
+        self.assertIn("近期評過分的 MR 0 < 2", r["next_level_misses"])
 
     def test_a_finding_caps_its_aspect_and_an_escape_lowers_it_again(self):
         fs = self.findings((0, "high", "correctness", False), (1, "medium", "correctness", True))
@@ -350,19 +357,21 @@ class TestRatingScore(unittest.TestCase):
     def test_tracks_and_the_fullstack_bonus(self):
         cfg = {**CFG, "required_items": []}
         def mrs(n, start, project):
-            return [{"mr_id": i, "reviewed": 1, "project": project} for i in range(start, start + n)]
+            return [{"mr_id": i, "reviewed": 1, "project": project, "created_at": "2026-10-01T00:00:00Z"}
+                    for i in range(start, start + n)]
         fe, be = mrs(5, 0, "g/frontend/web"), mrs(5, 10, "g/py_backend/api")
         rat = {**self.ratings(5, 4), **{i: {c: {"score": 4} for c in CATEGORIES} for i in range(10, 15)}}
         project_of = {m["mr_id"]: m["project"] for m in fe + be}
         base = score.person_report(fe + be, [], [], cfg, 1, NOW, rat)
         r = score.with_tracks(dict(base), fe + be, [], [], cfg, 1, rat, project_of)
         self.assertEqual(set(r["tracks"]), {"frontend", "backend"})
-        # each track (30 + 5×4)/15 = 3.33 -> 26.7; weaker track < 29: no bonus
-        self.assertEqual((r["tracks"]["frontend"]["score"], r["fullstack_bonus"], r["score"]),
-                         (26.7, 0.0, 26.7))
-        rich = {**cfg, "fullstack_min_score": 26}
-        r = score.with_tracks(dict(base), fe + be, [], [], rich, 1, rat, project_of)
-        self.assertEqual((r["fullstack_bonus"], r["score"]), (2.0, 28.7))
+        # each track (9 + 5×4)/8 = 3.63 -> 29.0, both ≥ 25.5: +2, shown but not for the level
+        self.assertEqual((r["tracks"]["frontend"]["score"], r["fullstack_bonus"], r["score"],
+                          r["score_before_bonus"]), (29.0, 2.0, 31.0, 29.0))
+        strict = {**cfg, "fullstack_min_score": 30}
+        r = score.with_tracks(dict(base), fe + be, [], [], strict, 1, rat, project_of)
+        self.assertEqual((r["fullstack_bonus"], r["score"]), (0.0, 29.0))
+        rich = cfg
         only_fe = score.with_tracks(score.person_report(fe, [], [], rich, 1, NOW, rat), fe, [], [],
                                     rich, 1, rat, project_of)
         self.assertEqual((only_fe["fullstack_bonus"], only_fe["tracks"]["backend"]["score"]), (0.0, None))
@@ -472,9 +481,9 @@ class TestTeamReport(DbCase):
         self.assertEqual((row["username"], row["reviewed_mrs"], row["findings"], row["excluded"]),
                          ("pk7", 5, 4, 1))
         # 4 high security findings, merged unfixed, MRs not rated yet:
-        # each min(3, cap 2) − 0.75 = 1.25 -> (10×3 + 4×1.25) / 14 = 2.5
-        self.assertEqual((row["items"]["security"]["score"], row["escaped"]), (2.5, 4))
-        self.assertEqual((row["score"], row["coverage"], row["provisional"]), (20.0, 1, True))
+        # each min(3, cap 2) − 0.75 = 1.25 -> (3×3 + 4×1.25) / 7 = 2.0
+        self.assertEqual((row["items"]["security"]["score"], row["escaped"]), (2.0, 4))
+        self.assertEqual((row["score"], row["coverage"], row["provisional"]), (16.0, 1, True))
         self.assertIsNone(row["items"]["performance"]["score"])        # 未評估, not 5
 
 
@@ -502,7 +511,7 @@ class TestRoles(DbCase):
         self.assertEqual(rows[-1]["author_id"], 7)             # listed after the ranked team
         avg = score.team_average(rows, CFG)
         self.assertIsNone(avg["security"])                     # the lead's findings are not in it
-        self.assertEqual(avg["correctness"], 2.42)             # (30 + 5 × 1.25) / 15
+        self.assertEqual(avg["correctness"], 1.91)             # (9 + 5 × 1.25) / 8
 
     def test_ranked_by_total_highest_first(self):
         from history import rate
@@ -625,9 +634,9 @@ class TestScan(DbCase):
         self.assertTrue(scan.needed(self.conn))
         result = self.run_scan(list_mrs)
         self.assertEqual([c[0] for c in calls], ["g/app", "g/web"])
-        self.assertEqual(result["days"], 90)                          # scoring window
+        self.assertEqual(result["days"], 180)                         # scoring window
         since = datetime.fromisoformat(calls[0][1].replace("Z", "+00:00"))
-        self.assertAlmostEqual((datetime.now(timezone.utc) - since).days, 90, delta=1)
+        self.assertAlmostEqual((datetime.now(timezone.utc) - since).days, 180, delta=1)
         self.assertEqual(result["projects"]["g/app"], {"mrs": 1, "findings": 1})
         self.assertEqual(db.get_state(self.conn, "mrs_updated_at:g/web"), "2026-09-01T00:00:00Z")
         self.assertFalse(scan.needed(self.conn))
@@ -765,7 +774,7 @@ class TestRate(DbCase):
         self.assertEqual(rate.latest(self.conn)[1]["security"]["score"], 4)
         self.assertEqual(rate.pending(self.conn, since), [])          # same head: done
         (row,) = score.team_report(self.conn, 1, CFG, NOW)
-        self.assertEqual((row["rated_mrs"], row["items"]["security"]["score"]), (1, 3.09))
+        self.assertEqual((row["rated_mrs"], row["items"]["security"]["score"]), (1, 3.25))
 
 
 class TestReleaseSlices(DbCase):
@@ -828,9 +837,9 @@ class TestScoreLog(DbCase):
                               "VALUES (1, 1, 'lead', '2026-10-09T00:00:00Z')")
         (person, team) = sorted(snapshot.record(self.conn, "覆核 note 1", "lead"),
                                 key=lambda e: e["gitlab_id"] == db.TEAM)
-        # 5 low correctness, merged unfixed, unrated: 3 − 0.25 each -> (30 + 13.75)/15;
-        # one excluded -> (30 + 11)/14 — clearing a false positive helps
-        self.assertEqual((person["old_score"], person["new_score"]), (23.3, 23.4))
+        # 5 low correctness, merged unfixed, unrated: 3 − 0.25 each -> (9 + 13.75)/8;
+        # one excluded -> (9 + 11)/7 — clearing a false positive helps
+        self.assertEqual((person["old_score"], person["new_score"]), (22.8, 22.9))
         row = self.conn.execute("SELECT trigger, actor FROM score_events ORDER BY id DESC LIMIT 1").fetchone()
         self.assertEqual(tuple(row), ("覆核 note 1", "lead"))
 

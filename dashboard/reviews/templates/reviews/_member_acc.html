@@ -3,7 +3,7 @@
     <span class="chev material-symbols-outlined" aria-hidden="true">chevron_right</span>
     <span><a class="ms-who" href="{% url 'person' r.author_id %}">{{ r.name|default:r.username }} <span class="handle">{{ r.username }}</span></a></span>
     <span>{% if r.ranked %}<span class="ms-tag {{ r.level|tag:'level' }}">{{ r.level|default:"資料不足" }}</span>{% else %}<span class="ms-tag {{ r.role|tag:'role' }}">{% if r.role == "departed" %}已離職{% else %}Team leader{% endif %}</span>{% endif %}</span>
-    <span class="ms-num ms-strong">{{ r.score|default_if_none:"—" }}{% if r.fullstack_bonus %}<span class="ms-tag c-green ms-bonus" title="前後端都達標的全端加分">全端 +{{ r.fullstack_bonus|floatformat:0 }}</span>{% endif %}</span>
+    <span class="ms-num ms-strong">{{ r.score|default_if_none:"—" }}{% if r.fullstack_bonus %}<span class="ms-tag c-green ms-bonus" title="前後端都達標的全端加分(等級用加分前的 {{ r.score_before_bonus }})">全端 +{{ r.fullstack_bonus|floatformat:0 }}</span>{% endif %}{% if r.sample %}<span class="ms-tag ms-bonus {{ r.sample|tag:'sample' }}" title="只有 {{ r.rated_mrs }} 個 MR 打過分">{{ r.sample }}</span>{% endif %}</span>
     <span class="ms-num" title="已打分 {{ r.rated_mrs }} / 個人 MR {{ r.own_mrs }}">{{ r.rated_mrs }}<span class="ms-of">/{{ r.own_mrs }}</span></span>
     {% for it in r.item_list %}{% if r.track_list %}<span aria-hidden="true"></span>{% else %}<span class="ms-num {{ it.score|item_cls:cfg.item_max }}">{% if it.score is None %}—{% else %}{{ it.score|floatformat:1 }}{% endif %}</span>{% endif %}{% endfor %}
     {% for t in r.track_list %}

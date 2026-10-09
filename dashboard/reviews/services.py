@@ -448,7 +448,7 @@ def validate_scoring(cfg) -> list[str]:
         return isinstance(v, (int, float)) and not isinstance(v, bool) and \
             (lo is None or v >= lo) and (hi is None or v <= hi)
 
-    for key in ("window_days", "min_reviewed_mrs", "followup_days", "item_max"):
+    for key in ("window_days", "recent_days", "min_reviewed_mrs", "followup_days", "item_max"):
         if key in cfg and not number(cfg[key], 1):
             errors.append(f"{key} 必須是 ≥ 1 的數字")
     if "prior_strength" in cfg and not number(cfg["prior_strength"], 0):
@@ -503,7 +503,7 @@ def validate_scoring(cfg) -> list[str]:
                     errors.append(f"{lv['level']}: 不認得的欄位 {', '.join(sorted(bad))}"
                                   f"(可用: {', '.join(score.GATES)})")
                 for key in ("max_high", "max_escaped", "max_confirmed_followups", "min_coverage",
-                            "min_mrs"):
+                            "min_mrs", "min_recent_mrs"):
                     v = lv.get(key)
                     if v is not None and not (isinstance(v, int) and not isinstance(v, bool)
                                               and v >= 0):

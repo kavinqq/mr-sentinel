@@ -18,7 +18,8 @@ DEFAULT_PATH = SCRIPT_DIR / "sentinel.db"     # see resolve_path() for the overr
 # the db (scoring_configs) so they can be tuned — and every change is a new
 # version. This is version 1, seeded by the first migration.
 DEFAULT_SCORING = {
-    "window_days": 90,
+    "window_days": 180,
+    "recent_days": 90,               # a level also needs fresh evidence (min_recent_mrs)
     "min_reviewed_mrs": 5,           # own, personal MRs; fewer -> no level ("資料不足")
     "followup_days": 30,             # a fix / new finding this soon after a feature ships counts
     # Each MR is graded 1-5 per category by the model (history/rate.py,
@@ -28,8 +29,9 @@ DEFAULT_SCORING = {
     "escape_increment": {"high": 0.75, "medium": 0.5, "low": 0.25},   # still there at merge
     "followup_increment": {"fix_mr": 0.75, "ai_refind": 0.75},        # confirmed by a human only
     # a person's item = (prior_strength × prior_score + Σ grades) / (prior_strength + n):
-    # 20 MRs all graded 5 give 4.33, 30 give 4.5 — a 5 has to be earned many times
-    "prior_strength": 10,
+    # with 3: 3 grades = half the score, 10 grades = 77% — enough that one or two
+    # MRs cannot decide an item, not so much that everyone reads as 3
+    "prior_strength": 3,
     "prior_score": 3,
     "item_max": 5,
     # without these assessed there is no level, only "資料不足"
@@ -38,17 +40,21 @@ DEFAULT_SCORING = {
     # matching no list falls into the track with an empty list). The total is the
     # tracks weighted by graded MRs, plus fullstack_bonus when both tracks have
     # min_reviewed_mrs graded MRs and the weaker one still reaches fullstack_min_score.
+    # The bonus is shown, never used for the level (that uses the score before it).
     "tracks": {"frontend": {"label": "前端", "match": ["/frontend/"]},
                "backend": {"label": "後端", "match": []}},
     "fullstack_bonus": 2.0,
-    "fullstack_min_score": 29.0,
+    "fullstack_min_score": 25.5,     # the weaker track still at mid
     # total = 8 × mean(assessed items), out of 40. Best level first; every gate must hold.
-    "levels": [{"level": "senior", "min_score": 36.0, "min_item": 4.25, "min_coverage": 8,
-                "min_mrs": 30, "max_high": 0, "max_escaped": 0, "max_confirmed_followups": 0},
-               {"level": "mid+", "min_score": 34.5, "min_item": 4.0, "min_coverage": 7,
-                "min_mrs": 15, "max_high": 0, "max_escaped": 1, "max_confirmed_followups": 0},
-               {"level": "mid", "min_score": 29.0, "min_item": 2.7, "min_coverage": 6,
-                "min_mrs": 5, "max_high": 1},
+    # (all 8 items at 3 = 24: mid asks for steadily better than "acceptable")
+    "levels": [{"level": "senior", "min_score": 34.0, "min_item": 4.0, "min_coverage": 8,
+                "min_mrs": 30, "min_recent_mrs": 2, "max_high": 0, "max_escaped": 0,
+                "max_confirmed_followups": 0},
+               {"level": "mid+", "min_score": 29.5, "min_item": 3.25, "min_coverage": 7,
+                "min_mrs": 15, "min_recent_mrs": 2, "max_high": 0, "max_escaped": 1,
+                "max_confirmed_followups": 0},
+               {"level": "mid", "min_score": 25.5, "min_item": 2.7, "min_coverage": 6,
+                "min_mrs": 5, "min_recent_mrs": 2, "max_high": 1},
                {"level": "junior", "min_score": None}],
 }
 

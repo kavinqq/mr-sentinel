@@ -54,6 +54,8 @@ TAG_COLORS = {
     "state:removed": "c-gray", "state:current": "c-green", "state:version": "c-indigo",
     "state:manual": "c-indigo", "state:auto": "c-teal", "state:pending": "c-amber",
     "state:level": "c-indigo",
+    # how far a score can be trusted
+    "sample:樣本少": "c-amber", "sample:暫定": "c-gray",
     # tracks
     "track:frontend": "c-cyan", "track:backend": "c-violet",
     # levels

@@ -75,6 +75,7 @@ GATES = {  # level key -> (stat, holds(stat, limit), why-not text)
     "min_item": ("min_item", lambda v, lim: v >= lim, "最弱一項 {v} < {lim}"),
     "min_coverage": ("coverage", lambda v, lim: v >= lim, "已評估面向 {v} < {lim}"),
     "min_mrs": ("mrs", lambda v, lim: v >= lim, "評過分的 MR {v} < {lim}"),
+    "min_recent_mrs": ("recent_mrs", lambda v, lim: v >= lim, "近期評過分的 MR {v} < {lim}"),
     "max_high": ("high", lambda v, lim: v <= lim, "high finding {v} 則 > {lim}"),
     "max_escaped": ("escaped", lambda v, lim: v <= lim, "merge 時沒修 {v} 則 > {lim}"),
     "max_confirmed_followups": ("confirmed_followups", lambda v, lim: v <= lim,
@@ -97,7 +98,8 @@ def level_misses(stats: dict, lv: dict) -> list[str]:
 def level_for(score: float, levels: list[dict], stats: dict | None = None) -> str:
     """The best level whose every gate holds; levels are ordered best first."""
     stats = {"high": 0, "escaped": 0, "confirmed_followups": 0, "clean_rate": 1.0,
-             "min_item": 99.0, "coverage": 99, "mrs": 10 ** 6, **(stats or {}), "score": score}
+             "min_item": 99.0, "coverage": 99, "mrs": 10 ** 6, "recent_mrs": 10 ** 6,
+             **(stats or {}), "score": score}
     for lv in levels:
         if not level_misses(stats, lv):
             return lv["level"]
@@ -236,7 +238,10 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
     stats = {"score": score or 0.0, "high": severities["high"], "escaped": escaped,
              "confirmed_followups": confirmed, "clean_rate": clean / n if n else 0.0,
              "min_item": round(min(assessed), 2) if assessed else 0.0,
-             "coverage": len(assessed), "mrs": rated_mrs}
+             "coverage": len(assessed), "mrs": rated_mrs,
+             "recent_mrs": sum(1 for m in own if ratings.get(m["mr_id"])
+                               and (m.get("created_at") or "") >= window_start(
+                                   {"window_days": cfg.get("recent_days", cfg["window_days"])}, now))}
     missing = [ITEMS[c] for c in cfg.get("required_items", []) if items[c]["score"] is None]
     top = max_total(cfg)
     if not own:
@@ -272,8 +277,14 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
         "stats": stats,
         "formula_version": version,
         "explain": explain,
+        "sample": sample_label(rated_mrs),
         **decide_level(score, stats, missing, rated_mrs, cfg),
     }
+
+
+def sample_label(rated_mrs: int) -> str | None:
+    """How much the score can be trusted: <5 graded MRs is thin, <15 provisional."""
+    return "樣本少" if rated_mrs < 5 else "暫定" if rated_mrs < 15 else None
 
 
 def decide_level(score, stats: dict, missing: list, rated_mrs: int, cfg: dict) -> dict:
@@ -330,9 +341,13 @@ def with_tracks(report: dict, mrs: list[dict], findings: list[dict], followups: 
         if len(enough) == len(out) and min(t["score"] for t in enough) >= cfg.get(
                 "fullstack_min_score", max_total(cfg)):
             bonus = cfg.get("fullstack_bonus", 0.0)
+        base = round(total, 1)
         total = round(min(max_total(cfg), total + bonus), 1)
-    report.update(tracks=out, fullstack_bonus=bonus, score=total,
-                  **decide_level(total, report["stats"], report["missing_items"],
+    else:
+        base = total
+    # the level reads the score *before* the bonus: breadth is shown, it does not promote
+    report.update(tracks=out, fullstack_bonus=bonus, score=total, score_before_bonus=base,
+                  **decide_level(base, report["stats"], report["missing_items"],
                                  report["rated_mrs"], cfg))
     return report
 

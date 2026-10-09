@@ -26,8 +26,10 @@
       <h4>3 · 個人每項與總分</h4>
       <p class="ms-method-formula">每項 = ( {{ cfg.prior_strength }} × {{ cfg.prior_score }} + Σ 各 MR 分數 ) ÷ ( {{ cfg.prior_strength }} + MR 數 )</p>
       <ul>
-        <li>MR 越少越接近 {{ cfg.prior_score }}:20 個 MR 全拿 5 也只有 4.33</li>
+        <li>等於先放 {{ cfg.prior_strength }} 個 {{ cfg.prior_score }} 分:MR 越少越接近 {{ cfg.prior_score }},幾個 MR 定不了生死</li>
+        <li>打過分的 MR 少於 5 個標「樣本少」,少於 15 個標「暫定」</li>
         <li>總分 = 8 × 已評估各項的平均(滿分 {{ max_total|floatformat:0 }}),沒評估過的面向顯示「—」</li>
+        <li>前端、後端各算一條,總分依打過分的 MR 加權;兩條都達 {{ cfg.fullstack_min_score }} 分另加 {{ cfg.fullstack_bonus|floatformat:0 }}(只顯示,不影響等級)</li>
         <li>{% for k in cfg.required_items %}{{ categories|get:k }}{% if not forloop.last %}、{% endif %}{% endfor %}沒評估到就是「資料不足」</li>
       </ul>
     </section>
@@ -35,12 +37,12 @@
   <div class="ms-list-wrap" style="margin-top:16px">
     <table class="ms-list ms-levels">
       <caption class="sr-only">等級門檻</caption>
-      <thead><tr><th>等級</th><th class="ms-num">總分 ≥</th><th class="ms-num">最弱一項 ≥</th><th class="ms-num">已評估面向 ≥</th><th class="ms-num">評過分的 MR ≥</th><th>其他條件</th></tr></thead>
+      <thead><tr><th>等級</th><th class="ms-num">總分 ≥</th><th class="ms-num">最弱一項 ≥</th><th class="ms-num">已評估面向 ≥</th><th class="ms-num">評過分的 MR ≥</th><th class="ms-num">近 {{ cfg.recent_days }} 天 ≥</th><th>其他條件</th></tr></thead>
       <tbody>{% for lv in cfg.levels %}
         <tr><td><span class="ms-tag {{ lv.level|tag:'level' }}">{{ lv.level }}</span></td>
-          {% if lv.min_score is None %}<td colspan="5" class="ms-dim">未達以上任一級</td>{% else %}
+          {% if lv.min_score is None %}<td colspan="6" class="ms-dim">未達以上任一級</td>{% else %}
           <td class="ms-num">{{ lv.min_score }}</td><td class="ms-num">{{ lv.min_item|default_if_none:"—" }}</td>
-          <td class="ms-num">{{ lv.min_coverage|default_if_none:"—" }}</td><td class="ms-num">{{ lv.min_mrs|default_if_none:"—" }}</td>
+          <td class="ms-num">{{ lv.min_coverage|default_if_none:"—" }}</td><td class="ms-num">{{ lv.min_mrs|default_if_none:"—" }}</td><td class="ms-num">{{ lv.min_recent_mrs|default_if_none:"—" }}</td>
           <td>{% if lv.max_high is not None %}High ≤ {{ lv.max_high }}{% endif %}{% if lv.max_escaped is not None %} · merge 沒修 ≤ {{ lv.max_escaped }}{% endif %}{% if lv.max_confirmed_followups is not None %} · 確認的後續 bug ≤ {{ lv.max_confirmed_followups }}{% endif %}{% if lv.min_clean_rate is not None %} · 乾淨 MR ≥ {% widthratio lv.min_clean_rate 1 100 %}%{% endif %}</td>{% endif %}</tr>
       {% endfor %}</tbody>
     </table>

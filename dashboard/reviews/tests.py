@@ -75,9 +75,9 @@ class TestPages(DashboardCase):
         self.assertEqual(resp.status_code, 200)
         (row,) = resp.context["ranked"]
         # 5 high security findings, merged unfixed, MRs not rated yet: each
-        # min(3, cap 2) − 0.75 -> (30 + 5 × 1.25) / 15 = 2.42; only security assessed
-        self.assertEqual((row["username"], row["reviewed_mrs"], row["score"]), ("pk7", 5, 19.3))
-        self.assertEqual((row["items"]["security"]["score"], row["coverage"]), (2.42, 1))
+        # min(3, cap 2) − 0.75 -> (9 + 5 × 1.25) / 8 = 1.91; only security assessed
+        self.assertEqual((row["username"], row["reviewed_mrs"], row["score"]), ("pk7", 5, 15.2))
+        self.assertEqual((row["items"]["security"]["score"], row["coverage"]), (1.91, 1))
         self.assertContains(resp, "小明")
 
     def test_person_page_and_gitlab_links(self):
