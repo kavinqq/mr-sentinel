@@ -25,9 +25,23 @@ TEXT_MAX = 400
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
+def grade_reasons(row: dict, ratings: dict, per_item: int = 4) -> dict:
+    """category -> a few graded MRs' "score: reason", lowest grades first."""
+    out = {}
+    for cat in row["items"]:
+        graded = [(r[cat]["score"], r[cat]["reason"]) for mid, r in ratings.items()
+                  if mid in set(row["mr_ids"]) and cat in r and r[cat]["score"] is not None]
+        graded.sort(key=lambda g: g[0])
+        if graded:
+            out[cat] = [f"{s}: {reason}" for s, reason in graded[:per_item]]
+    return out
+
+
 def profile(row: dict, findings: list[dict], followups: list[dict], team: dict,
-            cfg: dict, mrs: dict) -> dict:
+            cfg: dict, mrs: dict, ratings: dict | None = None) -> dict:
     """Everything the model may say anything about — and nothing else."""
+    ratings = ratings or {}
+
     def mr_ref(mr_id):
         m = mrs.get(mr_id) or {}
         return f"{(m.get('project') or '').rsplit('/', 1)[-1]}!{m.get('iid')}"
@@ -44,9 +58,12 @@ def profile(row: dict, findings: list[dict], followups: list[dict], team: dict,
         "clean_mr_rate": row["clean_rate"],
         "severities": row["severities"],
         "escaped": row["escaped"],
+        "coverage": row["coverage"], "rated_mrs": row["rated_mrs"], "own_mrs": row["own_mrs"],
         "items": {k: {"label": v["label"], "score": v["score"], "team_avg": team.get(k),
-                      "findings": v["count"], "followups": v["followups"]}
+                      "grades": v["n"], "findings": v["count"], "followups": v["followups"]}
                   for k, v in row["items"].items()},
+        # what the per-MR graders said, so the note can quote them
+        "grade_reasons": grade_reasons(row, ratings),
         "followups": [{"kind": fu["kind"], "file": fu.get("file"),
                        "confirmed": fu.get("verdict") == "confirmed",
                        "counts_under": score.followup_category(fu)} for fu in followups],
@@ -99,6 +116,7 @@ def profiles(conn) -> dict[int, dict]:
     attributed = score.attribution(conn, cfg)
     rows = score.team_report(conn, version, cfg, attributed=attributed)
     team = score.team_average(rows, cfg)
+    ratings = score.latest_ratings(conn)
     followups = score.annotated_followups(conn, attributed["findings"] + attributed["unattributed"])
     out = {}
     for row in rows:
@@ -109,7 +127,7 @@ def profiles(conn) -> dict[int, dict]:
                 and not f["excluded"] and not f["appeal_accepted"]]
         own = set(row["mr_ids"])
         fus = [fu for fu in followups if fu["feature_mr_id"] in own and fu.get("verdict") != "unrelated"]
-        out[pid] = profile(row, mine, fus, team, cfg, attributed["mrs"])
+        out[pid] = profile(row, mine, fus, team, cfg, attributed["mrs"], ratings)
     return out
 
 

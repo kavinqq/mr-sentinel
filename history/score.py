@@ -72,10 +72,13 @@ def uncounted_notes(raw: list[dict], reviews: list[dict]) -> set[str]:
 
 GATES = {  # level key -> (stat, holds(stat, limit), why-not text)
     "min_score": ("score", lambda v, lim: v >= lim, "總分 {v} < {lim}"),
-    "max_high": ("high", lambda v, lim: v <= lim, "high finding {v} 則 > {lim}"),
-    "max_fix_mr": ("fix_mr", lambda v, lim: v <= lim, "上線後被 fix {v} 次 > {lim}"),
-    "max_escaped": ("escaped", lambda v, lim: v <= lim, "merge 時沒修 {v} 則 > {lim}"),
     "min_item": ("min_item", lambda v, lim: v >= lim, "最弱一項 {v} < {lim}"),
+    "min_coverage": ("coverage", lambda v, lim: v >= lim, "已評估面向 {v} < {lim}"),
+    "min_mrs": ("mrs", lambda v, lim: v >= lim, "評過分的 MR {v} < {lim}"),
+    "max_high": ("high", lambda v, lim: v <= lim, "high finding {v} 則 > {lim}"),
+    "max_escaped": ("escaped", lambda v, lim: v <= lim, "merge 時沒修 {v} 則 > {lim}"),
+    "max_confirmed_followups": ("confirmed_followups", lambda v, lim: v <= lim,
+                                "確認的後續 bug {v} 筆 > {lim}"),
     "min_clean_rate": ("clean_rate", lambda v, lim: v >= lim,
                        "乾淨 MR {v:.0%} < {lim:.0%}"),
 }
@@ -93,9 +96,8 @@ def level_misses(stats: dict, lv: dict) -> list[str]:
 
 def level_for(score: float, levels: list[dict], stats: dict | None = None) -> str:
     """The best level whose every gate holds; levels are ordered best first."""
-    stats = {"high": 0, "fix_mr": 0, "escaped": 0, "clean_rate": 1.0, "min_item": 99.0,
-             **(stats or {}),
-             "score": score}
+    stats = {"high": 0, "escaped": 0, "confirmed_followups": 0, "clean_rate": 1.0,
+             "min_item": 99.0, "coverage": 99, "mrs": 10 ** 6, **(stats or {}), "score": score}
     for lv in levels:
         if not level_misses(stats, lv):
             return lv["level"]
@@ -106,20 +108,8 @@ ITEMS = CATEGORIES          # one item per category, each out of cfg["item_max"]
 ESCAPE_STATUSES = {"unanswered", "appeal", "rejected", "accepted"}   # not closed on GitLab
 
 
-def finding_weight(f: dict, cfg: dict) -> float:
-    """What one counted finding costs: severity × category multiplier, and that
-    again (× escape_multiplier) if it was still there when the MR merged."""
-    base = (cfg["severity_weight"].get(f.get("severity") or "low", 0.0)
-            * cfg["category_multiplier"].get(f["category"], 1.0))
-    return base * (1 + cfg.get("escape_multiplier", 0.0)) if f.get("escaped") else base
-
-
-def followup_weight(fu: dict, cfg: dict) -> float:
-    """A guessed follow-up counts `unconfirmed_followup_factor`, a confirmed one
-    in full, one a human marked unrelated not at all."""
-    factor = {"confirmed": 1.0, "unrelated": 0.0}.get(
-        fu.get("verdict"), cfg.get("unconfirmed_followup_factor", 1.0))
-    return cfg["followup_weight"].get(fu["kind"], 0.0) * factor
+def window_start(cfg: dict, now: datetime | None = None) -> str:
+    return db.utc((now or datetime.now(timezone.utc)) - timedelta(days=cfg["window_days"]))
 
 
 def followup_category(fu: dict) -> str:
@@ -129,16 +119,76 @@ def followup_category(fu: dict) -> str:
     return category if category in CATEGORIES else "correctness"
 
 
-def item_scores(weights: dict, n: int, cfg: dict) -> dict:
-    """{item: {label, score, deduction}} from per-item weight sums over `n`
-    reviewed MRs. The deduction shown is capped at the item's max, so that
-    item_max × items − Σ deductions is exactly the total."""
-    k, top = cfg["deduction_per_weight"], cfg["item_max"]
+def finding_cap(f: dict, cfg: dict) -> float:
+    """The best grade an aspect can keep with this finding on the MR."""
+    return cfg["finding_cap"].get(f.get("severity") or "low", 4)
+
+
+def observations(own_mrs: list[dict], findings: list[dict], followups: list[dict],
+                 ratings: dict, cfg: dict) -> list[dict]:
+    """One grade per (MR, category) the person can be judged on — the unit the
+    item score averages. Each is
+
+        min(AI rating, cap of the findings it kept) − merge-time / follow-up increments
+
+    floored at 1. An MR with a finding but no rating (not back-filled yet, or a
+    rating that said N/A) still yields the finding's cap. A finding of theirs
+    found on someone else's / a release MR is one observation of its own.
+    Unconfirmed follow-ups are shown elsewhere but never move a grade."""
+    inc_escape, inc_followup = cfg["escape_increment"], cfg["followup_increment"]
+    by_mr: dict[int, list] = {}
+    loose = []
+    own_ids = {m["mr_id"] for m in own_mrs}
+    for f in findings:
+        if f["category"] not in CATEGORIES:
+            continue                                  # not classified yet: listed, not scored
+        home = f.get("owner_mr_id") or (f["mr_id"] if f["mr_id"] in own_ids else None)
+        (by_mr.setdefault(home, []) if home in own_ids else loose).append(f)
+    confirmed = [fu for fu in followups if fu.get("verdict") == "confirmed"]
+    out = []
+    for m in own_mrs:
+        rated = ratings.get(m["mr_id"], {})
+        for cat in CATEGORIES:
+            fs = [f for f in by_mr.get(m["mr_id"], []) if f["category"] == cat]
+            fus = [fu for fu in confirmed if fu["feature_mr_id"] == m["mr_id"]
+                   and followup_category(fu) == cat]
+            r = (rated.get(cat) or {}).get("score")
+            if r is None and not fs and not fus:
+                continue                              # nothing to judge this aspect on
+            # unrated (not back-filled yet, or N/A): a finding can only pull it down
+            base = r if r is not None else cfg["prior_score"]
+            if fs:
+                base = min(base, *(finding_cap(f, cfg) for f in fs))
+            # the same root cause escaping and coming back costs once (the larger)
+            minus = sum(inc_escape.get(f.get("severity") or "low", 0) for f in fs if f.get("escaped"))
+            minus += sum(inc_followup.get(fu["kind"], 0) for fu in fus)
+            out.append({"mr_id": m["mr_id"], "category": cat, "created_at": m.get("created_at"),
+                        "rating": r, "value": max(1.0, base - minus), "findings": len(fs),
+                        "followups": len(fus)})
+    for f in loose:
+        minus = inc_escape.get(f.get("severity") or "low", 0) if f.get("escaped") else 0
+        base = min(cfg["prior_score"], finding_cap(f, cfg))
+        out.append({"mr_id": None, "category": f["category"], "created_at": f.get("created_at"),
+                    "rating": None, "value": max(1.0, base - minus),
+                    "findings": 1, "followups": 0})
+    return out
+
+
+def item_scores(obs: list[dict], cfg: dict) -> dict:
+    """{item: {label, score, n, findings, followups}}; score None = 未評估.
+    Each item shrinks toward the prior (3, "acceptable") with the weight of
+    `prior_strength` virtual MRs — a handful of 5s cannot make a 5."""
+    k, prior = cfg["prior_strength"], cfg["prior_score"]
     out = {}
     for item in ITEMS:
-        deduction = min(top, k * weights.get(item, 0.0) / n)
-        out[item] = {"label": ITEMS[item], "deduction": round(deduction, 2),
-                     "score": round(top - deduction, 1)}
+        mine = [o for o in obs if o["category"] == item]
+        n = len(mine)
+        exact = (k * prior + sum(o["value"] for o in mine)) / (k + n) if n else None
+        out[item] = {"label": ITEMS[item], "n": n, "exact": exact,
+                     "score": round(exact, 2) if n else None,
+                     "rated": sum(1 for o in mine if o["rating"] is not None),
+                     "count": sum(o["findings"] for o in mine),
+                     "followups": sum(o["followups"] for o in mine)}
     return out
 
 
@@ -146,80 +196,89 @@ def max_total(cfg: dict) -> float:
     return cfg["item_max"] * len(ITEMS)
 
 
-def total_score(weights: dict, n: int, cfg: dict) -> float:
-    return round(sum(v["score"] for v in item_scores(weights, n, cfg).values()), 1)
+def total_score(items: dict, cfg: dict) -> float | None:
+    """8 × the mean of the assessed items (so it reads out of 40); None if none."""
+    assessed = [v["exact"] for v in items.values() if v["exact"] is not None]
+    return round(len(ITEMS) * sum(assessed) / len(assessed), 1) if assessed else None
 
 
 def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
-                  cfg: dict, version: int, now: datetime | None = None) -> dict:
+                  cfg: dict, version: int, now: datetime | None = None,
+                  ratings: dict | None = None) -> dict:
     """One author's MRs (in window), their effective findings and their followups."""
-    now = now or datetime.now(timezone.utc)
+    ratings = ratings or {}
     reviewed = [m for m in mrs if m["reviewed"]]
+    own = [m for m in reviewed if not m.get("release")]          # release ratings are nobody's
     counted = [f for f in findings if not f["excluded"] and not f["appeal_accepted"]]
     scored = [f for f in counted if f["category"] in CATEGORIES]
+    live = [fu for fu in followups if fu.get("verdict") != "unrelated"]
 
-    weights = {c: 0.0 for c in CATEGORIES}
-    counts = {c: 0 for c in CATEGORIES}
     severities = {"high": 0, "medium": 0, "low": 0}
     for f in scored:
-        weights[f["category"]] += finding_weight(f, cfg)
-        counts[f["category"]] += 1
         sev = f.get("severity") or "low"
         severities[sev] = severities.get(sev, 0) + 1
-    findings_w = sum(weights.values())
-
     follow_counts = {"fix_mr": 0, "ai_refind": 0}
-    follow_w = 0.0
-    live = [fu for fu in followups if fu.get("verdict") != "unrelated"]
     for fu in live:
         follow_counts[fu["kind"]] = follow_counts.get(fu["kind"], 0) + 1
-        w = followup_weight(fu, cfg)
-        weights[followup_category(fu)] += w
-        follow_w += w
 
+    obs = observations(own, scored, live, ratings, cfg)
+    items = item_scores(obs, cfg)
+    assessed = [v["exact"] for v in items.values() if v["exact"] is not None]
+    score = total_score(items, cfg)
+    rated_mrs = sum(1 for m in own if ratings.get(m["mr_id"]))
     n = len(reviewed)
-    items = item_scores(weights, n, cfg) if n else {}
-    for c in items:
-        items[c]["count"] = counts[c]
-        items[c]["followups"] = sum(1 for fu in live if followup_category(fu) == c)
-    score = total_score(weights, n, cfg) if n else None
     dirty = {f.get("mr_id") for f in counted}
     clean = sum(1 for m in reviewed if m["mr_id"] not in dirty)
     escaped = sum(1 for f in scored if f.get("escaped"))
-    stats = {"score": score, "high": severities["high"], "fix_mr": follow_counts["fix_mr"],
-             "escaped": escaped, "clean_rate": clean / n if n else 0.0,
-             "min_item": min((v["score"] for v in items.values()), default=0.0)}
-    level = level_for(score, cfg["levels"], stats) if n >= cfg["min_reviewed_mrs"] else None
-    # what stands between them and the next level up — shown, so a level is never a mystery
+    confirmed = sum(1 for fu in live if fu.get("verdict") == "confirmed")
+    stats = {"score": score or 0.0, "high": severities["high"], "escaped": escaped,
+             "confirmed_followups": confirmed, "clean_rate": clean / n if n else 0.0,
+             "min_item": round(min(assessed), 2) if assessed else 0.0,
+             "coverage": len(assessed), "mrs": rated_mrs}
+    missing = [ITEMS[c] for c in cfg.get("required_items", []) if items[c]["score"] is None]
+    level = None
+    # a level needs enough *graded* MRs, not just enough MRs
+    if rated_mrs >= cfg["min_reviewed_mrs"] and not missing and score is not None:
+        level = level_for(score, cfg["levels"], stats)
     names = [lv["level"] for lv in cfg["levels"]]
     above = names.index(level) - 1 if level in names else -1
     next_level = cfg["levels"][above] if above >= 0 else None
     top = max_total(cfg)
+    if not own:
+        explain = "沒有被 review 過的個人 MR"
+    elif missing:
+        explain = f"資料不足:{'、'.join(missing)} 還沒有評分"
+    elif rated_mrs < cfg["min_reviewed_mrs"]:
+        explain = f"資料不足:只有 {rated_mrs} 個 MR 打過分(要 {cfg['min_reviewed_mrs']} 個)"
+    else:
+        explain = (f"{len(assessed)}/8 項已評估 · {rated_mrs}/{len(own)} 個 MR 已評分"
+                   + ("(暫定)" if len(assessed) < len(ITEMS) else ""))
     return {
         "reviewed_mrs": n,
+        "own_mrs": len(own),
+        "rated_mrs": rated_mrs,
         "findings": len(counted),
         "unclassified": len(counted) - len(scored),
         "escaped": escaped,
+        "confirmed_followups": confirmed,
         "excluded": sum(1 for f in findings if f["excluded"]),
         "appeal_accepted": sum(1 for f in findings if f["appeal_accepted"] and not f["excluded"]),
         "severities": severities,
         "followups": follow_counts,
-        "finding_weight": round(findings_w, 2),
-        "followup_weight": round(follow_w, 2),
         "score": score,
         "max_score": top,
+        "coverage": len(assessed),
+        "provisional": len(assessed) < len(ITEMS),
+        "missing_items": missing,
         "items": items,
-        "weights": {k: round(v, 2) for k, v in weights.items()},
+        "observations": obs,
         "level": level,
         "clean_mrs": clean,
         "clean_rate": round(clean / n, 2) if n else None,
         "next_level": next_level and next_level["level"],
         "next_level_misses": level_misses(stats, next_level) if next_level else [],
         "formula_version": version,
-        "explain": (f"{top:g} − " + " − ".join(f"{v['label']} {v['deduction']:.1f}"
-                                               for v in items.values() if v["deduction"])
-                    + f" = {score}" if n and score < top else
-                    f"{top:g}(沒有任何扣分)" if n else "沒有被 review 過的 MR"),
+        "explain": explain,
     }
 
 
@@ -364,6 +423,7 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
     findings = [f for f in attributed["findings"] if f["in_window"]]
     excluded_notes = attributed["uncounted_notes"]
     followups = annotated_followups(conn, attributed["findings"] + attributed["unattributed"])
+    ratings = latest_ratings(conn)
 
     people: dict[int, dict] = {}
     # people added by hand appear even before their first MR
@@ -399,7 +459,7 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
                    fu["source_ref"] in excluded_notes
                    or finding_owner.get(fu["source_ref"]) == person["author_id"]))]
         report = person_report(person["mrs"] + person.get("release_mrs", []), mine, fus, cfg,
-                               version, now)
+                               version, now, ratings)
         report["release_mrs"] = len(person.get("release_mrs", []))
         # which MRs the score stood on (own + credited releases), for the drill-down
         report["mr_ids"] = [m["mr_id"] for m in person["mrs"] + person.get("release_mrs", [])]
@@ -415,25 +475,29 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
     return out
 
 
-def team_pool(rows: list[dict]) -> tuple[dict, int]:
-    """Σ per-item weight and Σ reviewed MRs over ranked people. Pooled, so one
-    person with two MRs cannot skew the team."""
-    ranked = [r for r in rows if r["ranked"] and r["reviewed_mrs"]]
-    weights = {item: sum(r["weights"].get(item, 0) for r in ranked) for item in ITEMS}
-    return weights, sum(r["reviewed_mrs"] for r in ranked)
+def team_items(rows: list[dict], cfg: dict) -> dict:
+    """The team's items from everyone ranked's observations, pooled."""
+    obs = [o for r in rows if r["ranked"] for o in r.get("observations", [])]
+    return item_scores(obs, cfg)
 
 
 def team_score(rows: list[dict], cfg: dict) -> float | None:
-    weights, mrs = team_pool(rows)
-    return total_score(weights, mrs, cfg) if mrs else None
+    return total_score(team_items(rows, cfg), cfg)
 
 
 def team_average(rows: list[dict], cfg: dict) -> dict:
-    """{item: score} for the team — the radar's comparison line."""
-    weights, mrs = team_pool(rows)
-    return {k: v["score"] for k, v in item_scores(weights, mrs, cfg).items()} if mrs else {}
+    """{item: score} for the team — the radar's comparison line (None = 未評估)."""
+    return {k: v["score"] for k, v in team_items(rows, cfg).items()}
 
 
 def per_mr_profile(row: dict) -> dict:
     """One person's {item: score} (same axes as team_average)."""
     return {k: v["score"] for k, v in row["items"].items()}
+
+
+def latest_ratings(conn) -> dict[int, dict[str, dict]]:
+    """mr_id -> category -> the newest rating (history/rate.py writes them)."""
+    out: dict[int, dict] = {}
+    for r in conn.execute("SELECT * FROM mr_ratings ORDER BY rated_at, id"):
+        out.setdefault(r["mr_id"], {})[r["category"]] = dict(r)
+    return out

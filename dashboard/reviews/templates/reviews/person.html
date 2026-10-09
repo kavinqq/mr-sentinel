@@ -1,4 +1,4 @@
-{% extends "admin/base.html" %}
+{% extends "admin/base_site.html" %}
 {% load sentinel %}
 {% block title %}{{ title }} | {{ site_title }}{% endblock %}
 
@@ -22,12 +22,12 @@
   {% if summary %}
   <div class="ms-stats">
     <div class="ms-stat"><div class="k">等級</div>
-      <div class="v" style="font-size:1.25rem">{% if summary.ranked %}<span class="ms-level"><span class="ms-dot {{ summary.level|level_dot }}"></span>{{ summary.level|default:"資料不足" }}</span>{% else %}Team leader{% endif %}</div>
-      <div class="d">{% if not summary.ranked %}不排入評分{% elif summary.next_level %}差 {{ summary.next_level }}:{{ summary.next_level_misses|join:"、" }}{% elif summary.level %}最高等級{% else %}被 review 的 MR 不足 {{ cfg.min_reviewed_mrs }} 個{% endif %}</div></div>
-    <div class="ms-stat"><div class="k">{% if summary.ranked %}分數{% else %}參考分數{% endif %}</div><div class="v">{{ summary.score|default_if_none:"—" }}<span class="ms-dim" style="font-size:1rem"> / {{ max_total|floatformat:0 }}</span></div><div class="d">8 項 × {{ cfg.item_max|floatformat:0 }} 分 · 越高越好</div></div>
-    <div class="ms-stat"><div class="k">被 review 的 MR</div><div class="v">{{ summary.reviewed_mrs }}</div><div class="d">計分 finding {{ summary.findings }} · 乾淨 {{ summary.clean_mrs }}{% if summary.clean_rate is not None %}({% widthratio summary.clean_rate 1 100 %}%){% endif %}</div></div>
-    <div class="ms-stat"><div class="k">後續 bug(推估)</div><div class="v">{{ summary.followups.fix_mr|default:0 }} / {{ summary.followups.ai_refind|default:0 }}</div><div class="d">fix MR / AI 再次抓到</div></div>
-    <div class="ms-stat"><div class="k">不計分</div><div class="v ms-dim">{{ summary.excluded }} / {{ summary.appeal_accepted }}</div><div class="d">誤判 / 申訴成立</div></div>
+      <div class="v" style="font-size:1.25rem">{% if summary.ranked %}<span class="ms-level"><span class="ms-dot {{ summary.level|level_dot }}"></span>{{ summary.level|default:"資料不足" }}</span>{% else %}{{ role_label }}{% endif %}</div>
+      <div class="d">{% if not summary.ranked %}不排入評分{% elif summary.next_level %}差 {{ summary.next_level }}:{{ summary.next_level_misses|join:"、" }}{% elif summary.level %}最高等級{% else %}{{ summary.explain }}{% endif %}</div></div>
+    <div class="ms-stat"><div class="k">{% if summary.ranked %}總分{% else %}參考分數{% endif %}</div><div class="v">{{ summary.score|default_if_none:"—" }}<span class="ms-dim" style="font-size:1rem"> / {{ max_total|floatformat:0 }}</span></div><div class="d">{{ summary.coverage }}/8 項已評估{% if summary.provisional %} · 暫定{% endif %}</div></div>
+    <div class="ms-stat"><div class="k">已打分的 MR</div><div class="v">{{ summary.rated_mrs }}<span class="ms-dim" style="font-size:1rem"> / {{ summary.own_mrs }}</span></div><div class="d">個人 MR · 乾淨 {{ summary.clean_mrs }}{% if summary.clean_rate is not None %}({% widthratio summary.clean_rate 1 100 %}%){% endif %}</div></div>
+    <div class="ms-stat"><div class="k">finding</div><div class="v">{{ summary.findings }}</div><div class="d">merge 時沒修 {{ summary.escaped }} · 誤判 {{ summary.excluded }} · 申訴成立 {{ summary.appeal_accepted }}</div></div>
+    <div class="ms-stat"><div class="k">後續 bug</div><div class="v">{{ summary.confirmed_followups }}<span class="ms-dim" style="font-size:1rem"> / {{ summary.followups.fix_mr|add:summary.followups.ai_refind }}</span></div><div class="d">已確認 / 推估</div></div>
   </div>
   {% else %}
   <div class="ms-info">近 {{ cfg.window_days }} 天沒有 MR,所以沒有評分;下面是全部的歷史紀錄。</div>
@@ -46,33 +46,38 @@
   <div class="ms-cols">
     <section class="ms-panel">
       <h3>各項雷達</h3>
-      <p class="ms-sub">各項分數(每項滿分 {{ cfg.item_max|floatformat:0 }}),越靠外越好 · 灰色是團隊平均</p>
+      <p class="ms-sub">每項滿分 {{ cfg.item_max|floatformat:0 }},越外圈越好 · 灰色虛線是團隊 · 沒有點的軸是還沒評估</p>
       {% if radar %}<div class="ms-radar"><canvas class="chart" data-type="radar" data-value="{{ radar.data }}" data-options="{{ radar.options }}" role="img" aria-label="各項分數與團隊平均的比較,數值見右側表格"></canvas></div>
       {% else %}<p class="ms-dim">近 {{ cfg.window_days }} 天沒有被 review 的 MR</p>{% endif %}
     </section>
     <section class="ms-panel">
       <h3>各項分數</h3>
-      <p class="ms-sub">每項滿分 {{ cfg.item_max|floatformat:0 }} · {{ summary.explain }}{% if summary.escaped %} · merge 時沒修 {{ summary.escaped }} 則(×2){% endif %}{% if summary.unclassified %} · 待分類 {{ summary.unclassified }} 則不計分{% endif %}</p>
-      <table class="ms-mini">
+      <p class="ms-sub">每項滿分 {{ cfg.item_max|floatformat:0 }},向 {{ cfg.prior_score }} 收縮 · 「—」= 還沒評估{% if summary.unclassified %} · 待分類 {{ summary.unclassified }} 則不計分{% endif %}</p>
+      <table class="ms-mini ms-items">
+        <thead><tr><th>面向</th><th aria-hidden="true"></th><th class="ms-num">分數</th><th class="ms-num">評分筆數</th><th class="ms-num">finding</th></tr></thead>
         <tbody>{% for it in items %}
-          <tr><td style="width:30%">{{ it.label }}</td><td><div class="ms-bar" aria-hidden="true"><span style="width:{% widthratio it.score cfg.item_max 100 %}%"></span></div></td>
-              <td class="ms-num {{ it.score|item_cls:cfg.item_max }}" style="width:48px">{{ it.score }}</td><td class="ms-num ms-dim" style="width:150px;white-space:nowrap">{% if it.deduction %}扣 {{ it.deduction|floatformat:1 }} · {{ it.count }} 則{% if it.followups %} + 後續 {{ it.followups }}{% endif %}{% else %}—{% endif %}</td></tr>
+          <tr><td>{{ it.label }}</td>
+              <td>{% if it.score is not None %}<div class="ms-bar" aria-hidden="true"><span style="width:{% widthratio it.score cfg.item_max 100 %}%"></span></div>{% endif %}</td>
+              <td class="ms-num {{ it.score|item_cls:cfg.item_max }}">{{ it.score|default_if_none:"—" }}</td>
+              <td class="ms-num">{{ it.n }}{% if it.n %}<span class="ms-of">(AI {{ it.rated }})</span>{% endif %}</td>
+              <td class="ms-num">{{ it.count }}{% if it.followups %}<span class="ms-of"> + 後續 {{ it.followups }}</span>{% endif %}</td></tr>
         {% empty %}<tr><td class="ms-dim">沒有被 review 的 MR</td></tr>{% endfor %}</tbody>
       </table>
-      <h3 style="margin-top:22px">每月趨勢</h3>
-      <p class="ms-sub">每月總分(滿分 {{ max_total|floatformat:0 }},含後續 bug)</p>
-      <table class="ms-mini">
+      <h3 style="margin-top:24px">每月趨勢</h3>
+      <p class="ms-sub">當月各 MR 分數的平均(1–5,未收縮)</p>
+      <table class="ms-mini ms-items">
+        <thead><tr><th>月份</th><th aria-hidden="true"></th><th class="ms-num">平均</th><th class="ms-num">MR</th><th class="ms-num">finding</th></tr></thead>
         <tbody>{% for t in trend %}
-          <tr><td style="width:34%">{{ t.month }}</td><td><div class="ms-bar" aria-hidden="true"><span style="width:{{ t.bar }}%"></span></div></td>
-              <td class="ms-num {{ t.score|item_cls:max_total }}" style="width:48px">{{ t.score|default_if_none:"—" }}</td><td class="ms-num ms-dim" style="width:92px">{{ t.findings }}/{{ t.mrs }} MR</td></tr>
-        {% empty %}<tr><td class="ms-dim">沒有資料</td></tr>{% endfor %}</tbody>
+          <tr><td>{{ t.month }}</td><td><div class="ms-bar" aria-hidden="true"><span style="width:{{ t.bar }}%"></span></div></td>
+              <td class="ms-num {{ t.avg|item_cls:cfg.item_max }}">{{ t.avg }}</td><td class="ms-num">{{ t.mrs }}</td><td class="ms-num">{{ t.findings }}</td></tr>
+        {% empty %}<tr><td colspan="5" class="ms-dim">還沒有評分</td></tr>{% endfor %}</tbody>
       </table>
     </section>
   </div>
 
   <section class="ms-group" id="followups">
     <div class="ms-group-head"><h2>後續 bug</h2><span class="count">{{ shown_followups|length }}</span>
-      <span class="hint">推估:上線 {{ cfg.followup_days }} 天內同檔案的 fix MR,或 AI 再次抓到 · 未確認算 {% widthratio cfg.unconfirmed_followup_factor 1 100 %}%,確認算全額,「不是同一個問題」不算</span></div>
+      <span class="hint">推估:上線 {{ cfg.followup_days }} 天內同檔案的 fix MR,或 AI 再次抓到 · 只有「確認」的會扣分</span></div>
     <div class="ms-list-wrap">
       <table class="ms-list">
         <thead><tr><th>原本的功能 MR</th><th>訊號</th><th>來源</th><th>檔案</th><th class="ms-num">隔幾天</th><th>算在</th><th>覆核</th></tr></thead>
@@ -81,7 +86,7 @@
               <td><span class="ms-chip">{% if fu.kind == "fix_mr" %}fix MR{% else %}AI 再次抓到{% endif %}</span></td>
               <td class="wrap">{% if fu.fix %}<a class="ms-link" href="{{ fu.fix.web_url }}" target="_blank" rel="noopener">{{ fu.fix|short_mr }}</a> <span class="ms-dim">{{ fu.fix.title|truncatechars:32 }}</span>{% else %}<a class="ms-link" href="#f{{ fu.source_ref }}">finding #{{ fu.source_ref }}</a>{% endif %}</td>
               <td class="wrap path"><code>{{ fu.file }}</code></td><td class="ms-num">{{ fu.days_after }}</td>
-              <td style="white-space:nowrap">{{ fu.counts_under }} <span class="ms-dim">w {{ fu.weight }}</span></td>
+              <td style="white-space:nowrap">{{ fu.counts_under }}{% if fu.increment %} <span class="ms-chip warn">−{{ fu.increment }}</span>{% endif %}</td>
               <td class="ms-actions-cell">{% if fu.verdict %}<span class="ms-chip{% if fu.verdict == 'confirmed' %} accent{% endif %}">{{ followup_verdicts|get:fu.verdict }}</span>{% endif %}
                 <form method="post" action="{% url 'review_followup' person.gitlab_id %}" class="ms-row" style="margin-top:4px">{% csrf_token %}
                   <input type="hidden" name="feature_mr_id" value="{{ fu.feature_mr_id }}"><input type="hidden" name="kind" value="{{ fu.kind }}"><input type="hidden" name="source_ref" value="{{ fu.source_ref }}">
@@ -121,7 +126,7 @@
             <td>{{ f.category_label }}<div class="ms-dim" style="font-size:0.9rem">{% if f.category_provisional %}暫用舊分類,等 AI 重新分類{% elif f.category_source == "classifier" %}AI 分類{% elif f.category_source == "review" %}review 標記{% elif f.category == "uncategorized" or f.category == "needs_review" %}不計分,請指定{% endif %}</div></td>
             <td>{% if f.excluded %}<span class="ms-chip">誤判 · 不計分</span>{% elif f.appeal_accepted %}<span class="ms-chip accent">申訴成立</span>{% else %}<span class="ms-dim">{{ f.status }}</span>{% endif %}
               {% if not f.present %}<div class="ms-dim" style="font-size:0.9rem">已從 GitLab 移除</div>{% endif %}
-              {% if f.escaped and f.counted %}<div style="margin-top:4px"><span class="ms-chip warn">merge 時沒修 · ×{{ cfg.escape_multiplier|add:1 }}</span></div>{% endif %}</td>
+              {% if f.escaped and f.counted %}<div style="margin-top:4px"><span class="ms-chip warn">merge 時沒修</span></div>{% endif %}</td>
             <td class="ms-actions-cell">
               <form method="post" action="{% url 'review_finding' f.note_id %}" class="ms-row">{% csrf_token %}
                 <input type="hidden" name="action" value="category"><input type="hidden" name="next" value="{{ request.get_full_path }}">

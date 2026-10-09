@@ -1,0 +1,29 @@
+{% load unfold %}
+
+<div class="border-b border-base-200 flex gap-3 items-center h-[65px] mb-4 dark:border-base-800 px-3 {% element_classes 'navigation_header' %}">
+    <div class="bg-transparent flex font-semibold gap-3 grow min-w-0 h-[64px] items-center px-3 {% if site_dropdown %}cursor-pointer -mx-3 px-6 hover:bg-base-100 dark:hover:bg-white/[.06]{% endif %}"
+         {% if site_dropdown %}
+             x-on:click="siteDropdownOpen = !siteDropdownOpen"
+             x-bind:class="{'bg-base-100 dark:bg-white/[.06]': siteDropdownOpen, 'bg-transparent': !siteDropdownOpen}"
+         {% endif %}
+    >
+        {% if site_logo %}
+            {% include "unfold/helpers/site_logo.html" %}
+        {% elif branding %}
+            {% include "unfold/helpers/site_icon.html" %}
+        {% endif %}
+
+        {% if site_dropdown %}
+            <span class="material-symbols-outlined ml-auto select-none text-font-default-light dark:text-font-default-dark">
+                unfold_more
+            </span>
+        {% endif %}
+    </div>
+
+    {# mr-sentinel: collapse button inside the sidebar (Linear-style), every width #}
+    <button type="button" class="ms-nav-toggle" x-on:click="sidebarToggle()" aria-label="收合側邊欄" title="收合側邊欄">
+        <span class="material-symbols-outlined" aria-hidden="true">dock_to_left</span>
+    </button>
+
+    {% include "unfold/helpers/site_dropdown.html" %}
+</div>

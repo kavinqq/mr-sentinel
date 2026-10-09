@@ -74,9 +74,10 @@ class TestPages(DashboardCase):
         resp = self.client.get(reverse("admin:index"))
         self.assertEqual(resp.status_code, 200)
         (row,) = resp.context["ranked"]
-        # 5 high security findings over 5 MRs, merged unfixed (×2): security floored at 0
-        self.assertEqual((row["username"], row["reviewed_mrs"], row["score"]), ("pk7", 5, 35.0))
-        self.assertEqual(row["weights"]["security"], 75.0)
+        # 5 high security findings, merged unfixed, MRs not rated yet: each
+        # min(3, cap 2) − 0.75 -> (30 + 5 × 1.25) / 15 = 2.42; only security assessed
+        self.assertEqual((row["username"], row["reviewed_mrs"], row["score"]), ("pk7", 5, 19.3))
+        self.assertEqual((row["items"]["security"]["score"], row["coverage"]), (2.42, 1))
         self.assertContains(resp, "小明")
 
     def test_person_page_and_gitlab_links(self):
@@ -218,34 +219,33 @@ class TestScoring(DashboardCase):
 
     def test_valid_change_creates_the_next_version_and_takes_effect(self):
         cfg = self.default()
-        cfg["severity_weight"]["high"] = 0.5
-        cfg["escape_multiplier"] = 0
+        cfg["prior_strength"] = 0                    # no shrink: the raw grades
         resp = self.client.post(reverse("scoring"), {"config": json.dumps(cfg), "note": "test"})
         self.assertEqual(resp.status_code, 302)
         latest = ScoringConfig.objects.order_by("-version").first()
         self.assertEqual((latest.version, latest.actor), (2, "admin"))
         version, _, (row,) = services.team()
-        self.assertEqual(row["items"]["security"]["score"], 2.0)   # 5 − 4 × (5 × 0.5 × 1.5) / 5
-        self.assertEqual((version, row["score"]), (2, 37.0))
+        self.assertEqual(row["items"]["security"]["score"], 1.25)   # cap 2 − 0.75 escaped
+        self.assertEqual((version, row["score"]), (2, 10.0))
 
     def test_invalid_configs_are_rejected(self):
         bad = []
         cfg = self.default(); cfg["levels"][-1]["min_score"] = 1; bad.append(cfg)
         cfg = self.default(); cfg["levels"][0]["min_score"] = 5; bad.append(cfg)  # not decreasing
-        cfg = self.default(); cfg["levels"][0]["min_score"] = 11; bad.append(cfg)  # over 10
-        cfg = self.default(); cfg["deduction_per_weight"] = 0; bad.append(cfg)
-        cfg = self.default(); cfg["levels"][0]["max_score"] = 1; bad.append(cfg)  # old key
-        cfg = self.default(); cfg["severity_weight"]["high"] = -1; bad.append(cfg)
-        cfg = self.default(); del cfg["window_days"]; bad.append(cfg)
-        cfg = self.default(); cfg["category_multiplier"]["typo"] = 2; bad.append(cfg)
-        cfg = self.default(); cfg["severity_weight"] = {}; bad.append(cfg)       # incomplete
-        cfg = self.default(); del cfg["followup_weight"]["fix_mr"]; bad.append(cfg)
+        cfg = self.default(); cfg["levels"][0]["min_score"] = 41; bad.append(cfg)  # over 40
+        cfg = self.default(); cfg["levels"][0]["max_score"] = 1; bad.append(cfg)   # old key
         cfg = self.default(); cfg["levels"][0]["min_score"] = "low"; bad.append(cfg)
         cfg = self.default(); cfg["levels"][0]["max_high"] = -1; bad.append(cfg)
-        cfg = self.default(); cfg["levels"][0]["max_fix_mr"] = 0.5; bad.append(cfg)
+        cfg = self.default(); cfg["levels"][0]["min_coverage"] = 9; bad.append(cfg)
         cfg = self.default(); cfg["levels"][0]["min_clean_rate"] = 90; bad.append(cfg)  # not 0.9
         cfg = self.default(); cfg["levels"][0]["max_hihg"] = 0; bad.append(cfg)       # typo
         cfg = self.default(); cfg["levels"][1]["level"] = cfg["levels"][0]["level"]; bad.append(cfg)
+        cfg = self.default(); del cfg["window_days"]; bad.append(cfg)
+        cfg = self.default(); cfg["finding_cap"] = {"high": 2}; bad.append(cfg)       # incomplete
+        cfg = self.default(); cfg["escape_increment"]["high"] = -1; bad.append(cfg)
+        cfg = self.default(); cfg["prior_score"] = 9; bad.append(cfg)
+        cfg = self.default(); cfg["required_items"] = ["code_smell"]; bad.append(cfg)
+        cfg = self.default(); cfg["severity_weight"] = {}; bad.append(cfg)          # retired key
         for cfg in bad:
             self.assertTrue(services.validate_scoring(cfg), cfg)
         self.assertEqual(services.validate_scoring(self.default()), [])
@@ -261,10 +261,8 @@ class TestTrend(DashboardCase):
         conn.close()
         detail = services.person_detail(7)
         (month,) = detail["trend"]
-        # 5 high security findings (7.5 each) + one fix_mr follow-up (3) over 5 MRs
-        # ×2 merged unfixed = 75, + an unconfirmed fix MR 3 × 0.5
-        self.assertEqual((month["mrs"], month["weight"]), (5, 76.5))
-        self.assertEqual(month["score"], detail["summary"]["score"])          # same formula
+        # 5 security grades of 1.25; an unconfirmed fix MR adds no grade
+        self.assertEqual((month["mrs"], month["grades"], month["avg"]), (5, 5, 1.25))
 
 
 class TestFollowupReview(DashboardCase):
@@ -275,15 +273,16 @@ class TestFollowupReview(DashboardCase):
         conn.close()
         services.record("baseline", "system")
         (fu,) = services.person_detail(7)["followups"]
-        self.assertEqual((fu["verdict"], fu["weight"], fu["counts_under"]), (None, 1.5, "正確性"))
+        self.assertEqual((fu["verdict"], fu["increment"], fu["counts_under"]), (None, 0, "正確性"))
         url = reverse("review_followup", args=[7])
         key = {"feature_mr_id": 100, "kind": "fix_mr", "source_ref": "999"}
         self.client.post(url, {**key, "verdict": "confirmed"})
         (fu,) = services.person_detail(7)["followups"]
-        self.assertEqual((fu["verdict"], fu["weight"]), ("confirmed", 3.0))
+        self.assertEqual((fu["verdict"], fu["increment"]), ("confirmed", 0.75))
+        self.assertEqual(services.person_detail(7)["summary"]["confirmed_followups"], 1)
         self.client.post(url, {**key, "verdict": "unrelated"})
         detail = services.person_detail(7)
-        self.assertEqual(detail["followups"][0]["weight"], 0.0)
+        self.assertEqual(detail["followups"][0]["increment"], 0)
         self.assertEqual(detail["summary"]["followups"]["fix_mr"], 0)
         self.assertIn("後續 bug 覆核", services.ScoreEvent.objects.first().trigger)
         # a made-up follow-up or verdict is refused

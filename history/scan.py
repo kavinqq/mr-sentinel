@@ -14,7 +14,7 @@ Safe to run again: every MR is re-read and upserted, nothing is duplicated.
 import logging
 from datetime import datetime, timedelta, timezone
 
-from history import blame, classify, db, followups, snapshot, sync
+from history import blame, classify, db, followups, rate, snapshot, sync
 import gitlab_client
 
 log = logging.getLogger("mr_sentinel.history")
@@ -85,6 +85,11 @@ def scan(conn, config: dict, days: int | None = None, only: list[str] | None = N
         result["failed"]["classify"] = f"{bad} batch(es) failed"
     progress("git blame release MR 上的 finding…")
     result["blamed"], result["blame_failed"] = _drain(blame.blame_pending, conn, config, False)
+    progress("AI 逐項替每個 MR 打分…")
+    result["rated"], bad = _drain(lambda c, cfg_: rate.rate_pending(c, cfg_, progress=progress),
+                                  conn, config, True)
+    if bad:
+        result["failed"]["rate"] = f"{bad} MR(s) not rated"
     events = snapshot.record(conn, f"初次掃描(近 {days} 天,{len(targets)} 個專案)")
     result["score_changes"] = len(events)
     with conn:
@@ -95,7 +100,8 @@ def scan(conn, config: dict, days: int | None = None, only: list[str] | None = N
             db.set_state(conn, "initial_scan_at", db.now_iso())
             db.set_state(conn, "initial_scan_since", since)
     progress(f"完成:{sum(p['mrs'] for p in result['projects'].values())} 個 MR、"
-             f"分類 {result['classified']}、blame {result['blamed']}、評分變動 {len(events)} 筆"
+             f"分類 {result['classified']}、blame {result['blamed']}、打分 {result['rated']}、"
+             f"評分變動 {len(events)} 筆"
              + (f";失敗:{', '.join(result['failed'])}" if result["failed"] else ""))
     return result
 

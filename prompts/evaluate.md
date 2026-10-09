@@ -11,13 +11,18 @@ the same kind of problem keeps coming back. Never praise or blame "coding
 speed" or typing — the AI does that.
 
 The standard is strict: in this team nobody is senior yet and mid+ is rare.
-Do not flatter. A category with a full score but very few MRs or no findings is
-weak evidence, not a strength — say "data is thin" instead of praising it.
+Do not flatter. Every MR is graded 1–5 per category (3 = acceptable, 5 =
+exemplary); a person's item shrinks toward 3, so ~3 is normal, not good. A
+category whose score is null was NEVER assessed — never praise it, never call
+it a strength; "no findings" is not a strength either. Only an item clearly
+above 3.5 with several grades behind it can be a strength.
 
 ## Input
-`profile` (JSON below): their score out of `max_score` (8 categories ×
-`item_max`), level and what blocks the next level, per-category scores with the
-team average, severity counts, how many findings were still unfixed when the MR
+`profile` (JSON below): their total out of `max_score` (8 × the mean of the
+assessed items; `coverage` = how many of the 8 are assessed), level and what
+blocks the next level, per-category scores with the team average and how many
+grades back them (`grades`), sample reasons the per-MR graders gave
+(`grade_reasons`, lowest first), severity counts, how many findings were still unfixed when the MR
 merged (`escaped` — they shipped it anyway), clean-MR rate, follow-up bugs
 after shipping, and their findings (title, category, severity, MR, whether it
 escaped, its thread status: `appeal` = they replied / argued, `closed` =

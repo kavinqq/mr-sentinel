@@ -1,15 +1,23 @@
 {% load sentinel %}{% if events %}
-<table class="ms-mini">
-  <thead><tr><th>時間</th><th>對象</th><th class="ms-num">分數</th><th>等級</th><th>原因</th>{% if not compact %}<th>誰</th><th class="ms-num">公式</th>{% endif %}</tr></thead>
-  <tbody>{% for e in events %}
-    <tr>
-      <td class="ms-dim" style="white-space:nowrap">{{ e.created_at|tw:"%m-%d %H:%M" }}</td>
-      <td style="white-space:nowrap">{% if e.gitlab_id == -1 %}<strong>團隊</strong>{% else %}<a href="{% url 'person' e.gitlab_id %}">{{ e.name }}</a>{% endif %}</td>
-      <td class="ms-num" style="white-space:nowrap">{% if e.old_score is None %}<span class="ms-dim">新</span> {{ e.new_score|default_if_none:"—" }}{% else %}{{ e.old_score }} → <strong>{{ e.new_score|default_if_none:"—" }}</strong>{% if e.delta is not None %} <span class="{% if e.delta > 0 %}ms-up{% elif e.delta < 0 %}ms-down{% endif %}">{% if e.delta > 0 %}+{% endif %}{{ e.delta }}</span>{% endif %}{% endif %}</td>
-      <td style="white-space:nowrap">{% if e.old_level != e.new_level and e.old_score is not None %}{{ e.old_level|default:"—" }} → {{ e.new_level|default:"—" }}{% else %}<span class="ms-dim">{{ e.new_level|default:"—" }}</span>{% endif %}</td>
-      <td style="white-space:normal">{{ e.trigger }}</td>
-      {% if not compact %}<td class="ms-dim">{{ e.actor }}</td><td class="ms-num ms-dim">v{{ e.formula_version }}</td>{% endif %}
-    </tr>
-  {% endfor %}</tbody>
-</table>
-{% else %}<p class="ms-dim" style="margin:0">還沒有評分變動</p>{% endif %}
+<ol class="ms-feed{% if compact %} compact{% endif %}">
+  {% for e in events %}
+  <li class="ms-feed-item">
+    <div class="ms-feed-who">
+      {% if e.gitlab_id == -1 %}<strong>團隊</strong>{% else %}<a class="ms-feed-name" href="{% url 'person' e.gitlab_id %}">{{ e.name }}</a>{% endif %}
+      {% if e.old_level != e.new_level and e.old_score is not None %}
+        <span class="ms-chip">{{ e.old_level|default:"—" }} → {{ e.new_level|default:"—" }}</span>
+      {% elif e.new_level %}<span class="ms-feed-level">{{ e.new_level }}</span>{% endif %}
+    </div>
+    <div class="ms-feed-score">
+      {% if e.old_score is None %}<span class="ms-chip">首次</span> <strong>{{ e.new_score|default_if_none:"—" }}</strong>
+      {% else %}<span class="old">{{ e.old_score }}</span><span class="arrow" aria-hidden="true">→</span><strong>{{ e.new_score|default_if_none:"—" }}</strong>
+        {% if e.rescaled %}<span class="ms-delta flat" title="新舊分數是不同的評分方式,不能直接相減">換算</span>
+        {% elif e.delta is not None %}<span class="ms-delta {% if e.delta > 0 %}up{% elif e.delta < 0 %}down{% else %}flat{% endif %}">{% if e.delta > 0 %}+{% endif %}{{ e.delta }}</span>{% endif %}
+      {% endif %}
+    </div>
+    <p class="ms-feed-why">{{ e.trigger }}</p>
+    <p class="ms-feed-meta">{{ e.created_at|tw:"%m-%d %H:%M" }}{% if not compact %} · {{ e.actor }} · 公式 v{{ e.formula_version }}{% endif %}</p>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}<p class="ms-eval-empty">還沒有評分變動</p>{% endif %}

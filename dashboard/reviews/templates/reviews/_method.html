@@ -1,0 +1,48 @@
+{% load sentinel %}
+<details class="ms-method" {% if open %}open{% endif %}>
+  <summary><span class="material-symbols-outlined" aria-hidden="true">help</span>評分方式<span class="hint">公式 v{{ version }} · 可在「評分設定」調整</span></summary>
+  <div class="ms-method-grid">
+    <section>
+      <h4>1 · 每個 MR 逐項打分</h4>
+      <p>AI 讀 diff 與 MR description,8 個面向各打 1–5 分,要附證據:</p>
+      <ul>
+        <li><strong>5</strong> 範本等級,至少 2 個可定位的證據</li>
+        <li><strong>4</strong> 好,至少 1 個證據</li>
+        <li><strong>3</strong> 合格,可以 merge 但沒有亮點</li>
+        <li><strong>1–2</strong> 有缺口 / 失守</li>
+        <li>跟這個 MR 無關的面向標「不適用」,不計分</li>
+      </ul>
+    </section>
+    <section>
+      <h4>2 · finding 與上線後</h4>
+      <ul>
+        <li>review 留下的 finding 限制該項上限:High ≤ {{ cfg.finding_cap.high }}、Medium ≤ {{ cfg.finding_cap.medium }}、Low ≤ {{ cfg.finding_cap.low }}</li>
+        <li>merge 時還沒修:再扣 High {{ cfg.escape_increment.high }} / Medium {{ cfg.escape_increment.medium }} / Low {{ cfg.escape_increment.low }}</li>
+        <li>確認的後續 bug:再扣 {{ cfg.followup_increment.fix_mr }};未確認的只顯示、不扣分</li>
+        <li>最低 1 分</li>
+      </ul>
+    </section>
+    <section>
+      <h4>3 · 個人每項與總分</h4>
+      <p class="ms-method-formula">每項 = ( {{ cfg.prior_strength }} × {{ cfg.prior_score }} + Σ 各 MR 分數 ) ÷ ( {{ cfg.prior_strength }} + MR 數 )</p>
+      <ul>
+        <li>MR 越少越接近 {{ cfg.prior_score }}:20 個 MR 全拿 5 也只有 4.33</li>
+        <li>總分 = 8 × 已評估各項的平均(滿分 {{ max_total|floatformat:0 }}),沒評估過的面向顯示「—」</li>
+        <li>{% for k in cfg.required_items %}{{ categories|get:k }}{% if not forloop.last %}、{% endif %}{% endfor %}沒評估到就是「資料不足」</li>
+      </ul>
+    </section>
+  </div>
+  <div class="ms-list-wrap" style="margin-top:16px">
+    <table class="ms-list ms-levels">
+      <caption class="sr-only">等級門檻</caption>
+      <thead><tr><th>等級</th><th class="ms-num">總分 ≥</th><th class="ms-num">最弱一項 ≥</th><th class="ms-num">已評估面向 ≥</th><th class="ms-num">評過分的 MR ≥</th><th>其他條件</th></tr></thead>
+      <tbody>{% for lv in cfg.levels %}
+        <tr><td><span class="ms-level"><span class="ms-dot {{ lv.level|level_dot }}"></span><strong>{{ lv.level }}</strong></span></td>
+          {% if lv.min_score is None %}<td colspan="5" class="ms-dim">未達以上任一級</td>{% else %}
+          <td class="ms-num">{{ lv.min_score }}</td><td class="ms-num">{{ lv.min_item|default_if_none:"—" }}</td>
+          <td class="ms-num">{{ lv.min_coverage|default_if_none:"—" }}</td><td class="ms-num">{{ lv.min_mrs|default_if_none:"—" }}</td>
+          <td>{% if lv.max_high is not None %}High ≤ {{ lv.max_high }}{% endif %}{% if lv.max_escaped is not None %} · merge 沒修 ≤ {{ lv.max_escaped }}{% endif %}{% if lv.max_confirmed_followups is not None %} · 確認的後續 bug ≤ {{ lv.max_confirmed_followups }}{% endif %}{% if lv.min_clean_rate is not None %} · 乾淨 MR ≥ {% widthratio lv.min_clean_rate 1 100 %}%{% endif %}</td>{% endif %}</tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</details>

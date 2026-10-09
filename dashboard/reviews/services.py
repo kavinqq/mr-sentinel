@@ -119,6 +119,7 @@ def overview() -> dict:
     departed = [r for r in rows if r["role"] == "departed"]
     levels = {lv["level"]: sum(1 for r in ranked if r["level"] == lv["level"])
               for lv in cfg["levels"]}
+    team_items = score.team_items(rows, cfg)
     return {
         "version": version, "cfg": cfg, "ranked": ranked, "leads": leads, "departed": departed,
         "events": list(ScoreEvent.objects.all()[:12]),
@@ -127,10 +128,15 @@ def overview() -> dict:
                 "reviewed": sum(r["reviewed_mrs"] for r in ranked),
                 "findings": sum(r["findings"] for r in ranked),
                 "followups": sum(sum(r["followups"].values()) for r in ranked),
+                "confirmed": sum(r["confirmed_followups"] for r in ranked),
                 "levels": levels,
                 "unrated": sum(1 for r in ranked if r["level"] is None)},
         "radar": radar_chart(score.team_average(rows, cfg), None, "團隊平均", cfg["item_max"]),
         "team_score": score.team_score(rows, cfg), "item_short": ITEM_SHORT,
+        "team_items": team_items,
+        "team_coverage": sum(1 for v in team_items.values() if v["score"] is not None),
+        "rating": {"rated": sum(r["rated_mrs"] for r in rows if r["role"] != "departed"),
+                   "total": sum(r["own_mrs"] for r in rows if r["role"] != "departed")},
         "max_total": score.max_total(cfg), "categories": CATEGORY_LABELS,
         "unattributed": len(attributed["unattributed"]),
         "via_release": sum(1 for f in attributed["findings"] if f["via_release"]),
@@ -232,7 +238,7 @@ def person_detail(author_id: int) -> dict | None:
     return {"person": person, "summary": summary, "version": version, "cfg": cfg,
             "radar": radar, "role": role, "role_label": ROLES.get(role, role),
             "findings": findings, "followups": followups,
-            "trend": _trend(mrs, findings, followups, cfg),
+            "trend": _trend(summary, cfg),
             "items": [{"key": k, **v} for k, v in summary["items"].items()] if summary else [],
             "window_start": window_start, "max_total": score.max_total(cfg),
             "evaluation": evals.get(author_id), "evaluation_stale": author_id in stale,
@@ -254,7 +260,9 @@ def _followups(by_id: dict, uncounted_notes: set[str], window_start: str,
             and not (r["kind"] == "ai_refind" and r["source_ref"] in uncounted_notes)]
     for r in rows:
         r["counts_under"] = CATEGORY_LABELS[score.followup_category(r)]
-        r["weight"] = round(score.followup_weight(r, cfg), 2)
+        # only a confirmed follow-up lowers a grade; a guess is shown, not scored
+        r["increment"] = (cfg["followup_increment"].get(r["kind"], 0)
+                          if r.get("verdict") == "confirmed" else 0)
     fix_ids = [int(r["source_ref"]) for r in rows if r["kind"] == "fix_mr"]
     fixes = {m.mr_id: m for m in MergeRequest.objects.filter(mr_id__in=fix_ids)}
     out = []
@@ -267,38 +275,27 @@ def _followups(by_id: dict, uncounted_notes: set[str], window_start: str,
     return out
 
 
-def _trend(mrs: list, findings: list[dict], followups: list[dict], cfg: dict) -> list[dict]:
-    """Per month (of the MR): reviewed MRs, counted findings, and that month's
-    total — findings + follow-ups per item, the same formula as the score."""
-    months = defaultdict(lambda: {"mrs": 0, "findings": 0, "weight": 0.0,
-                                  "weights": defaultdict(float)})
-    for m in mrs:
-        if m.reviewed and m.created_at:
-            months[m.created_at[:7]]["mrs"] += 1
-    for f in findings:
-        if f["counted"] and f["category"] in CATEGORIES and f["mr"].created_at:
-            month = months[f["mr"].created_at[:7]]
-            month["findings"] += 1
-            w = score.finding_weight(f, cfg)
-            month["weight"] += w
-            month["weights"][f["category"]] += w
-    for fu in followups:
-        if fu["feature"].created_at and fu.get("verdict") != "unrelated":
-            month = months[fu["feature"].created_at[:7]]
-            month["weight"] += fu["weight"]
-            month["weights"][score.followup_category(fu)] += fu["weight"]
-    top = score.max_total(cfg)
+def _trend(summary: dict | None, cfg: dict) -> list[dict]:
+    """Per month (of the MR): how many grades, their plain average (1–5, before the
+    shrink toward 3 the score applies) and the findings behind them."""
+    months = defaultdict(lambda: {"n": 0, "sum": 0.0, "findings": 0, "mrs": set()})
+    for o in (summary or {}).get("observations", []):
+        if not o.get("created_at"):
+            continue
+        m = months[o["created_at"][:7]]
+        m["n"] += 1
+        m["sum"] += o["value"]
+        m["findings"] += o["findings"]
+        if o["mr_id"]:
+            m["mrs"].add(o["mr_id"])
+    top = cfg["item_max"]
     out = []
     for key in sorted(months):
         v = months[key]
-        month_score = score.total_score(v["weights"], v["mrs"], cfg) if v["mrs"] else None
-        out.append({"month": key, "mrs": v["mrs"], "findings": v["findings"],
-                    "weight": round(v["weight"], 2), "score": month_score,
-                    "bar": round(100 * month_score / top) if month_score is not None else 0})
+        avg = round(v["sum"] / v["n"], 2)
+        out.append({"month": key, "grades": v["n"], "mrs": len(v["mrs"]), "findings": v["findings"],
+                    "avg": avg, "bar": round(100 * avg / top)})
     return out
-
-
-# ---------- writing (append-only) ----------
 
 
 def finding_owner(note_id: int) -> int | None:
@@ -427,41 +424,42 @@ def validate_scoring(cfg) -> list[str]:
     missing = set(hdb.DEFAULT_SCORING) - set(cfg)
     if missing:
         errors.append(f"缺少欄位: {', '.join(sorted(missing))}")
-    for key in ("window_days", "min_reviewed_mrs", "followup_days", "deduction_per_weight",
-                "item_max"):
-        if key in cfg and not (isinstance(cfg[key], (int, float)) and cfg[key] > 0):
-            errors.append(f"{key} 必須是正數")
-    for key in ("escape_multiplier", "unconfirmed_followup_factor"):
-        if key in cfg and not (isinstance(cfg[key], (int, float)) and cfg[key] >= 0):
-            errors.append(f"{key} 必須是非負數")
-    if isinstance(cfg.get("unconfirmed_followup_factor"), (int, float)) and \
-            cfg["unconfirmed_followup_factor"] > 1:
-        errors.append("unconfirmed_followup_factor 不能大於 1(未確認的不該比確認的重)")
-    for key in ("severity_weight", "category_multiplier", "followup_weight"):
+    unknown = set(cfg) - set(hdb.DEFAULT_SCORING)
+    if unknown:
+        errors.append(f"不認得的欄位: {', '.join(sorted(unknown))}(舊版公式的欄位已不使用)")
+
+    def number(v, lo=None, hi=None):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and \
+            (lo is None or v >= lo) and (hi is None or v <= hi)
+
+    for key in ("window_days", "min_reviewed_mrs", "followup_days", "item_max"):
+        if key in cfg and not number(cfg[key], 1):
+            errors.append(f"{key} 必須是 ≥ 1 的數字")
+    if "prior_strength" in cfg and not number(cfg["prior_strength"], 0):
+        errors.append("prior_strength 必須是非負數")
+    top = cfg["item_max"] if number(cfg.get("item_max"), 1) else 5
+    if "prior_score" in cfg and not number(cfg["prior_score"], 1, top):
+        errors.append(f"prior_score 必須在 1 到 {top:g} 之間")
+    for key, names in (("finding_cap", {"high", "medium", "low"}),
+                       ("escape_increment", {"high", "medium", "low"}),
+                       ("followup_increment", {"fix_mr", "ai_refind"})):
         values = cfg.get(key)
-        if key in cfg and (not isinstance(values, dict) or not all(
-                isinstance(v, (int, float)) and v >= 0 for v in values.values())):
-            errors.append(f"{key} 必須是「名稱 → 非負數」")
-    if isinstance(cfg.get("severity_weight"), dict) and \
-            set(cfg["severity_weight"]) != {"high", "medium", "low"}:
-        errors.append("severity_weight 必須剛好是 high / medium / low")
-    if isinstance(cfg.get("followup_weight"), dict) and \
-            set(cfg["followup_weight"]) != {"fix_mr", "ai_refind"}:
-        errors.append("followup_weight 必須剛好是 fix_mr / ai_refind")
-    if set((cfg.get("category_multiplier") or {})) - set(CATEGORIES):
-        errors.append(f"category_multiplier 只能用: {', '.join(CATEGORIES)}")
+        if key in cfg and (not isinstance(values, dict) or set(values) != names
+                           or not all(number(v, 0, top) for v in values.values())):
+            errors.append(f"{key} 必須剛好是 {' / '.join(sorted(names))} → 0~{top:g} 的數字")
+    req = cfg.get("required_items")
+    if "required_items" in cfg and (not isinstance(req, list) or set(req) - set(CATEGORIES)):
+        errors.append(f"required_items 只能列: {', '.join(CATEGORIES)}")
     levels = cfg.get("levels")
     if "levels" in cfg:
         if not isinstance(levels, list) or not levels or not all(
                 isinstance(lv, dict) and isinstance(lv.get("level"), str) for lv in levels):
-            errors.append("levels 必須是 [{level, min_score}, …]")
+            errors.append("levels 必須是 [{level, min_score, ...}, …]")
         else:
+            total = top * len(score.ITEMS)
             floors = [lv.get("min_score") for lv in levels]
-            top = (cfg["item_max"] * len(score.ITEMS)
-                   if isinstance(cfg.get("item_max"), (int, float)) else 40)
-            if not all(c is None or (isinstance(c, (int, float)) and 0 <= c <= top)
-                       for c in floors):
-                errors.append(f"min_score 必須是 0~{top:g} 或 null")
+            if not all(c is None or number(c, 0, total) for c in floors):
+                errors.append(f"min_score 必須是 0~{total:g} 或 null")
             elif floors[-1] is not None or any(c is None for c in floors[:-1]):
                 errors.append("只有最後一級的 min_score 可以是 null(其餘級距都要有下限)")
             elif floors[:-1] != sorted(floors[:-1], reverse=True) or \
@@ -471,20 +469,24 @@ def validate_scoring(cfg) -> list[str]:
             if len(set(names)) != len(names):
                 errors.append("level 名稱不能重複")
             for lv in levels:
-                unknown = set(lv) - {"level", *score.GATES}
-                if unknown:
-                    errors.append(f"{lv['level']}: 不認得的欄位 {', '.join(sorted(unknown))}"
+                bad = set(lv) - {"level", *score.GATES}
+                if bad:
+                    errors.append(f"{lv['level']}: 不認得的欄位 {', '.join(sorted(bad))}"
                                   f"(可用: {', '.join(score.GATES)})")
-                for key in ("max_high", "max_fix_mr", "max_escaped"):
+                for key in ("max_high", "max_escaped", "max_confirmed_followups", "min_coverage",
+                            "min_mrs"):
                     v = lv.get(key)
                     if v is not None and not (isinstance(v, int) and not isinstance(v, bool)
                                               and v >= 0):
                         errors.append(f"{lv['level']}: {key} 必須是非負整數或省略")
-                v, cap = lv.get("min_item"), cfg.get("item_max", 5)
-                if v is not None and not (isinstance(v, (int, float)) and 0 <= v <= cap):
+                if lv.get("min_coverage") is not None and isinstance(lv["min_coverage"], int) \
+                        and lv["min_coverage"] > len(score.ITEMS):
+                    errors.append(f"{lv['level']}: min_coverage 最多 {len(score.ITEMS)}")
+                v = lv.get("min_item")
+                if v is not None and not number(v, 0, top):
                     errors.append(f"{lv['level']}: min_item 必須在 0 到 item_max 之間")
                 v = lv.get("min_clean_rate")
-                if v is not None and not (isinstance(v, (int, float)) and 0 <= v <= 1):
+                if v is not None and not number(v, 0, 1):
                     errors.append(f"{lv['level']}: min_clean_rate 必須在 0 到 1 之間(0.9 = 90%)")
     return errors
 

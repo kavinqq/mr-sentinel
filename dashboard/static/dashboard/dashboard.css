@@ -157,9 +157,9 @@ td.path code { word-break: break-all; }
 /* ---------- member accordion (overview) ---------- */
 .ms-acc-list { border: 1px solid var(--ms-line); border-radius: 8px; overflow: hidden; }
 .ms-acc-row { display: grid; align-items: center; gap: 12px; padding: 10px 14px;
-  grid-template-columns: 20px minmax(190px, 2.2fr) 96px 64px 44px repeat(8, 52px); }
+  grid-template-columns: 20px minmax(170px, 2fr) 96px 60px 64px repeat(8, 54px); }
 .ms-item { font-variant-numeric: tabular-nums; }
-.ms-item.full { color: var(--ms-text); }
+.ms-item.good { color: #15803D; font-weight: 700; }
 .ms-item.soft { color: #B26A00; font-weight: 600; }
 .ms-item.weak { color: #C4332B; font-weight: 700; }
 .ms-acc-head { background: var(--ms-subtle); color: var(--ms-faint); font-size: 0.9rem; font-weight: 500;
@@ -254,3 +254,77 @@ td.path code { word-break: break-all; }
 @media (max-width: 900px) { .ms .ms-eval.compact { grid-template-columns: 1fr; }
   .ms .ms-eval.compact .ms-eval-part + .ms-eval-part { margin-top: 16px; } }
 @media (prefers-reduced-motion: reduce) { .ms .ms-eval-evidence summary::before { transition: none; } }
+
+/* sidebar collapse toggle (unfold header / sidebar overrides in templates/unfold/helpers) */
+.ms-nav-toggle { display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 36px; height: 36px; border-radius: 8px; border: 0; background: transparent; cursor: pointer;
+  color: #33363C; transition: background-color .15s; }
+.ms-nav-toggle:hover { background: #F0F1FB; color: #5E6AD2; }
+.ms-nav-toggle:focus-visible { outline: 2px solid #5E6AD2; outline-offset: 2px; }
+.ms-nav-toggle .material-symbols-outlined { font-size: 20px; }
+
+/* ---------- shared bits ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.ms .ms-of { color: var(--ms-muted); font-size: .85em; margin-left: 1px; }
+.ms .ms-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ms .ms-panel-head h3 { margin: 0; }
+
+/* facts under an expanded member row */
+.ms .ms-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 24px;
+  margin: 0 0 16px; }
+.ms .ms-facts > div { min-width: 0; }
+.ms .ms-facts dt { font-size: .9rem; color: var(--ms-muted); margin: 0 0 2px; }
+.ms .ms-facts dd { margin: 0; line-height: 1.55; }
+
+/* items table on the person page */
+.ms .ms-items th:nth-child(2), .ms .ms-items td:nth-child(2) { width: 34%; }
+.ms .ms-items td:nth-child(3) { font-weight: 600; }
+
+/* team items under the radar */
+.ms .ms-team-items { list-style: none; margin: 14px 0 0; padding: 0; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px 18px; }
+.ms .ms-team-items li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0;
+  border-bottom: 1px solid var(--ms-line); }
+
+/* ---------- score-change feed ---------- */
+.ms .ms-feed { list-style: none; margin: 0; padding: 0; }
+.ms .ms-feed-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px;
+  row-gap: 2px; padding: 12px 0; border-top: 1px solid var(--ms-line); }
+.ms .ms-feed-item:first-child { border-top: 0; padding-top: 4px; }
+.ms .ms-feed-who { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; font-weight: 600; }
+.ms .ms-feed-name { color: var(--ms-text); }
+.ms .ms-feed-name:hover { color: var(--ms-accent); }
+.ms .ms-feed-level { font-weight: 500; color: var(--ms-muted); font-size: .92rem; }
+.ms .ms-feed-score { display: flex; align-items: center; gap: 6px; justify-content: flex-end;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ms .ms-feed-score .old { color: var(--ms-muted); }
+.ms .ms-feed-score .arrow { color: var(--ms-muted); }
+.ms .ms-feed-why { grid-column: 1 / -1; margin: 2px 0 0; line-height: 1.55; color: var(--ms-text);
+  overflow-wrap: anywhere; }
+.ms .ms-feed-meta { grid-column: 1 / -1; margin: 0; font-size: .9rem; color: var(--ms-muted); }
+.ms .ms-delta { display: inline-flex; align-items: center; min-width: 44px; justify-content: center;
+  padding: 1px 6px; border-radius: 6px; font-size: .9rem; font-weight: 600; }
+.ms .ms-delta.up { color: #15803D; background: #ECFDF3; }
+.ms .ms-delta.down { color: #B42318; background: #FEF3F2; }
+.ms .ms-delta.flat { color: var(--ms-muted); background: var(--ms-subtle); font-weight: 500; }
+
+/* ---------- 評分方式 ---------- */
+.ms .ms-method { border: 1px solid var(--ms-line); border-radius: 8px; margin: 0 0 28px; background: #fff; }
+.ms .ms-method > summary { display: flex; align-items: center; gap: 8px; padding: 14px 18px; cursor: pointer;
+  list-style: none; font-weight: 600; color: var(--ms-text); font-size: 1rem; margin: 0; }
+.ms .ms-method > summary::-webkit-details-marker { display: none; }
+.ms .ms-method > summary .material-symbols-outlined { font-size: 20px; color: var(--ms-accent); }
+.ms .ms-method > summary .hint { margin-left: auto; font-weight: 400; font-size: .9rem; color: var(--ms-muted); }
+.ms .ms-method > summary:hover { background: var(--ms-hover); }
+.ms .ms-method[open] > summary { border-bottom: 1px solid var(--ms-line); }
+.ms .ms-method-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px 28px;
+  padding: 18px 18px 0; }
+.ms .ms-method-grid h4 { margin: 0 0 8px; font-size: .95rem; font-weight: 700; }
+.ms .ms-method-grid p { margin: 0 0 6px; line-height: 1.6; }
+.ms .ms-method-grid ul { margin: 0; padding-left: 1.1em; display: grid; gap: 4px; line-height: 1.6; }
+.ms .ms-method-formula { padding: 8px 12px; border-radius: 8px; background: var(--ms-accent-soft);
+  font-variant-numeric: tabular-nums; }
+.ms .ms-method .ms-list-wrap { margin: 18px; }
+.ms .ms-levels td, .ms .ms-levels th { white-space: nowrap; }
+.ms .ms-levels td:last-child { white-space: normal; }

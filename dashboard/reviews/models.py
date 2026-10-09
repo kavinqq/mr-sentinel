@@ -193,8 +193,8 @@ class ScoringConfig(AppendOnlyModel):
 
     @classmethod
     def lower_is_better_versions(cls) -> set[int]:
-        """Versions from before the 10-point scale (no deduction_per_weight)."""
-        return {c.version for c in cls.objects.all() if "deduction_per_weight" not in c.config}
+        """Versions from before the 10-point scale (levels capped by max_score)."""
+        return {c.version for c in cls.objects.all() if '"max_score"' in c.config}
 
 
 class SyncRequest(AppendOnlyModel):

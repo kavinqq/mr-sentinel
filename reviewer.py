@@ -24,6 +24,7 @@ from pathlib import Path
 
 import blocks
 import engines
+from history import rate as history_rate
 from history import sync as history_sync
 import fetch_mr
 import gitlab_client
@@ -387,6 +388,8 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         history_sync.sync_mr(config, project_path, iid,
                              trigger=f"review 完成 {project_path.rsplit('/', 1)[-1]}!{iid}"
                                      f"({len(findings)} 則)")
+        # the scorecard: 1-5 per category for this MR, from the same context (never raises)
+        history_rate.rate_mr(config, project_path, iid, ctx=ctx)
 
         # 8. completion message
         buttons = blocks.rerun_buttons(project_path, iid,

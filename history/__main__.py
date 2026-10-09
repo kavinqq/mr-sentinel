@@ -8,6 +8,7 @@
     sync [--full]        GitLab -> db (incremental by default)
     classify [--limit N] fill in missing categories with the model
     followups            recompute follow-up bugs
+    rate [--limit N]     AI grades reviewed MRs 1-5 per category (the back-fill; needs GitLab)
     evaluate [--force] [--person ID]
                          AI-written 優點 / 缺點 per person (only changed records unless --force)
     report [--json]      per-person aspects and levels
@@ -20,7 +21,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
-from history import blame, classify, db, evaluate, followups, scan, score, snapshot, sync
+from history import blame, classify, db, evaluate, followups, rate, scan, score, snapshot, sync
 from history.parse import CATEGORIES
 from sentinel_config import SCRIPT_DIR, load_config
 
@@ -67,6 +68,9 @@ def run(conn, config: dict, full: bool = False) -> dict:
         if bad_batches:
             result["failed"]["classify"] = f"{bad_batches} batch(es) failed"
         result["blamed"], result["blame_failed"] = blame.blame_pending(conn, config)
+        result["rated"], bad = rate.rate_pending(conn, config)
+        if bad:
+            result["failed"]["rate"] = f"{bad} MR(s) not rated"
         result["score_changes"] = len(snapshot.record(
             conn, "dashboard 同步請求" if request_ids else "排程同步"))
         _evaluate(conn, config, result, force="evaluate" in kinds)
@@ -121,6 +125,8 @@ def main(argv=None) -> int:
     p.add_argument("--days", type=int, help="how far back (default: scoring window_days)")
     p.add_argument("--project", action="append", help="only this project (repeatable)")
     p.add_argument("--dry-run", action="store_true", help="only count the MRs, write nothing")
+    p = sub.add_parser("rate", help="AI grades reviewed MRs per category (back-fill)")
+    p.add_argument("--limit", type=int, default=200)
     p = sub.add_parser("evaluate", help="AI-written strengths / weaknesses per person")
     p.add_argument("--force", action="store_true", help="redo everyone, not just changed records")
     p.add_argument("--person", type=int, action="append", help="only this GitLab user id")
@@ -155,6 +161,11 @@ def main(argv=None) -> int:
             return 0
         if args.cmd == "run":
             result = run(conn, config, full=args.full)
+        elif args.cmd == "rate":
+            done, bad = rate.rate_pending(conn, config, limit=args.limit,
+                                          progress=lambda m: print(m, flush=True))
+            snapshot.record(conn, f"MR 評分補齊({done} 個)")
+            result = {"rated": done, "failed": {"rate": f"{bad} MR(s)"} if bad else {}}
         elif args.cmd == "evaluate":
             done, bad = evaluate.evaluate_pending(conn, config, force=args.force,
                                                   only=set(args.person) if args.person else None,

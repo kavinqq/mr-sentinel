@@ -45,9 +45,11 @@ def item_cls(value, top=5):
     """Tone for an item score (out of `top`): full marks fade, weak ones stand out."""
     if value is None:
         return "ms-dim"
+    # 3 of 5 is "acceptable" and reads as plain text; only real strength or
+    # weakness gets a colour (and a weight, so it is not colour alone)
     ratio = value / float(top or 5)
-    return "ms-item full" if ratio >= 1 else "ms-item weak" if ratio < 0.6 else \
-        "ms-item soft" if ratio < 0.85 else "ms-item"
+    return "ms-item good" if ratio >= 0.8 else "ms-item" if ratio >= 0.56 else \
+        "ms-item soft" if ratio >= 0.46 else "ms-item weak"
 
 
 @register.filter

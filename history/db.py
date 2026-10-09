@@ -19,30 +19,28 @@ DEFAULT_PATH = SCRIPT_DIR / "sentinel.db"     # see resolve_path() for the overr
 # version. This is version 1, seeded by the first migration.
 DEFAULT_SCORING = {
     "window_days": 90,
-    "min_reviewed_mrs": 5,
-    "severity_weight": {"high": 5.0, "medium": 2.0, "low": 0.5},
-    # per-category multiplier on a finding's weight; unlisted = 1
-    "category_multiplier": {"security": 1.5, "requirements": 1.25, "compatibility": 1.25,
-                            "verification": 0.75, "maintainability": 0.5},
-    # a finding still there when the MR merged costs this much again (× its weight):
-    # being caught in review costs once, shipping it anyway costs twice
-    "escape_multiplier": 1.0,
-    "followup_weight": {"fix_mr": 3.0, "ai_refind": 1.0},
-    # a follow-up nobody has confirmed yet is only a guess (same file within N days)
-    "unconfirmed_followup_factor": 0.5,
+    "min_reviewed_mrs": 5,           # own, personal MRs; fewer -> no level ("資料不足")
     "followup_days": 30,             # a fix / new finding this soon after a feature ships counts
-    # each of the 8 items is out of item_max and loses
-    # deduction_per_weight × (its weight per reviewed MR); the total is their sum (8 × 5 = 40)
-    "item_max": 5.0,
-    "deduction_per_weight": 4.0,       # 1 medium per 10 MRs = −0.8 of that item's 5
-    # best level first, every gate must hold (history/score.py GATES). Code is
-    # AI-written, so this grades what a person lets merge: senior means almost
-    # nothing ever gets through.
-    "levels": [{"level": "senior", "min_score": 38.0, "min_item": 4.5, "max_high": 0,
-                "max_fix_mr": 0, "max_escaped": 0, "min_clean_rate": 0.95},
-               {"level": "mid+", "min_score": 36.0, "min_item": 4.0, "max_high": 0,
-                "min_clean_rate": 0.85},
-               {"level": "mid", "min_score": 33.0, "min_item": 1.5, "max_high": 1},
+    # Each MR is graded 1-5 per category by the model (history/rate.py,
+    # prompts/rate.md). A finding it kept caps its category's grade:
+    "finding_cap": {"high": 2, "medium": 3, "low": 4},
+    # what happened after the review lowers that grade again (floor 1):
+    "escape_increment": {"high": 0.75, "medium": 0.5, "low": 0.25},   # still there at merge
+    "followup_increment": {"fix_mr": 0.75, "ai_refind": 0.75},        # confirmed by a human only
+    # a person's item = (prior_strength × prior_score + Σ grades) / (prior_strength + n):
+    # 20 MRs all graded 5 give 4.33, 30 give 4.5 — a 5 has to be earned many times
+    "prior_strength": 10,
+    "prior_score": 3,
+    "item_max": 5,
+    # without these assessed there is no level, only "資料不足"
+    "required_items": ["requirements", "correctness", "verification", "maintainability"],
+    # total = 8 × mean(assessed items), out of 40. Best level first; every gate must hold.
+    "levels": [{"level": "senior", "min_score": 36.0, "min_item": 4.25, "min_coverage": 8,
+                "min_mrs": 30, "max_high": 0, "max_escaped": 0, "max_confirmed_followups": 0},
+               {"level": "mid+", "min_score": 34.5, "min_item": 4.0, "min_coverage": 7,
+                "min_mrs": 15, "max_high": 0, "max_escaped": 1, "max_confirmed_followups": 0},
+               {"level": "mid", "min_score": 29.0, "min_item": 2.7, "min_coverage": 6,
+                "min_mrs": 5, "max_high": 1},
                {"level": "junior", "min_score": None}],
 }
 
@@ -258,10 +256,32 @@ MIGRATIONS = [
     );
     CREATE INDEX person_evaluations_person ON person_evaluations(gitlab_id, created_at);
     """,
+    # 9: per-MR scorecard — the AI rates every MR 1–5 per category (NULL = not
+    # applicable), so a 5 is earned, not "nothing found" (history/rate.py).
+    # Append-only; the newest rating per (mr, category) wins.
+    """
+    CREATE TABLE mr_ratings (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        mr_id      INTEGER NOT NULL REFERENCES mrs(mr_id),
+        category   TEXT NOT NULL,
+        score      INTEGER,                      -- 1..5, NULL = not applicable
+        reason     TEXT,
+        evidence   TEXT,
+        head_sha   TEXT,                         -- the commit that was rated
+        source     TEXT NOT NULL,                -- 'review' | 'backfill'
+        engine     TEXT,
+        rated_at   TEXT NOT NULL
+    );
+    CREATE INDEX mr_ratings_mr ON mr_ratings(mr_id, category, rated_at);
+    """,
+    # 10: which rubric a rating used (a new rubric re-rates); scoring from ratings
+    # instead of "5 minus findings" (see migrate())
+    "ALTER TABLE mr_ratings ADD COLUMN rubric_version INTEGER;",
 ]
 SCALE_CHANGE_NOTE = "評分改成 10 分制(越高越好、每項各自給分)"
 TAXONOMY_CHANGE_NOTE = "評分改成 8 個面向、每項 5 分(滿分 40)"
-SCALE_NOTES = (SCALE_CHANGE_NOTE, TAXONOMY_CHANGE_NOTE)
+RATING_CHANGE_NOTE = "評分改成每個 MR 逐項打分(5 分要掙來,沒評過的顯示未評估)"
+SCALE_NOTES = (SCALE_CHANGE_NOTE, TAXONOMY_CHANGE_NOTE, RATING_CHANGE_NOTE)
 TEAM = -1
 
 ROLES = {"member": "成員", "lead": "Team leader", "departed": "已離職"}
@@ -338,41 +358,34 @@ def migrate(conn: sqlite3.Connection) -> int:
             _to_ten_point_scale(conn)
         if number == 7:
             _to_eight_items(conn)
+        if number == 10:
+            _to_ratings(conn)
     return len(MIGRATIONS)
 
 
 def _to_ten_point_scale(conn) -> None:
-    """An old "lower is better" config gets a successor in the new shape: the
-    weights a human tuned are kept, the scale and levels are the new defaults.
-    The next score log entry names the change instead of whatever triggered it."""
-    version, cfg = scoring_config(conn)
-    if "deduction_per_weight" in cfg:
-        return                                    # fresh db: v1 is already new-style
-    new = {**cfg, "deduction_per_weight": DEFAULT_SCORING["deduction_per_weight"],
-           "levels": DEFAULT_SCORING["levels"]}
-    with conn:
-        conn.execute("INSERT INTO scoring_configs VALUES (?, ?, ?, ?, ?)",
-                     (version + 1, json.dumps(new, ensure_ascii=False), SCALE_CHANGE_NOTE,
-                      "system", now_iso()))
-        conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
-                     (SCALE_CHANGE_NOTE,))
+    """Migration 6 once gave a 10-point successor config; superseded by 10
+    (rating-based), which writes the one config a db upgraded today needs."""
 
 
 def _to_eight_items(conn) -> None:
-    """Successor config for the 8 × 5 scale: tuned severity / follow-up weights
-    and the window are kept, everything shaped by the taxonomy is new."""
+    """Migration 7's 8 × 5 successor config; superseded by 10 like 6."""
+
+
+def _to_ratings(conn) -> None:
+    """Successor config for rating-based scoring; the window and follow-up days
+    a human tuned are kept, the rest has no equivalent in the old formula."""
     version, cfg = scoring_config(conn)
-    if "item_max" in cfg:
-        return                                    # fresh db: v1 is already this shape
-    keep = ("window_days", "min_reviewed_mrs", "severity_weight", "followup_weight",
-            "followup_days")
+    if "finding_cap" in cfg:
+        return
+    keep = ("window_days", "min_reviewed_mrs", "followup_days")
     new = {**DEFAULT_SCORING, **{k: cfg[k] for k in keep if k in cfg}}
     with conn:
         conn.execute("INSERT INTO scoring_configs VALUES (?, ?, ?, ?, ?)",
-                     (version + 1, json.dumps(new, ensure_ascii=False), TAXONOMY_CHANGE_NOTE,
+                     (version + 1, json.dumps(new, ensure_ascii=False), RATING_CHANGE_NOTE,
                       "system", now_iso()))
         conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
-                     (TAXONOMY_CHANGE_NOTE,))
+                     (RATING_CHANGE_NOTE,))
 
 
 def get_state(conn, key: str, default=None):

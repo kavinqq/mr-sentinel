@@ -41,17 +41,20 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   GitLab; human input goes through the append-only `finding_reviews` /
   `scoring_configs` / `sync_requests` tables. Tests must never touch the real
   db (`BotHarness` mocks `history_sync.sync_mr`; use a temp path elsewhere).
-- Scores: **8 items (`history/parse.py` CATEGORIES) × `item_max` 5 = 40, higher
-  is better** (`history/score.py`). The 8 categories are defined once, in
-  `prompts/taxonomy.md` (rendered into every prompt via `__TAXONOMY__`); the
-  skeptic re-judges the category. A finding still there at merge costs again
-  (`escape_multiplier`); follow-ups count under a category, half until a human
-  confirms them (`followup_reviews`). A level is a gate (`min_score`,
-  `min_item`, `max_high`, ...). The formula lives in versioned
-  `scoring_configs`; change it there (dashboard 評分設定), not in code. Every
-  recompute goes through `history.snapshot.record` so it lands in the score
-  log. A db that was never fully scanned gets `history/scan.py` on its first
-  `run`; `scan_history.py` runs it by hand.
+- Scores: **8 items (`history/parse.py` CATEGORIES) × 5, higher is better**, and a
+  5 is *earned*: every personal MR is graded 1–5 per category by the model
+  (`history/rate.py`, `prompts/rate.md`; N/A when the aspect does not apply).
+  A kept finding caps its category's grade (high ≤ 2, medium ≤ 3, low ≤ 4);
+  escaping at merge and *confirmed* follow-ups lower it again. A person's item
+  is shrunk toward 3 (`prior_strength`), never-assessed items show "—", the
+  total is 8 × the mean of assessed items. Release MRs are never graded. The
+  8 categories are defined once in `prompts/taxonomy.md` (`__TAXONOMY__`). The
+  formula lives in versioned `scoring_configs`; change it there (dashboard
+  評分設定), not in code. Every recompute goes through `history.snapshot.record`
+  so it lands in the score log. Grading needs GitLab (diff + description): the
+  reviewer grades right after a review, `run` back-fills up to 40 per run,
+  `python3 -m history rate` does the rest. A db never fully scanned gets
+  `history/scan.py` on its first `run`; `scan_history.py` runs it by hand.
 - `dashboard/` is the one place pip dependencies are allowed (own venv,
   `dashboard/requirements.txt`). It never migrates `sentinel.db` (models are
   `managed=False`, see `routers.py`), raw models are read-only and human models

@@ -194,7 +194,9 @@ Notes on how this works, because it shapes what is possible:
 ```bash
 python3 scan_history.py          # first time: every project's MRs of the past 90 days
 python3 scan_history.py --dry-run   # only count what it would read
-python3 -m history report       # per person: score out of 10 per item, level
+python3 -m history rate         # AI grades each reviewed MR 1-5 per category (needs GitLab)
+python3 -m history evaluate     # AI-written strengths / weaknesses per person
+python3 -m history report       # per person: 8 items × 5, total out of 40, level
 ```
 
 - **The first scheduled `run` on a db that was never scanned does the scan

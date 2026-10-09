@@ -4,12 +4,17 @@
     <span><a class="ms-who" href="{% url 'person' r.author_id %}">{{ r.name|default:r.username }} <span class="handle">{{ r.username }}</span></a></span>
     <span>{% if r.ranked %}<span class="ms-level"><span class="ms-dot {{ r.level|level_dot }}"></span>{{ r.level|default:"資料不足" }}</span>{% else %}<span class="ms-chip">{% if r.role == "departed" %}已離職{% else %}Team leader{% endif %}</span>{% endif %}</span>
     <span class="ms-num ms-strong">{{ r.score|default_if_none:"—" }}</span>
-    <span class="ms-num" title="個人 {{ r.mr_ids|length|add:'0' }} · 含 release {{ r.release_mrs }}">{{ r.reviewed_mrs }}</span>
-    {% for it in r.item_list %}<span class="ms-num {{ it.score|item_cls:cfg.item_max }}" title="{{ it.label }}:{{ it.score }} / {{ cfg.item_max|floatformat:0 }}(扣 {{ it.deduction }},{{ it.count|default:0 }} 則{% if it.followups %} + 後續 {{ it.followups }}{% endif %})">{{ it.score }}</span>{% empty %}{% for key in item_short %}<span class="ms-num ms-dim">—</span>{% endfor %}{% endfor %}
+    <span class="ms-num" title="已打分 {{ r.rated_mrs }} / 個人 MR {{ r.own_mrs }}">{{ r.rated_mrs }}<span class="ms-of">/{{ r.own_mrs }}</span></span>
+    {% for it in r.item_list %}<span class="ms-num {{ it.score|item_cls:cfg.item_max }}" title="{{ it.label }}:{% if it.score is None %}還沒評估{% else %}{{ it.score }} / {{ cfg.item_max|floatformat:0 }}({{ it.n }} 筆評分,finding {{ it.count }} 則){% endif %}">{{ it.score|default_if_none:"—" }}</span>{% endfor %}
   </summary>
   <div class="ms-acc-body">
     {% if r.reviewed_mrs and r.role != "departed" %}<div style="margin:0 0 16px;padding-bottom:16px;border-bottom:1px solid var(--ms-line)">{% include "reviews/_evaluation.html" with evaluation=r.evaluation stale=r.evaluation_stale compact=True person_id=r.author_id %}</div>{% endif %}
-    <p class="ms-sub" style="margin:0 0 10px">{% if r.reviewed_mrs %}{{ r.explain }} · 嚴重度 High {{ r.severities.high }} · Medium {{ r.severities.medium }} · Low {{ r.severities.low }} · 後續 bug fix {{ r.followups.fix_mr|default:0 }} / AI 再抓到 {{ r.followups.ai_refind|default:0 }}{% endif %}{% if r.ranked and r.next_level %}<br>差 <strong>{{ r.next_level }}</strong>:{{ r.next_level_misses|join:"、" }}{% endif %}</p>
+    <dl class="ms-facts">
+      <div><dt>評估狀態</dt><dd>{{ r.explain }}</dd></div>
+      <div><dt>finding</dt><dd>High {{ r.severities.high }} · Medium {{ r.severities.medium }} · Low {{ r.severities.low }}{% if r.escaped %} · merge 時沒修 {{ r.escaped }}{% endif %}</dd></div>
+      <div><dt>後續 bug</dt><dd>已確認 {{ r.confirmed_followups }} · 推估 {{ r.followups.fix_mr|add:r.followups.ai_refind }}</dd></div>
+      {% if r.ranked and r.next_level %}<div><dt>差 {{ r.next_level }}</dt><dd>{{ r.next_level_misses|join:"、" }}</dd></div>{% endif %}
+    </dl>
     {% if r.records %}
     <table class="ms-mini">
       <thead><tr><th>日期</th><th>MR</th><th>類型</th><th>計分 finding</th><th class="ms-num">不計</th></tr></thead>
