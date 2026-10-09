@@ -531,9 +531,8 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
         out.append({"username": person["username"], "name": person["name"],
                     "author_id": person["author_id"], "role": role,
                     "ranked": role not in db.UNRANKED_ROLES, **report})
-    rank = {lv["level"]: i for i, lv in enumerate(cfg["levels"])}     # best level first
-    out.sort(key=lambda r: (not r["ranked"], r["level"] is None, rank.get(r["level"], 99),
-                            -(r["score"] if r["score"] is not None else -1)))
+    # ranked people by total, highest first; no score yet goes last
+    out.sort(key=lambda r: (not r["ranked"], r["score"] is None, -(r["score"] or 0)))
     return out
 
 

@@ -504,6 +504,17 @@ class TestRoles(DbCase):
         self.assertIsNone(avg["security"])                     # the lead's findings are not in it
         self.assertEqual(avg["correctness"], 2.42)             # (30 + 5 × 1.25) / 15
 
+    def test_ranked_by_total_highest_first(self):
+        from history import rate
+        self.seed()
+        for author, grade in ((7, 3), (8, 5)):
+            for i in range(5):
+                rate.store(self.conn, author * 100 + i, {c: {"score": grade, "reason": "", "evidence": []}
+                                                         for c in CATEGORIES}, None, "t", "x")
+        rows = score.team_report(self.conn, 1, CFG, NOW)
+        scores = [r["score"] for r in rows]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
     def test_latest_role_wins(self):
         self.seed()
         with self.conn:
