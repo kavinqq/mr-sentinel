@@ -19,6 +19,7 @@ from pathlib import Path
 
 from engines import parse_json_reply  # noqa: F401  (re-exported; tests use it)
 from engines.claude_engine import language_name, render_prompt
+from history.parse import CATEGORIES
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
@@ -33,6 +34,8 @@ def apply_verdicts(candidates: list[dict], verdicts: list[dict]) -> list[dict]:
             continue
         if v.get("severity") in ("high", "medium", "low"):
             cand = {**cand, "severity": v["severity"]}
+        if v.get("category") in CATEGORIES:          # the skeptic re-judges the category too
+            cand = {**cand, "category": v["category"]}
         kept.append(cand)
     return kept
 

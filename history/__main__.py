@@ -8,6 +8,8 @@
     sync [--full]        GitLab -> db (incremental by default)
     classify [--limit N] fill in missing categories with the model
     followups            recompute follow-up bugs
+    evaluate [--force] [--person ID]
+                         AI-written 優點 / 缺點 per person (only changed records unless --force)
     report [--json]      per-person aspects and levels
 """
 import argparse
@@ -18,7 +20,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
-from history import blame, classify, db, followups, scan, score, snapshot, sync
+from history import blame, classify, db, evaluate, followups, scan, score, snapshot, sync
 from history.parse import CATEGORIES
 from sentinel_config import SCRIPT_DIR, load_config
 
@@ -28,8 +30,8 @@ log = logging.getLogger("mr_sentinel.history")
 STALE_CLAIM_HOURS = 6
 
 
-def _requested(conn) -> tuple[bool, list[int]]:
-    """Claim queued dashboard requests: (full sync wanted, claimed request ids).
+def _requested(conn) -> tuple[set[str], list[int]]:
+    """Claim queued dashboard requests: (kinds wanted, claimed request ids).
     A claim older than STALE_CLAIM_HOURS without a finish (the job was killed)
     is claimed again, so no request can be stuck forever."""
     stale = db.utc(datetime.now(timezone.utc) - timedelta(hours=STALE_CLAIM_HOURS))
@@ -39,15 +41,24 @@ def _requested(conn) -> tuple[bool, list[int]]:
         with conn:
             conn.executemany("UPDATE sync_requests SET started_at = ? WHERE id = ?",
                              [(db.now_iso(), r["id"]) for r in rows])
-    return any(r["kind"] == "full_sync" for r in rows), [r["id"] for r in rows]
+    return {r["kind"] for r in rows}, [r["id"] for r in rows]
+
+
+def _evaluate(conn, config: dict, result: dict, force: bool) -> None:
+    result["evaluated"], bad = evaluate.evaluate_pending(
+        conn, config, force=force, trigger="dashboard 請求" if force else "排程")
+    if bad:
+        result["failed"]["evaluate"] = f"{bad} person(s) failed"
 
 
 def run(conn, config: dict, full: bool = False) -> dict:
-    wanted_full, request_ids = _requested(conn)
+    kinds, request_ids = _requested(conn)
+    wanted_full = "full_sync" in kinds
     result: dict = {"failed": {}}
     try:
         if scan.needed(conn):         # a new db / machine: the whole window first
             result.update(scan.scan(conn, config, progress=log.info))
+            _evaluate(conn, config, result, force=False)
             return result
         result.update(sync.sync_all(conn, config, full=full or wanted_full))
         version, cfg = db.scoring_config(conn)
@@ -58,6 +69,7 @@ def run(conn, config: dict, full: bool = False) -> dict:
         result["blamed"], result["blame_failed"] = blame.blame_pending(conn, config)
         result["score_changes"] = len(snapshot.record(
             conn, "dashboard 同步請求" if request_ids else "排程同步"))
+        _evaluate(conn, config, result, force="evaluate" in kinds)
     except Exception as exc:
         result["failed"]["run"] = f"{type(exc).__name__}: {exc}"
         raise
@@ -72,18 +84,21 @@ def run(conn, config: dict, full: bool = False) -> dict:
 
 
 def print_report(rows: list[dict], version: int, cfg: dict) -> None:
-    print(f"評分公式 v{version}:滿分 10,越高越好;每項扣 {cfg['deduction_per_weight']} × "
-          f"(該項加權問題 / 被 review 的 MR 數),總分 = 10 − 各項扣分;"
+    top = score.max_total(cfg)
+    print(f"評分公式 v{version}:{len(score.ITEMS)} 項各 {cfg['item_max']:g} 分、滿分 {top:g},越高越好;"
+          f"每項扣 {cfg['deduction_per_weight']:g} × (該項加權問題 / 被 review 的 MR 數);"
           f"近 {cfg['window_days']} 天;少於 {cfg['min_reviewed_mrs']} 個 MR 不給等級")
     print(f"門檻:" + " / ".join(f"{lv['level']} ≥ {lv['min_score']}" if lv["min_score"] is not None
                               else f"{lv['level']} 其餘" for lv in cfg["levels"]))
-    print("後續 bug 為推估值(30 天內同檔案的 fix MR / AI 再次抓到)\n")
+    print("後續 bug 為推估值(30 天內同檔案的 fix MR / AI 再次抓到),未確認的算一半\n")
     for r in rows:
         level = "Team leader(不排入評分)" if not r["ranked"] else (r["level"] or "資料不足")
         print(f"■ {r['name'] or r['username']} ({r['username']}) — {level}"
-              f"  {r['score']} / 10  [{r['explain']}]")
+              f"  {r['score']} / {top:g}  [{r['explain']}]")
         items = "  ".join(f"{v['label']} {v['score']}" for v in r["items"].values())
         print(f"   各項: {items or '—'}")
+        if r["escaped"] or r["unclassified"]:
+            print(f"   merge 時沒修 {r['escaped']} 則 · 待分類 {r['unclassified']} 則")
         sev = r["severities"]
         print(f"   嚴重度: 🔴{sev['high']} 🟠{sev['medium']} 🟡{sev['low']}"
               f"   後續 bug: fix MR {r['followups'].get('fix_mr', 0)} · AI 再抓到 "
@@ -106,6 +121,9 @@ def main(argv=None) -> int:
     p.add_argument("--days", type=int, help="how far back (default: scoring window_days)")
     p.add_argument("--project", action="append", help="only this project (repeatable)")
     p.add_argument("--dry-run", action="store_true", help="only count the MRs, write nothing")
+    p = sub.add_parser("evaluate", help="AI-written strengths / weaknesses per person")
+    p.add_argument("--force", action="store_true", help="redo everyone, not just changed records")
+    p.add_argument("--person", type=int, action="append", help="only this GitLab user id")
     p = sub.add_parser("report")
     p.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
@@ -137,6 +155,11 @@ def main(argv=None) -> int:
             return 0
         if args.cmd == "run":
             result = run(conn, config, full=args.full)
+        elif args.cmd == "evaluate":
+            done, bad = evaluate.evaluate_pending(conn, config, force=args.force,
+                                                  only=set(args.person) if args.person else None,
+                                                  trigger="手動")
+            result = {"evaluated": done, "failed": {"evaluate": f"{bad} person(s)"} if bad else {}}
         elif args.cmd == "scan":
             result = scan.scan(conn, config, days=args.days, only=args.project,
                                dry_run=args.dry_run, progress=lambda m: print(m, flush=True))

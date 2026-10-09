@@ -1,13 +1,14 @@
 {% load sentinel %}<details class="ms-acc">
   <summary class="ms-acc-row">
     <span class="chev material-symbols-outlined" aria-hidden="true">chevron_right</span>
-    <span><a class="ms-who" href="{% url 'person' r.author_id %}"><span class="avatar" aria-hidden="true">{{ r.name|default:r.username|initial }}</span>{{ r.name|default:r.username }} <span class="handle">{{ r.username }}</span></a></span>
+    <span><a class="ms-who" href="{% url 'person' r.author_id %}">{{ r.name|default:r.username }} <span class="handle">{{ r.username }}</span></a></span>
     <span>{% if r.ranked %}<span class="ms-level"><span class="ms-dot {{ r.level|level_dot }}"></span>{{ r.level|default:"資料不足" }}</span>{% else %}<span class="ms-chip">{% if r.role == "departed" %}已離職{% else %}Team leader{% endif %}</span>{% endif %}</span>
     <span class="ms-num ms-strong">{{ r.score|default_if_none:"—" }}</span>
     <span class="ms-num" title="個人 {{ r.mr_ids|length|add:'0' }} · 含 release {{ r.release_mrs }}">{{ r.reviewed_mrs }}</span>
-    {% for it in r.item_list %}<span class="ms-num {{ it.score|item_cls }}" title="{{ it.label }}:{{ it.score }} / 10(扣 {{ it.deduction }},{{ it.count|default:0 }} 則)">{{ it.score }}</span>{% empty %}{% for key in item_short %}<span class="ms-num ms-dim">—</span>{% endfor %}{% endfor %}
+    {% for it in r.item_list %}<span class="ms-num {{ it.score|item_cls:cfg.item_max }}" title="{{ it.label }}:{{ it.score }} / {{ cfg.item_max|floatformat:0 }}(扣 {{ it.deduction }},{{ it.count|default:0 }} 則{% if it.followups %} + 後續 {{ it.followups }}{% endif %})">{{ it.score }}</span>{% empty %}{% for key in item_short %}<span class="ms-num ms-dim">—</span>{% endfor %}{% endfor %}
   </summary>
   <div class="ms-acc-body">
+    {% if r.reviewed_mrs and r.role != "departed" %}<div style="margin:0 0 16px;padding-bottom:16px;border-bottom:1px solid var(--ms-line)">{% include "reviews/_evaluation.html" with evaluation=r.evaluation stale=r.evaluation_stale compact=True person_id=r.author_id %}</div>{% endif %}
     <p class="ms-sub" style="margin:0 0 10px">{% if r.reviewed_mrs %}{{ r.explain }} · 嚴重度 High {{ r.severities.high }} · Medium {{ r.severities.medium }} · Low {{ r.severities.low }} · 後續 bug fix {{ r.followups.fix_mr|default:0 }} / AI 再抓到 {{ r.followups.ai_refind|default:0 }}{% endif %}{% if r.ranked and r.next_level %}<br>差 <strong>{{ r.next_level }}</strong>:{{ r.next_level_misses|join:"、" }}{% endif %}</p>
     {% if r.records %}
     <table class="ms-mini">

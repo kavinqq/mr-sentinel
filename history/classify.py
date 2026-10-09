@@ -11,6 +11,7 @@ import logging
 import re
 
 import engines
+import engines.claude_engine
 from history.parse import CATEGORIES
 from sentinel_config import SCRIPT_DIR
 
@@ -18,28 +19,36 @@ log = logging.getLogger("mr_sentinel.history")
 
 WORK_DIR = SCRIPT_DIR / "reviews" / "_history"
 BATCH = 20
-EXCERPT = 600
+EXCERPT = 1200
 
-PROMPT = """You file code-review findings under exactly one category each.
+NEEDS_REVIEW = "needs_review"      # the model could not tell: a human decides, not scored
+# needs evidence the classifier never sees (the MR description): only a review
+# with the context, or a human, may file a finding there
+BLIND_CATEGORIES = {"requirements"}
 
-Categories:
-- security: authorization/IDOR, injection, secrets, PII or data leaks, unsafe input handling
-- correctness: logic bugs, wrong results, crashes, races, data loss or corruption
-- performance: N+1 queries, unbounded loops/queries, needless heavy work
-- code_quality: error handling, validation, unhandled edge cases, testability
-- code_smell: duplication, dead code, misleading names, design or structure smells
+PROMPT_HEAD = """You file code-review findings under exactly one category each.
 
-Pick the category of the *consequence* described (a missing permission check that
-leaks data is security, not correctness). Reply with ONLY this JSON, one entry per id:
-{"categories": [{"id": <id>, "category": "<one of the categories above>"}]}
+"""
+PROMPT_TAIL = """
+
+You do NOT see the MR description, so never answer "requirements" — file the
+defect under the category of its consequence instead. If the text does not let
+you tell which category applies, answer "needs_review" — never guess.
+Reply with ONLY this JSON, one entry per id:
+{"categories": [{"id": <id>, "category": "<one of the 8 keys, or needs_review>"}]}
 
 Findings:
 """
 
 
+def prompt() -> str:
+    return PROMPT_HEAD + engines.claude_engine.taxonomy() + PROMPT_TAIL
+
+
 def excerpt(body: str) -> str:
-    """Headline + 問題/後果 rows; the <details> evidence is long and not needed."""
-    body = (body or "").split("<details>")[0]
+    """Headline + 問題/後果/修正 rows, then as much of the evidence as fits:
+    the category often hinges on the failure path the evidence describes."""
+    body = re.sub(r"</?(details|summary)>", "", body or "")
     body = re.sub(r"\n{2,}", "\n", body).strip()
     return body[:EXCERPT]
 
@@ -49,7 +58,8 @@ def valid_categories(reply: dict, ids) -> dict:
     out = {}
     for item in (reply or {}).get("categories") or []:
         if isinstance(item, dict) and str(item.get("id")) in wanted \
-                and item.get("category") in CATEGORIES:
+                and (item.get("category") in CATEGORIES or item.get("category") == NEEDS_REVIEW) \
+                and item.get("category") not in BLIND_CATEGORIES:
             out[int(item["id"])] = item["category"]
     return out
 
@@ -68,7 +78,7 @@ def classify_pending(conn, config: dict, limit: int = 200) -> tuple[int, int]:
         batch = rows[start:start + BATCH]
         items = [{"id": r["note_id"], "finding": excerpt(r["body"])} for r in batch]
         try:
-            reply = engine.run_json(PROMPT + json.dumps(items, ensure_ascii=False),
+            reply = engine.run_json(prompt() + json.dumps(items, ensure_ascii=False),
                                     WORK_DIR, review_cfg)
         except Exception:
             log.exception("classifier batch failed; those findings stay uncategorized")

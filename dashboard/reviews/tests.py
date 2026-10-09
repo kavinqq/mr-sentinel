@@ -16,7 +16,7 @@ from .models import Finding, FindingReview, ScoringConfig, SyncRequest
 
 ME = 42
 TABLES = ("score_events", "score_state", "email_aliases", "roster_additions", "finding_blame",
-          "mr_commits", "person_roles", "finding_reviews", "followups", "findings", "mr_files", "mrs", "people",
+          "mr_commits", "person_roles", "finding_reviews", "followup_reviews", "person_evaluations", "followups", "findings", "mr_files", "mrs", "people",
           "sync_requests", "sync_state")
 
 
@@ -74,9 +74,9 @@ class TestPages(DashboardCase):
         resp = self.client.get(reverse("admin:index"))
         self.assertEqual(resp.status_code, 200)
         (row,) = resp.context["ranked"]
-        # 5 high security findings over 5 MRs: 10 − 4 × 37.5 / 5, floored at 0
-        self.assertEqual((row["username"], row["reviewed_mrs"], row["score"]), ("pk7", 5, 0.0))
-        self.assertEqual(row["weights"]["security"], 37.5)
+        # 5 high security findings over 5 MRs, merged unfixed (×2): security floored at 0
+        self.assertEqual((row["username"], row["reviewed_mrs"], row["score"]), ("pk7", 5, 35.0))
+        self.assertEqual(row["weights"]["security"], 75.0)
         self.assertContains(resp, "小明")
 
     def test_person_page_and_gitlab_links(self):
@@ -158,10 +158,11 @@ class TestMembersAndLog(DashboardCase):
 
 
 class TestRadar(DashboardCase):
-    def test_person_radar_has_two_datasets_and_six_axes(self):
+    def test_person_radar_has_two_datasets_and_eight_axes(self):
         radar = services.person_detail(7)["radar"]
         data = json.loads(radar["data"])
-        self.assertEqual(len(data["labels"]), 6)
+        self.assertEqual(len(data["labels"]), 8)
+        self.assertEqual(json.loads(radar["options"])["scales"]["r"]["max"], 5)
         self.assertEqual([d["label"] for d in data["datasets"]], ["小明", "團隊平均"])
         self.assertEqual(json.loads(radar["options"])["scales"]["r"]["pointLabels"]["font"]["size"], 15)
 
@@ -217,14 +218,15 @@ class TestScoring(DashboardCase):
 
     def test_valid_change_creates_the_next_version_and_takes_effect(self):
         cfg = self.default()
-        cfg["severity_weight"]["high"] = 1.0
+        cfg["severity_weight"]["high"] = 0.5
+        cfg["escape_multiplier"] = 0
         resp = self.client.post(reverse("scoring"), {"config": json.dumps(cfg), "note": "test"})
         self.assertEqual(resp.status_code, 302)
         latest = ScoringConfig.objects.order_by("-version").first()
         self.assertEqual((latest.version, latest.actor), (2, "admin"))
         version, _, (row,) = services.team()
-        self.assertEqual((version, row["score"]), (2, 4.0))     # 10 − 4 × (5 × 1.0 × 1.5) / 5
-        self.assertEqual(row["items"]["security"]["score"], 4.0)
+        self.assertEqual(row["items"]["security"]["score"], 2.0)   # 5 − 4 × (5 × 0.5 × 1.5) / 5
+        self.assertEqual((version, row["score"]), (2, 37.0))
 
     def test_invalid_configs_are_rejected(self):
         bad = []
@@ -260,8 +262,57 @@ class TestTrend(DashboardCase):
         detail = services.person_detail(7)
         (month,) = detail["trend"]
         # 5 high security findings (7.5 each) + one fix_mr follow-up (3) over 5 MRs
-        self.assertEqual((month["mrs"], month["weight"]), (5, 40.5))
+        # ×2 merged unfixed = 75, + an unconfirmed fix MR 3 × 0.5
+        self.assertEqual((month["mrs"], month["weight"]), (5, 76.5))
         self.assertEqual(month["score"], detail["summary"]["score"])          # same formula
+
+
+class TestFollowupReview(DashboardCase):
+    def test_confirm_then_unrelated_changes_the_weight_and_logs(self):
+        conn = services.history_conn()
+        with conn:
+            conn.execute("INSERT INTO followups VALUES (100, 'fix_mr', '999', 'a.py', 3)")
+        conn.close()
+        services.record("baseline", "system")
+        (fu,) = services.person_detail(7)["followups"]
+        self.assertEqual((fu["verdict"], fu["weight"], fu["counts_under"]), (None, 1.5, "正確性"))
+        url = reverse("review_followup", args=[7])
+        key = {"feature_mr_id": 100, "kind": "fix_mr", "source_ref": "999"}
+        self.client.post(url, {**key, "verdict": "confirmed"})
+        (fu,) = services.person_detail(7)["followups"]
+        self.assertEqual((fu["verdict"], fu["weight"]), ("confirmed", 3.0))
+        self.client.post(url, {**key, "verdict": "unrelated"})
+        detail = services.person_detail(7)
+        self.assertEqual(detail["followups"][0]["weight"], 0.0)
+        self.assertEqual(detail["summary"]["followups"]["fix_mr"], 0)
+        self.assertIn("後續 bug 覆核", services.ScoreEvent.objects.first().trigger)
+        # a made-up follow-up or verdict is refused
+        self.client.post(url, {**key, "source_ref": "1", "verdict": "confirmed"})
+        self.client.post(url, {**key, "verdict": "maybe"})
+        self.assertEqual(services.FollowupReview.objects.count(), 2)
+
+
+class TestEvaluation(DashboardCase):
+    def test_person_page_and_overview_show_the_evaluation(self):
+        conn = services.history_conn()
+        with conn:
+            conn.execute("""INSERT INTO person_evaluations(gitlab_id, created_at, formula_version,
+                            input_hash, summary, strengths, weaknesses) VALUES
+                            (7, '2026-10-09T00:00:00Z', 1, 'old', '整體評語',
+                             '[{"point": "優點一", "evidence": "證據"}]',
+                             '[{"point": "缺點一", "evidence": "e", "advice": "改這個"}]')""")
+        conn.close()
+        resp = self.client.get(reverse("person", args=[7]))
+        for text in ("整體評語", "優點一", "缺點一", "改這個", "紀錄已變動"):   # hash 'old' is stale
+            self.assertContains(resp, text)
+        self.assertContains(self.client.get(reverse("admin:index")), "缺點一")
+
+    def test_regenerate_button_queues_and_comes_back(self):
+        with mock.patch.object(services.subprocess, "Popen"):
+            resp = self.client.post(reverse("sync_request"),
+                                    {"kind": "evaluate", "next": reverse("person", args=[7])})
+        self.assertEqual(resp["Location"], reverse("person", args=[7]))
+        self.assertEqual(services.SyncRequest.objects.get().kind, "evaluate")
 
 
 class TestCrossAuthorFollowup(DashboardCase):

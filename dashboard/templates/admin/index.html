@@ -9,7 +9,7 @@
   <div class="ms-head">
     <div>
       <h1>團隊總覽</h1>
-      <p class="ms-sub">近 {{ cfg.window_days }} 天 · 評分公式 v{{ version }} · 滿分 10 · 越高越好 · 上次同步 {{ status.last_sync_at|tw }}</p>
+      <p class="ms-sub">近 {{ cfg.window_days }} 天 · 評分公式 v{{ version }} · 8 項 × {{ cfg.item_max|floatformat:0 }} 分 · 滿分 {{ max_total|floatformat:0 }} · 越高越好 · 上次同步 {{ status.last_sync_at|tw }}</p>
     </div>
     <div class="ms-row">
       <form method="post" action="{% url 'sync_request' %}">{% csrf_token %}
@@ -25,7 +25,7 @@
   {% if unknown_emails %}<div class="ms-info">有 <strong>{{ unknown_emails }} 個 commit email</strong> 還不知道是誰的,相關的 finding 暫時先算在 MR 作者身上(release MR 上的則不計)。<a class="ms-link" href="{% url 'emails' %}">去指定 →</a></div>{% endif %}
 
   <div class="ms-stats">
-    <div class="ms-stat"><div class="k">團隊總分</div><div class="v">{{ team_score|default_if_none:"—" }}<span class="ms-dim" style="font-size:1rem"> / 10</span></div><div class="d">不含 team leader / 已離職</div></div>
+    <div class="ms-stat"><div class="k">團隊總分</div><div class="v">{{ team_score|default_if_none:"—" }}<span class="ms-dim" style="font-size:1rem"> / {{ max_total|floatformat:0 }}</span></div><div class="d">不含 team leader / 已離職</div></div>
     <div class="ms-stat"><div class="k">排入評分的成員</div><div class="v">{{ kpi.people }}</div>
       <div class="d">{% for lv, n in kpi.levels.items %}{{ lv }} {{ n }}{% if not forloop.last %} · {% endif %}{% endfor %}{% if kpi.unrated %} · 資料不足 {{ kpi.unrated }}{% endif %}</div></div>
     <div class="ms-stat"><div class="k">被 review 的 MR</div><div class="v">{{ kpi.reviewed }}</div><div class="d">含參與的 release MR</div></div>
@@ -46,15 +46,15 @@
 
   <section class="ms-group">
     <div class="ms-group-head"><h2>成員</h2><span class="count">{{ ranked|length }}</span>
-      <span class="hint">每項滿分 10 · 點一列展開每一次 MR 的紀錄 · 少於 {{ cfg.min_reviewed_mrs }} 個 MR 不給等級</span></div>
+      <span class="hint">每項滿分 {{ cfg.item_max|floatformat:0 }} · 點一列展開每一次 MR 的紀錄 · 少於 {{ cfg.min_reviewed_mrs }} 個 MR 不給等級</span></div>
     <div class="ms-acc-list">
       {% include "reviews/_acc_head.html" with score_label="分數" %}
       {% for r in ranked %}{% include "reviews/_member_acc.html" %}
       {% empty %}<div class="ms-empty">還沒有資料 — 按「完整同步」,或執行 <code>python3 -m history run --full</code></div>{% endfor %}
     </div>
-    <p class="ms-formula">每一項從 10 分開始扣:扣分 = {{ cfg.deduction_per_weight }} × 該項的加權問題 / 參與且被 review 的 MR 數(含 release);總分 = 10 − 各項扣分加總<br>
-      加權:High {{ cfg.severity_weight.high }} · Medium {{ cfg.severity_weight.medium }} · Low {{ cfg.severity_weight.low }}{% if cfg.category_multiplier.security %}(資安 ×{{ cfg.category_multiplier.security }}){% endif %} · 後續 fix MR {{ cfg.followup_weight.fix_mr }} · AI 再抓到 {{ cfg.followup_weight.ai_refind }} — 例:10 個 MR 有 1 則 Medium,該項扣 0.8<br>
-      等級是門檻,條件全部符合才算:{% for lv in cfg.levels %}{% if lv.min_score is not None %}<strong>{{ lv.level }}</strong> 總分 ≥ {{ lv.min_score }}{% if lv.max_high is not None %}、high ≤ {{ lv.max_high }}{% endif %}{% if lv.max_fix_mr is not None %}、fix ≤ {{ lv.max_fix_mr }}{% endif %}{% if lv.min_clean_rate is not None %}、乾淨 MR ≥ {% widthratio lv.min_clean_rate 1 100 %}%{% endif %}{% if not forloop.last %} · {% endif %}{% else %}其餘 <strong>{{ lv.level }}</strong>{% endif %}{% endfor %}</p>
+    <p class="ms-formula">8 項各從 {{ cfg.item_max|floatformat:0 }} 分開始扣(最低 0):扣分 = {{ cfg.deduction_per_weight }} × 該項的加權問題 / 參與且被 review 的 MR 數(含 release);總分 = 8 項加總<br>
+      加權:High {{ cfg.severity_weight.high }} · Medium {{ cfg.severity_weight.medium }} · Low {{ cfg.severity_weight.low }} × 面向倍率({% for k, v in cfg.category_multiplier.items %}{{ categories|get:k }} ×{{ v }}{% if not forloop.last %}、{% endif %}{% endfor %}) · merge 時沒修再 ×{{ cfg.escape_multiplier|add:1 }} · 後續 fix MR {{ cfg.followup_weight.fix_mr }} / AI 再抓到 {{ cfg.followup_weight.ai_refind }}(未確認 ×{{ cfg.unconfirmed_followup_factor }},算進對應面向)<br>
+      等級是門檻,條件全部符合才算:{% for lv in cfg.levels %}{% if lv.min_score is not None %}<strong>{{ lv.level }}</strong> 總分 ≥ {{ lv.min_score }}{% if lv.min_item is not None %}、每項 ≥ {{ lv.min_item }}{% endif %}{% if lv.max_high is not None %}、high ≤ {{ lv.max_high }}{% endif %}{% if lv.max_fix_mr is not None %}、fix ≤ {{ lv.max_fix_mr }}{% endif %}{% if lv.max_escaped is not None %}、merge 沒修 ≤ {{ lv.max_escaped }}{% endif %}{% if lv.min_clean_rate is not None %}、乾淨 MR ≥ {% widthratio lv.min_clean_rate 1 100 %}%{% endif %}{% if not forloop.last %} · {% endif %}{% else %}其餘 <strong>{{ lv.level }}</strong>{% endif %}{% endfor %}</p>
   </section>
 
   <div class="ms-cols">
@@ -67,8 +67,8 @@
     {% if radar %}
     <section class="ms-panel">
       <h3>團隊各項分數</h3>
-      <p class="ms-sub">各項分數(滿分 10),越靠外越好 · 不含 team leader / 已離職</p>
-      <div class="ms-radar"><canvas class="chart" data-type="radar" data-value="{{ radar.data }}" data-options="{{ radar.options }}" role="img" aria-label="團隊各項分數(滿分 10)的雷達圖"></canvas></div>
+      <p class="ms-sub">各項分數(每項滿分 {{ cfg.item_max|floatformat:0 }}),越靠外越好 · 不含 team leader / 已離職</p>
+      <div class="ms-radar"><canvas class="chart" data-type="radar" data-value="{{ radar.data }}" data-options="{{ radar.options }}" role="img" aria-label="團隊各項分數的雷達圖"></canvas></div>
     </section>
     {% endif %}
   </div>

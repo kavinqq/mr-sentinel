@@ -26,6 +26,11 @@ def get(mapping, key):
     return (mapping or {}).get(key)
 
 
+@register.filter
+def split(value):
+    return str(value).split()
+
+
 SEVERITY_LABEL = {"high": "High", "medium": "Medium", "low": "Low"}
 
 
@@ -36,12 +41,13 @@ def level_dot(level):
 
 
 @register.filter
-def item_cls(value):
-    """Tone for an item score out of 10: full marks fade, weak ones stand out."""
+def item_cls(value, top=5):
+    """Tone for an item score (out of `top`): full marks fade, weak ones stand out."""
     if value is None:
         return "ms-dim"
-    return "ms-item full" if value >= 10 else "ms-item weak" if value < 6 else \
-        "ms-item soft" if value < 8.5 else "ms-item"
+    ratio = value / float(top or 5)
+    return "ms-item full" if ratio >= 1 else "ms-item weak" if ratio < 0.6 else \
+        "ms-item soft" if ratio < 0.85 else "ms-item"
 
 
 @register.filter

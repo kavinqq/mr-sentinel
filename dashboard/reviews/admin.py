@@ -8,7 +8,8 @@ from django.contrib.auth.models import Group, User
 from unfold.admin import ModelAdmin
 from unfold.forms import AdminPasswordChangeForm, UserChangeForm, UserCreationForm
 
-from .models import (EmailAlias, Finding, FindingReview, MergeRequest, Person, PersonRole,
+from .models import (EmailAlias, Finding, FindingReview, FollowupReview, MergeRequest, Person,
+                     PersonRole,
                      RosterAddition, ScoreEvent, ScoringConfig, SyncRequest, SyncState)
 
 # re-register auth with unfold's styling (django registers the plain ones first)
@@ -58,7 +59,8 @@ class MergeRequestAdmin(ViewOnlyAdmin):
 class FindingAdmin(ViewOnlyAdmin):
     list_display = ("title", "severity", "category", "category_source", "status", "appeal_verdict",
                     "present", "mr", "created_at")
-    list_filter = ("severity", "category", "category_source", "status", "appeal_verdict", "present")
+    list_filter = ("severity", "category", "category_legacy", "category_source", "status",
+                   "appeal_verdict", "present")
     search_fields = ("title", "file", "body")
     list_select_related = ("mr",)
 
@@ -67,6 +69,12 @@ class FindingAdmin(ViewOnlyAdmin):
 class FindingReviewAdmin(ViewOnlyAdmin):
     list_display = ("created_at", "actor", "note", "category", "excluded", "reason")
     list_filter = ("actor", "category", "excluded")
+
+
+@admin.register(FollowupReview)
+class FollowupReviewAdmin(ViewOnlyAdmin):
+    list_display = ("created_at", "actor", "feature_mr_id", "kind", "source_ref", "verdict", "reason")
+    list_filter = ("actor", "kind", "verdict")
 
 
 @admin.register(PersonRole)

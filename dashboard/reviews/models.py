@@ -96,6 +96,7 @@ class Finding(ReadOnlyModel):
     appeal_verdict = models.TextField(null=True)
     present = models.IntegerField(default=1)
     last_seen_at = models.TextField(null=True)
+    category_legacy = models.TextField(null=True)        # before the 8-way taxonomy
 
     class Meta(ReadOnlyModel.Meta):
         db_table = "findings"
@@ -158,6 +159,23 @@ class FindingReview(AppendOnlyModel):
 
     class Meta(AppendOnlyModel.Meta):
         db_table = "finding_reviews"
+        ordering = ["-created_at", "-id"]
+
+
+class FollowupReview(AppendOnlyModel):
+    """A human verdict on a guessed follow-up bug; the latest per follow-up wins
+    (history.score.followup_verdicts): confirmed = full weight, unrelated = none."""
+    id = models.AutoField(primary_key=True)
+    feature_mr_id = models.IntegerField()
+    kind = models.TextField()
+    source_ref = models.TextField()
+    verdict = models.TextField()
+    reason = models.TextField(null=True, blank=True)
+    actor = models.TextField()
+    created_at = models.TextField()
+
+    class Meta(AppendOnlyModel.Meta):
+        db_table = "followup_reviews"
         ordering = ["-created_at", "-id"]
 
 
@@ -246,8 +264,8 @@ class ScoreEvent(ReadOnlyModel):
     def rescaled(self):
         """No meaningful +/− : the 10-point switch itself (old and new on different
         scales), or an event from before it (lower was better then)."""
-        from history.db import SCALE_CHANGE_NOTE
-        return self.trigger.startswith(SCALE_CHANGE_NOTE) or \
+        from history.db import SCALE_NOTES
+        return self.trigger.startswith(SCALE_NOTES) or \
             self.formula_version in ScoringConfig.lower_is_better_versions()
 
     @property

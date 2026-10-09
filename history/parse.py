@@ -1,14 +1,24 @@
 """Pure parsing helpers (no IO): AI comment bodies, fix-MR detection, categories."""
 import re
 
-# The 面向 every finding is filed under. Order = display order.
+# The 面向 every finding is filed under. Order = display order; the full
+# definitions and the tie-break order live in prompts/taxonomy.md (one text,
+# shared by every prompt that files a finding).
 CATEGORIES = {
-    "security": "資安",            # authz/IDOR, injection, secrets, PII leaks, unsafe input
-    "correctness": "正確性",       # logic bugs, wrong results, crashes, races, data loss
-    "performance": "效能",         # N+1, unbounded loops/queries, needless heavy work
-    "code_quality": "程式品質",    # error handling, validation, edge cases, testability
-    "code_smell": "Code smell",    # duplication, dead code, misleading names, design smells
+    "security": "資安",              # authz, injection, live secrets, PII, security controls
+    "requirements": "需求符合度",    # vs. the MR description / spec: missing, wrong, unasked-for
+    "correctness": "正確性",         # wrong results, crashes, races, data loss
+    "compatibility": "相容與遷移",   # existing API / schema / data / callers / rollout order
+    "operability": "營運與復原",     # cannot detect, retry, compensate, roll back; deploy gaps
+    "performance": "效能",           # N+1, unbounded work under a stated load
+    "verification": "驗證有效性",    # tests that cannot catch the defect; a CI green that lies
+    "maintainability": "可維護性",   # duplication, dead code, misleading names, over-engineering
 }
+# categories before the 8-way taxonomy: where they can go without a judgment.
+# code_quality has no reliable home (it split across several) -> reclassify.
+LEGACY_CATEGORIES = {"security": "security", "correctness": "correctness",
+                     "performance": "performance", "code_smell": "maintainability",
+                     "code_quality": None}
 
 CATEGORY_MARKER_RE = re.compile(r"<!--\s*mr-sentinel:category=([a-z_]+)\s*-->")
 
@@ -46,7 +56,9 @@ def parse_comment(body: str) -> dict:
         severity = _EMOJI_SEVERITY.get(first[:1])
         title = first[1:].strip() if severity else None
     marker = CATEGORY_MARKER_RE.search(body)
-    category = marker.group(1) if marker and marker.group(1) in CATEGORIES else None
+    category = marker.group(1) if marker else None
+    if category not in CATEGORIES:            # an old comment's key, or garbage
+        category = LEGACY_CATEGORIES.get(category)
     return {"severity": severity, "title": title, "category": category}
 
 

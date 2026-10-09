@@ -34,7 +34,7 @@ DEEP_VETTING = """4. ADVERSARIAL VETTING (gate 2): use the Task tool to dispatch
 5. FINAL ADJUDICATION (gate 3 — you decide): this is a large, high-risk MR, so
    make the final call yourself. Start from the skeptic's verdicts, but RESCUE
    any dropped finding you are confident is a real defect, discard the rest, and
-   finalize each severity. These comments post publicly and automatically:
+   finalize each severity and category (the skeptic re-judges both). These comments post publicly and automatically:
    when still in doubt, DROP — a false positive costs more than a miss."""
 
 LITE_VETTING = """4. SELF-REVIEW (mandatory): this is a small MR reviewed in a SINGLE pass —
@@ -57,6 +57,11 @@ def language_name(code: str) -> str:
     return LANGUAGE_NAMES.get(code, code)
 
 
+def taxonomy() -> str:
+    """prompts/taxonomy.md: the one definition of the 8 categories + severity bar."""
+    return (Path(__file__).resolve().parent.parent / "prompts" / "taxonomy.md").read_text().strip()
+
+
 def render_prompt(template: str, language: str, worktree: str,
                   context_file: str, output_file: str, vetting: str = "") -> str:
     """Token replacement, not str.format(): the templates are full of JSON braces.
@@ -66,6 +71,7 @@ def render_prompt(template: str, language: str, worktree: str,
     """
     return (template
             .replace("__VETTING__", vetting)
+            .replace("__TAXONOMY__", taxonomy())
             .replace("__LANGUAGE__", language_name(language))
             .replace("__WORKTREE__", worktree)
             .replace("__CONTEXT_FILE__", context_file)

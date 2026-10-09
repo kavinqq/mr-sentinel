@@ -150,8 +150,11 @@ UNFOLD = {
             "950": "oklch(25.7% .07 281.288)",
         },
         "font": {
-            "default-light": "var(--color-base-700)",
-            "important-light": "var(--color-base-900)",
+            # no light grey text anywhere: "subtle" (sidebar group titles, help
+            # text) is as dark as body text used to be
+            "subtle-light": "var(--color-base-700)",
+            "default-light": "var(--color-base-800)",
+            "important-light": "var(--color-base-950)",
         },
     },
     "SIDEBAR": {
@@ -174,6 +177,7 @@ UNFOLD = {
             ]},
             {"title": "紀錄", "separator": True, "collapsible": True, "items": [
                 _nav("覆核紀錄", "fact_check", reverse_lazy("admin:reviews_findingreview_changelist")),
+                _nav("後續 bug 覆核", "bug_report", reverse_lazy("admin:reviews_followupreview_changelist")),
                 _nav("角色紀錄", "badge", reverse_lazy("admin:reviews_personrole_changelist")),
                 _nav("Email 紀錄", "contact_mail", reverse_lazy("admin:reviews_emailalias_changelist")),
                 _nav("評分版本", "history", reverse_lazy("admin:reviews_scoringconfig_changelist")),

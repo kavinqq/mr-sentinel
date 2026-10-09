@@ -290,40 +290,42 @@ class TestScore(unittest.TestCase):
         fs = self.findings(("high", "security", None), ("medium", "correctness", None),
                            ("low", None, None), ("high", "correctness", "accept"))
         r = score.person_report(self.mrs(5), fs, [{"kind": "fix_mr"}], CFG, 1, NOW)
-        # 5×1.5 + 2 + 0.5 = 10 findings, +3 follow-up = 13; ×4 / 5 MRs = 10.4 off -> 0
-        self.assertEqual((r["finding_weight"], r["followup_weight"], r["score"]), (10.0, 3.0, 0.0))
-        self.assertEqual(r["level"], "junior")
-        # per item: security 10 − 4×7.5/5, correctness 10 − 4×2/5, the uncategorized
-        # low counts under code quality, follow-ups 10 − 4×3/5
+        # security 5×1.5 = 7.5; correctness 2 + an unconfirmed fix MR 3×0.5 = 3.5;
+        # the uncategorized low is listed but not scored; the accepted appeal is out
+        self.assertEqual((r["finding_weight"], r["followup_weight"]), (9.5, 1.5))
+        self.assertEqual(r["unclassified"], 1)
+        # per item 5 − 4 × weight / 5 MRs, floored at 0: security 0, correctness 2.2
         self.assertEqual({k: v["score"] for k, v in r["items"].items()},
-                         {"security": 4.0, "correctness": 8.4, "performance": 10.0,
-                          "code_quality": 9.6, "code_smell": 10.0, "followups": 7.6})
-        self.assertEqual(r["items"]["code_quality"]["count"], 1)
+                         {"security": 0.0, "requirements": 5.0, "correctness": 2.2,
+                          "compatibility": 5.0, "operability": 5.0, "performance": 5.0,
+                          "verification": 5.0, "maintainability": 5.0})
+        self.assertEqual((r["score"], r["max_score"], r["level"]), (32.2, 40.0, "junior"))
+        self.assertEqual(r["items"]["correctness"]["followups"], 1)
         self.assertEqual(r["appeal_accepted"], 1)
-        self.assertEqual(r["aspects"]["uncategorized"]["count"], 1)
 
     def test_a_low_average_cannot_buy_back_a_high_finding(self):
-        # 1 high over 40 MRs: 10 − 4×5/40 = 9.5 would be senior on score alone
+        # 1 high over 40 MRs: 40 − 4×5/40 = 39.5 would be senior on score alone
         fs = self.findings(("high", "correctness", None))
         r = score.person_report(self.mrs(40), fs, [], CFG, 1, NOW)
-        self.assertEqual((r["score"], r["level"]), (9.5, "mid"))
+        self.assertEqual((r["score"], r["level"]), (39.5, "mid"))
         self.assertEqual(r["next_level"], "mid+")
         self.assertEqual(r["next_level_misses"], ["high finding 1 則 > 0"])
 
     def test_clean_rate_gate(self):
-        # 3 low findings on 3 different MRs of 10: 10 − 4×1.5/10 = 9.4 but only 70% clean
+        # 3 low maintainability (×0.5) on 3 different MRs of 10: 40 − 4×0.75/10 = 39.7,
+        # but only 70% clean
         fs = score.effective_findings(
-            [{"note_id": i, "mr_id": i, "severity": "low", "category": "code_smell",
+            [{"note_id": i, "mr_id": i, "severity": "low", "category": "maintainability",
               "appeal_verdict": None} for i in range(3)], [])
         r = score.person_report(self.mrs(10), fs, [], CFG, 1, NOW)
-        self.assertEqual((r["score"], r["clean_mrs"], r["clean_rate"]), (9.4, 7, 0.7))
+        self.assertEqual((r["score"], r["clean_mrs"], r["clean_rate"]), (39.7, 7, 0.7))
         self.assertEqual(r["level"], "mid")
         self.assertIn("乾淨 MR 70% < 85%", r["next_level_misses"])
 
     def test_spotless_is_senior_and_has_nothing_above(self):
         r = score.person_report(self.mrs(20), [], [], CFG, 1, NOW)
         self.assertEqual((r["score"], r["level"], r["next_level"], r["next_level_misses"]),
-                         (10.0, "senior", None, []))
+                         (40.0, "senior", None, []))
 
     def test_levels_without_gates_still_work(self):
         cfg = {**CFG, "levels": [{"level": "a", "min_score": 5}, {"level": "b", "min_score": None}]}
@@ -333,7 +335,7 @@ class TestScore(unittest.TestCase):
 
     def test_too_few_mrs_has_no_level(self):
         r = score.person_report(self.mrs(4), [], [], CFG, 1, NOW)
-        self.assertEqual((r["score"], r["level"]), (10.0, None))
+        self.assertEqual((r["score"], r["level"]), (40.0, None))
 
     def test_latest_override_wins_per_field(self):
         raw = [{"note_id": 1, "mr_id": 1, "severity": "high", "category": "correctness"}]
@@ -357,8 +359,9 @@ class TestTeamReport(DbCase):
         (row,) = score.team_report(self.conn, 1, CFG, NOW)
         self.assertEqual((row["username"], row["reviewed_mrs"], row["findings"], row["excluded"]),
                          ("pk7", 5, 4, 1))
-        self.assertEqual(row["weights"]["security"], 30.0)        # 4 × 5 × 1.5
-        self.assertEqual(row["score"], 0.0)                       # 10 − 4×30/5, floored at 0
+        # 4 high security findings, merged unfixed: 4 × 5 × 1.5 × 2
+        self.assertEqual((row["weights"]["security"], row["escaped"]), (60.0, 4))
+        self.assertEqual(row["score"], 35.0)              # security floored at 0, 7 × 5 left
 
 
 class TestRoles(DbCase):
@@ -384,7 +387,7 @@ class TestRoles(DbCase):
         self.assertIsNotNone(lead["score"])                    # stats still there
         self.assertEqual(rows[-1]["author_id"], 7)             # listed after the ranked team
         avg = score.team_average(rows, CFG)
-        self.assertEqual(avg["security"], 10.0)                # the lead's findings are not in it
+        self.assertEqual(avg["security"], 5.0)                 # the lead's findings are not in it
         self.assertEqual(avg["correctness"], 0.0)
 
     def test_latest_role_wins(self):
@@ -425,6 +428,98 @@ class TestRoster(DbCase):
         self.assertEqual((row["ranked"], row["level"], row["role"]), (False, None, "departed"))
 
 
+class TestEightItems(unittest.TestCase):
+    def mrs(self, n):
+        return [{"mr_id": i, "reviewed": 1} for i in range(n)]
+
+    def test_merged_unfixed_costs_twice(self):
+        fixed, shipped = score.effective_findings(
+            [{"note_id": 1, "mr_id": 1, "severity": "medium", "category": "correctness"},
+             {"note_id": 2, "mr_id": 2, "severity": "medium", "category": "correctness",
+              "escaped": True}], [])
+        self.assertEqual(score.finding_weight(fixed, CFG), 2.0)
+        self.assertEqual(score.finding_weight(shipped, CFG), 4.0)
+
+    def test_escape_rule(self):
+        merged = {"state": "merged", "head_sha": "abc"}
+        self.assertTrue(score.escaped({"head_sha": "abc", "status": "closed", "present": 1}, merged))
+        self.assertTrue(score.escaped({"head_sha": "old", "status": "unanswered", "present": 1}, merged))
+        self.assertFalse(score.escaped({"head_sha": "old", "status": "closed", "present": 1}, merged))
+        self.assertFalse(score.escaped({"head_sha": "abc", "status": "unanswered", "present": 0}, merged))
+        self.assertFalse(score.escaped({"head_sha": "abc", "status": "unanswered", "present": 1},
+                                       {"state": "opened", "head_sha": "abc"}))
+
+    def test_followups_count_under_a_category_by_verdict(self):
+        fus = [{"kind": "fix_mr"},                                              # 3 × 0.5
+               {"kind": "fix_mr", "verdict": "confirmed"},                      # 3
+               {"kind": "fix_mr", "verdict": "unrelated"},                      # 0, not counted
+               {"kind": "ai_refind", "category": "security", "verdict": "confirmed"}]   # 1
+        r = score.person_report(self.mrs(10), [], fus, CFG, 1, NOW)
+        self.assertEqual(r["weights"]["correctness"], 4.5)
+        self.assertEqual(r["weights"]["security"], 1.0)
+        self.assertEqual(r["followups"], {"fix_mr": 2, "ai_refind": 1})
+
+    def test_old_category_counts_provisionally_and_unknown_is_not_scored(self):
+        fs = score.effective_findings(
+            [{"note_id": 1, "mr_id": 1, "severity": "low", "category": None, "category_legacy": "code_smell"},
+             {"note_id": 2, "mr_id": 1, "severity": "low", "category": None, "category_legacy": "code_quality"},
+             {"note_id": 3, "mr_id": 1, "severity": "low", "category": "needs_review"}], [])
+        self.assertEqual([(f["category"], f["category_provisional"]) for f in fs],
+                         [("maintainability", True), ("uncategorized", False), ("needs_review", False)])
+        r = score.person_report(self.mrs(5), fs, [], CFG, 1, NOW)
+        self.assertEqual((r["findings"], r["unclassified"], r["items"]["maintainability"]["count"]),
+                         (3, 2, 1))
+
+    def test_a_weak_item_blocks_the_level(self):
+        # 2 high correctness over 40 MRs: total 39.0 but correctness 4.0
+        fs = self.findings_of(("high", "correctness"), ("high", "correctness"))
+        r = score.person_report(self.mrs(40), fs, [], {**CFG, "levels": [
+            {"level": "a", "min_score": 38, "min_item": 4.5},
+            {"level": "b", "min_score": None}]}, 1, NOW)
+        self.assertEqual((r["score"], r["level"]), (39.0, "b"))
+        self.assertEqual(r["next_level_misses"], ["最弱一項 4.0 < 4.5"])
+
+    def findings_of(self, *specs):
+        return score.effective_findings(
+            [{"note_id": i, "mr_id": i, "severity": s, "category": c} for i, (s, c) in enumerate(specs)], [])
+
+    def test_old_comment_marker_maps_or_waits_for_the_classifier(self):
+        self.assertEqual(parse_comment("x <!-- mr-sentinel:category=code_smell -->")["category"],
+                         "maintainability")
+        self.assertIsNone(parse_comment("x <!-- mr-sentinel:category=code_quality -->")["category"])
+        self.assertEqual(parse_comment("x <!-- mr-sentinel:category=operability -->")["category"],
+                         "operability")
+
+    def test_classifier_may_not_file_requirements_it_cannot_see(self):
+        reply = {"categories": [{"id": 1, "category": "requirements"},
+                                {"id": 2, "category": "needs_review"},
+                                {"id": 3, "category": "code_smell"},
+                                {"id": 4, "category": "operability"}]}
+        self.assertEqual(classify.valid_categories(reply, [1, 2, 3, 4]),
+                         {2: "needs_review", 4: "operability"})
+
+    def test_migration_7_keeps_the_old_category_and_clears_classifier_ones(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            conn = sqlite3.connect(path)
+            for number, script in enumerate(db.MIGRATIONS[:6], start=1):
+                conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {number};\nCOMMIT;")
+            conn.execute("INSERT INTO scoring_configs VALUES (1, ?, 'x', 'system', 'x')",
+                         (json.dumps({**CFG, "levels": [{"level": "a", "min_score": None}]}),))
+            conn.execute("INSERT INTO mrs(mr_id, project, iid) VALUES (1, 'g/a', 1)")
+            conn.executemany("INSERT INTO findings(note_id, mr_id, category, category_source) "
+                             "VALUES (?, 1, ?, ?)", [(1, "correctness", "classifier"),
+                                                     (2, "security", "review"),
+                                                     (3, "code_smell", "review")])
+            conn.commit(); conn.close()
+            conn = db.connect(path)
+            rows = [tuple(r) for r in conn.execute(
+                "SELECT note_id, category, category_legacy FROM findings ORDER BY note_id")]
+            self.assertEqual(rows, [(1, None, "correctness"), (2, "security", "security"),
+                                    (3, None, "code_smell")])
+            conn.close()
+
+
 class TestTenPointMigration(unittest.TestCase):
     def test_old_lower_is_better_config_gets_a_successor_and_names_itself(self):
         with tempfile.TemporaryDirectory() as d:
@@ -435,13 +530,14 @@ class TestTenPointMigration(unittest.TestCase):
             old = {**CFG, "severity_weight": {"high": 9, "medium": 2, "low": 0.5},
                    "levels": [{"level": "senior", "max_score": 0.8},
                               {"level": "junior", "max_score": None}]}
-            del old["deduction_per_weight"]
+            for key in ("deduction_per_weight", "item_max", "escape_multiplier"):
+                del old[key]
             conn.execute("INSERT INTO scoring_configs VALUES (1, ?, 'old', 'system', 'x')",
                          (json.dumps(old),))
             conn.commit(); conn.close()
             conn = db.connect(path)
             version, cfg = db.scoring_config(conn)
-            self.assertEqual(version, 2)
+            self.assertEqual(version, 3)                  # 6: 10-point, 7: 8 items × 5
             self.assertEqual(cfg["severity_weight"]["high"], 9)              # tuned weight kept
             self.assertEqual(cfg["levels"], db.DEFAULT_SCORING["levels"])
             from history import snapshot
@@ -451,7 +547,7 @@ class TestTenPointMigration(unittest.TestCase):
                               [], ME, None)
             snapshot.record(conn, "排程同步")
             trigger = conn.execute("SELECT trigger FROM score_events LIMIT 1").fetchone()[0]
-            self.assertTrue(trigger.startswith(db.SCALE_CHANGE_NOTE), trigger)
+            self.assertTrue(trigger.startswith(db.TAXONOMY_CHANGE_NOTE), trigger)
             self.assertIsNone(db.get_state(conn, "score_note"))
             conn.close()
 
@@ -532,6 +628,62 @@ class TestScan(DbCase):
             self.assertEqual((first.call_count, incremental.call_count), (1, 1))
 
 
+class TestEvaluate(DbCase):
+    CONFIG = {"review": {"engine": "claude", "language": "zh-TW"}}
+    REPLY = {"summary": "s", "strengths": [{"point": "p1", "evidence": "e"}],
+             "weaknesses": [{"point": "w1", "evidence": "e", "advice": "a"}]}
+
+    def seed(self):
+        with self.conn:
+            for i in range(5):
+                sync.store_mr(self.conn, "g/app", mr(mid=i + 1, iid=i + 1, created="2026-09-20T00:00:00Z"),
+                              [{"id": f"d{i}", "notes": [note(i + 1, ME, ai_body("low", f"t{i}", "correctness"))]}],
+                              [], ME, None)
+
+    def run_eval(self, reply, **kw):
+        from history import evaluate
+        engine = mock.Mock()
+        engine.run_json.side_effect = reply if isinstance(reply, Exception) else (lambda *a: reply)
+        with mock.patch.object(evaluate.engines, "get_engine", return_value=engine), \
+             mock.patch.object(evaluate, "WORK_DIR", Path(self.tmp.name) / "w"):
+            return evaluate.evaluate_pending(self.conn, self.CONFIG, **kw), engine
+
+    def test_writes_once_then_only_when_the_record_changes(self):
+        from history import evaluate
+        self.seed()
+        (done, bad), engine = self.run_eval(self.REPLY)
+        self.assertEqual((done, bad), (1, 0))
+        prompt = engine.run_json.call_args.args[0]
+        self.assertIn("Traditional Chinese", prompt)
+        self.assertIn('"t0"', prompt)                                 # the findings go in
+        (e,) = evaluate.latest(self.conn).values()
+        self.assertEqual((e["summary"], e["weaknesses"][0]["advice"]), ("s", "a"))
+        self.assertEqual(self.run_eval(self.REPLY)[0], (0, 0))       # nothing changed: no AI call
+        self.assertEqual(self.run_eval(self.REPLY, force=True)[0], (1, 0))
+        with self.conn:      # a human excludes a finding -> the record changed
+            self.conn.execute("INSERT INTO finding_reviews(note_id, excluded, actor, created_at) "
+                              "VALUES (1, 1, 'lead', '2026-10-09T00:00:00Z')")
+        self.assertEqual(evaluate.stale(self.conn), {DEV})
+        self.assertEqual(self.run_eval(self.REPLY)[0], (1, 0))
+
+    def test_a_bad_reply_keeps_the_previous_evaluation(self):
+        from history import evaluate
+        self.seed()
+        self.run_eval(self.REPLY)
+        self.assertEqual(self.run_eval({"summary": "", "strengths": []}, force=True)[0], (0, 1))
+        self.assertEqual(self.run_eval(RuntimeError("down"), force=True)[0], (0, 1))
+        self.assertEqual(evaluate.latest(self.conn)[DEV]["summary"], "s")
+
+    def test_reply_is_trimmed_to_the_contract(self):
+        from history import evaluate
+        out = evaluate.valid_reply({"summary": " a  b ", "strengths": [{"point": "x"}] * 9 + ["junk"],
+                                    "weaknesses": [{"point": ""}, {"point": "y", "evidence": "z" * 999}]})
+        self.assertEqual(out["summary"], "a b")
+        self.assertEqual(len(out["strengths"]), 4)
+        self.assertEqual(out["weaknesses"], [{"point": "y", "evidence": "z" * 400, "advice": ""}])
+        self.assertIsNone(evaluate.valid_reply({"summary": "only"}))
+
+
 class TestScoreLog(DbCase):
     def seed(self, n=5, sev="high"):
         with self.conn:
@@ -551,7 +703,8 @@ class TestScoreLog(DbCase):
                               "VALUES (1, 1, 'lead', '2026-10-09T00:00:00Z')")
         (person, team) = sorted(snapshot.record(self.conn, "覆核 note 1", "lead"),
                                 key=lambda e: e["gitlab_id"] == db.TEAM)
-        self.assertEqual((person["old_score"], person["new_score"]), (8.0, 8.4))
+        # 5 low correctness, merged unfixed (×2): 5 − 4×5/5 = 1 -> 36; one out: 36.8
+        self.assertEqual((person["old_score"], person["new_score"]), (36.0, 36.8))
         row = self.conn.execute("SELECT trigger, actor FROM score_events ORDER BY id DESC LIMIT 1").fetchone()
         self.assertEqual(tuple(row), ("覆核 note 1", "lead"))
 
@@ -639,6 +792,9 @@ class TestClassify(DbCase):
 class TestRun(DbCase):
     def setUp(self):
         super().setUp()
+        patcher = mock.patch.object(cli.evaluate, "evaluate_pending", return_value=(0, 0))
+        self.evaluate = patcher.start()
+        self.addCleanup(patcher.stop)
         with self.conn:                  # already scanned once: run() is the incremental job
             db.set_state(self.conn, "initial_scan_at", "2026-10-01T00:00:00Z")
 

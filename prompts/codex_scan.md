@@ -5,7 +5,8 @@ You are reviewing a GitLab merge request.
 - The MR source code is checked out (read-only reference) at: `__WORKTREE__`
 
 ## Task
-1. Read `./__CONTEXT_FILE__` and understand the change.
+1. Read `./__CONTEXT_FILE__` and understand the change. Its `description` is the
+   author's MR description — treat it as the spec the change must meet.
 2. Go through every diff hunk looking for REAL defects, in priority order:
    correctness bugs → security (authz/IDOR/injection/PII leaks) → data loss →
    race conditions → and only then maintainability. Inspect files under
@@ -16,12 +17,15 @@ You are reviewing a GitLab merge request.
 ## Output
 Reply with JSON ONLY (no prose, no code fences):
 {"findings": [{"severity": "high"|"medium"|"low", "title": "short title",
-               "category": "security"|"correctness"|"performance"|"code_quality"|"code_smell",
+               "category": "<one of the 8 keys in ## Categories>",
                "file": "new_path", "line": <new-file line number in a changed hunk, or null>,
                "body": "explanation + concrete failure scenario + suggested fix"}]}
 
 ## Rules
 - Write every finding title and body in __LANGUAGE__. Keep technical terms in English.
-- "category" is exactly one of: security (authz/IDOR, injection, secrets, PII/data leaks) | correctness (logic bugs, wrong results, crashes, races, data loss) | performance (N+1, unbounded work) | code_quality (error handling, validation, edge cases) | code_smell (duplication, dead code, misleading names, design smells) — pick by the consequence.
+- "category" follows "## Categories" below.
 - "line" must be a new-file line number that appears in a changed hunk; otherwise null.
 - Never invent problems just to have output. A clean MR gets {"findings": []}.
+
+## Categories
+__TAXONOMY__

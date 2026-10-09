@@ -7,6 +7,9 @@ import gitlab_client
 import review_common
 
 
+DESCRIPTION_MAX = 8000
+
+
 def build_context(base: str, token: str, project, iid) -> dict:
     raw = gitlab_client.get_mr_changes(base, token, project, iid)
     changes = review_common.filter_noise_changes(raw.get("changes", []))
@@ -15,6 +18,8 @@ def build_context(base: str, token: str, project, iid) -> dict:
         "project": project,
         "iid": iid,
         "title": raw.get("title"),
+        # the author's description is the spec a review checks "requirements" against
+        "description": (raw.get("description") or "")[:DESCRIPTION_MAX],
         "web_url": raw.get("web_url"),
         # who/where, so a review can be described later without re-querying GitLab
         # (this file outlives state.json's 7-day identity map)

@@ -66,6 +66,16 @@ class TestPromptRendering(unittest.TestCase):
         self.assertIn("/tmp/wt", out)
         self.assertIn("Traditional Chinese", out)
 
+    def test_every_prompt_gets_the_one_taxonomy(self):
+        from history.parse import CATEGORIES
+        for name in ("review.md", "codex_scan.md", "skeptic.md"):
+            tpl = (pathlib.Path(claude_engine.__file__).resolve().parent.parent / "prompts" / name).read_text()
+            out = claude_engine.render_prompt(tpl, "en", "/wt", "c.json", "o.json", "v")
+            self.assertNotIn("__TAXONOMY__", out, name)
+            for key in CATEGORIES:
+                self.assertIn(f"- {key}:", out, (name, key))
+            self.assertNotIn("code_smell", out, name)
+
     def test_language_name_fallback_is_raw_code(self):
         self.assertEqual(claude_engine.language_name("xx-YY"), "xx-YY")
 

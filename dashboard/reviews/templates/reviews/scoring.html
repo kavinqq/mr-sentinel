@@ -27,15 +27,20 @@
         <table class="ms-table"><tbody>
           <tr><td><code>window_days</code></td><td>評分看最近幾天的 MR</td></tr>
           <tr><td><code>min_reviewed_mrs</code></td><td>被 review 的 MR 少於這個數就不給等級</td></tr>
+          <tr><td><code>item_max</code></td><td>每個面向的滿分(8 項,總分 = 8 × 這個數)</td></tr>
+          <tr><td><code>deduction_per_weight</code></td><td>每項扣分 = 這個數 × 該項加權問題 / MR 數(越大越嚴)。4 = 10 個 MR 有 1 則 Medium,該項扣 0.8</td></tr>
           <tr><td><code>severity_weight</code></td><td>每則 finding 依嚴重度的權重(high / medium / low)</td></tr>
-          <tr><td><code>category_multiplier</code></td><td>特定面向每則 finding 的倍率,沒列出的 = 1</td></tr>
-          <tr><td><code>followup_weight</code></td><td>每筆後續 bug 的權重(fix_mr / ai_refind)</td></tr>
+          <tr><td><code>category_multiplier</code></td><td>各面向每則 finding 的倍率,沒列出的 = 1。可用:{% for k, v in categories.items %}<code>{{ k }}</code>({{ v }}){% if not forloop.last %}、{% endif %}{% endfor %}</td></tr>
+          <tr><td><code>escape_multiplier</code></td><td>merge 時還沒修的 finding 再加扣幾倍(1 = 總共扣兩次)</td></tr>
+          <tr><td><code>followup_weight</code></td><td>每筆後續 bug 的權重(fix_mr / ai_refind),算進對應面向:AI 再次抓到 → 該 finding 的面向,fix MR → 正確性</td></tr>
+          <tr><td><code>unconfirmed_followup_factor</code></td><td>還沒人確認的後續 bug 算幾成(0.5 = 一半);確認 = 全額,「不是同一個問題」= 0</td></tr>
           <tr><td><code>followup_days</code></td><td>上線後幾天內的 fix / 新 finding 算後續 bug(下次同步重算)</td></tr>
-          <tr><td><code>deduction_per_weight</code></td><td>每項扣分 = 這個數 × 該項加權問題 / MR 數(越大越嚴)。4 = 10 個 MR 有 1 則 Medium 扣 0.8</td></tr>
           <tr><td><code>levels</code></td><td>由好到差;每一級的條件<strong>全部</strong>都要符合才算。最後一級 <code>min_score</code> 為 <code>null</code></td></tr>
-          <tr><td><code>　min_score</code></td><td>總分下限(滿分 10,由高到低遞減)</td></tr>
+          <tr><td><code>　min_score</code></td><td>總分下限(由高到低遞減)</td></tr>
+          <tr><td><code>　min_item</code></td><td>最弱的那一項至少幾分(可省略)</td></tr>
           <tr><td><code>　max_high</code></td><td>窗口內 high finding 最多幾則(可省略)</td></tr>
           <tr><td><code>　max_fix_mr</code></td><td>上線後被 fix MR 修最多幾次(可省略)</td></tr>
+          <tr><td><code>　max_escaped</code></td><td>merge 時還沒修的 finding 最多幾則(可省略)</td></tr>
           <tr><td><code>　min_clean_rate</code></td><td>沒有任何計分 finding 的 MR 比例下限,0.9 = 90%(可省略)</td></tr>
         </tbody></table>
         <details style="margin-top:12px"><summary>程式內建預設值(新資料庫的 v1)</summary><pre>{{ defaults }}</pre></details>

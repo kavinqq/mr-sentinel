@@ -6,7 +6,8 @@ You are reviewing a GitLab merge request.
 - You MUST write your final result to `./__OUTPUT_FILE__`. Writing or modifying ANY other file is forbidden.
 
 ## Process (follow strictly)
-1. Read `./__CONTEXT_FILE__` and understand the change.
+1. Read `./__CONTEXT_FILE__` and understand the change. Its `description` is the
+   author's MR description — treat it as the spec the change must meet.
 2. Go through every diff hunk looking for REAL defects, in priority order:
    correctness bugs → security (authz/IDOR/injection/PII leaks) → data loss →
    race conditions → and only then maintainability. Use Read/Grep against the
@@ -14,7 +15,7 @@ You are reviewing a GitLab merge request.
    behavior? is this an existing convention of the codebase?).
 3. Produce CANDIDATE findings. Each finding:
    {"severity": "high"|"medium"|"low",
-    "category": exactly one of: security (authz/IDOR, injection, secrets, PII/data leaks) | correctness (logic bugs, wrong results, crashes, races, data loss) | performance (N+1, unbounded work) | code_quality (error handling, validation, edge cases) | code_smell (duplication, dead code, misleading names, design smells) — pick by the consequence,
+    "category": one of the 8 keys in "## Categories" below, by its rules,
     "title": the defect in one line, <= 60 chars — name the consequence, not the file,
     "file": new_path,
     "line": new-file line number inside a changed hunk (null if not locatable),
@@ -38,6 +39,9 @@ __VETTING__
    {"mr": {"project": <copy from context>, "iid": <copy>, "diff_refs": <copy verbatim>},
     "findings": [ ...sorted findings... ]}
 7. Finally print exactly one summary line, e.g.: done high=1 medium=2 low=0
+
+## Categories
+__TAXONOMY__
 
 ## Rules
 - Write title, problem, impact, fix and evidence in __LANGUAGE__. Keep technical

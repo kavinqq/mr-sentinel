@@ -46,3 +46,4 @@ dashboard/.test_sentinel.db*
 
 # browser screenshots / snapshots from UI checks
 .playwright-mcp/
+/backups/

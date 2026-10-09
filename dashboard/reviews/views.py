@@ -87,6 +87,21 @@ def review_finding(request, note_id: int):
 
 
 @require_POST
+def review_followup(request, author_id: int):
+    try:
+        services.review_followup(int(request.POST.get("feature_mr_id", "")),
+                                 request.POST.get("kind", ""), request.POST.get("source_ref", ""),
+                                 request.POST.get("verdict", ""), request.user.username,
+                                 request.POST.get("reason", ""))
+    except ValueError as exc:
+        messages.error(request, f"沒有存:{exc}")
+    else:
+        messages.success(request, f"已記錄:{services.FOLLOWUP_VERDICTS[request.POST['verdict']]},"
+                                  f"分數已重新計算")
+    return redirect(f"{reverse('person', args=[author_id])}#followups")
+
+
+@require_POST
 def set_role(request, author_id: int):
     role = request.POST.get("role", "")
     try:
@@ -119,7 +134,7 @@ def scoring(request):
                 return redirect("scoring")
     elif request.method != "GET":
         return HttpResponseBadRequest()
-    return _page(request, "reviews/scoring.html", "評分設定",
+    return _page(request, "reviews/scoring.html", "評分設定", categories=CATEGORIES,
                  current=current, versions=ScoringConfig.objects.all()[:20],
                  draft=draft or json.dumps(json.loads(current.config), ensure_ascii=False, indent=2),
                  defaults=json.dumps(hdb.DEFAULT_SCORING, ensure_ascii=False, indent=2))
@@ -134,8 +149,8 @@ def sync_request(request):
         messages.error(request, str(exc))
     else:
         messages.success(request, f"已送出{services.SYNC_KINDS[kind]},背景執行中"
-                                  f"(完整同步約 2 分鐘),重新整理即可看到結果")
-    return redirect("admin:index")
+                                  f"(完整同步約 2 分鐘、評價約 1 分鐘),重新整理即可看到結果")
+    return redirect(_back(request, reverse("admin:index")))
 
 
 def members(request):

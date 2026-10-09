@@ -49,6 +49,16 @@ class TestApplyVerdicts(unittest.TestCase):
         self.assertEqual([f["title"] for f in out], ["B"])  # 0 and 2 unmentioned -> dropped
 
 
+class TestSkepticCategory(unittest.TestCase):
+    def test_skeptic_re_judges_the_category_and_garbage_is_ignored(self):
+        cands = [{"severity": "low", "title": "A", "category": "correctness"},
+                 {"severity": "low", "title": "B", "category": "correctness"}]
+        out = codex_engine.apply_verdicts(cands, [
+            {"index": 0, "verdict": "keep", "category": "compatibility"},
+            {"index": 1, "verdict": "keep", "category": "code_smell"}])     # old key: ignored
+        self.assertEqual([f["category"] for f in out], ["compatibility", "correctness"])
+
+
 class TestCommand(unittest.TestCase):
     def test_build_cmd_read_only_sandbox(self):
         cmd = codex_engine.build_cmd("PROMPT", "/tmp/work", "/tmp/last.txt", model="")

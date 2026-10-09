@@ -13,6 +13,17 @@ For EVERY finding, rule keep or drop:
 
 You may use Read/Grep to verify context in the checkout.
 
+For every finding you KEEP, also re-judge its severity and its category
+yourself, by the rules below — do not inherit the candidate's. Drop a
+"requirements" finding that cites no clause of the MR description, a
+"performance" one with no stated load, a "verification" or "maintainability"
+one with no concrete consequence, and any finding that duplicates another's
+root cause (keep the one with the more direct consequence).
+
+## Categories
+__TAXONOMY__
+
 Reply with JSON only:
 {"verdicts": [{"index": <integer matching input order>, "verdict": "keep"|"drop",
-               "reason": "why, in __LANGUAGE__", "severity": "high"|"medium"|"low"}]}
+               "reason": "why, in __LANGUAGE__", "severity": "high"|"medium"|"low",
+               "category": "<one of the 8 keys>"}]}

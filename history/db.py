@@ -21,20 +21,28 @@ DEFAULT_SCORING = {
     "window_days": 90,
     "min_reviewed_mrs": 5,
     "severity_weight": {"high": 5.0, "medium": 2.0, "low": 0.5},
-    "category_multiplier": {"security": 1.5},
+    # per-category multiplier on a finding's weight; unlisted = 1
+    "category_multiplier": {"security": 1.5, "requirements": 1.25, "compatibility": 1.25,
+                            "verification": 0.75, "maintainability": 0.5},
+    # a finding still there when the MR merged costs this much again (× its weight):
+    # being caught in review costs once, shipping it anyway costs twice
+    "escape_multiplier": 1.0,
     "followup_weight": {"fix_mr": 3.0, "ai_refind": 1.0},
+    # a follow-up nobody has confirmed yet is only a guess (same file within N days)
+    "unconfirmed_followup_factor": 0.5,
     "followup_days": 30,             # a fix / new finding this soon after a feature ships counts
-    # out of 10, higher is better: each item starts at 10 and loses
-    # deduction_per_weight × (its weight per reviewed MR); the total loses the sum.
-    # One medium finding per 10 MRs = −0.8, one high per 10 MRs = −2.
-    "deduction_per_weight": 4.0,
+    # each of the 8 items is out of item_max and loses
+    # deduction_per_weight × (its weight per reviewed MR); the total is their sum (8 × 5 = 40)
+    "item_max": 5.0,
+    "deduction_per_weight": 4.0,       # 1 medium per 10 MRs = −0.8 of that item's 5
     # best level first, every gate must hold (history/score.py GATES). Code is
     # AI-written, so this grades what a person lets merge: senior means almost
     # nothing ever gets through.
-    "levels": [{"level": "senior", "min_score": 9.5, "max_high": 0, "max_fix_mr": 0,
-                "min_clean_rate": 0.95},
-               {"level": "mid+", "min_score": 8.5, "max_high": 0, "min_clean_rate": 0.85},
-               {"level": "mid", "min_score": 6.0, "max_high": 1},
+    "levels": [{"level": "senior", "min_score": 38.0, "min_item": 4.5, "max_high": 0,
+                "max_fix_mr": 0, "max_escaped": 0, "min_clean_rate": 0.95},
+               {"level": "mid+", "min_score": 36.0, "min_item": 4.0, "max_high": 0,
+                "min_clean_rate": 0.85},
+               {"level": "mid", "min_score": 33.0, "min_item": 1.5, "max_high": 1},
                {"level": "junior", "min_score": None}],
 }
 
@@ -211,8 +219,49 @@ MIGRATIONS = [
     """,
     # 6: data only — scores become "out of 10, higher is better" (see migrate())
     "SELECT 1;",
+    # 7: the 8-way taxonomy (history/parse.py CATEGORIES). Old categories are kept
+    # in category_legacy; every classifier-made one is cleared so the classifier
+    # files it again under the new rules (scoring uses the legacy mapping meanwhile).
+    # followup_reviews: a human confirms or rejects a guessed follow-up bug.
+    """
+    ALTER TABLE findings ADD COLUMN category_legacy TEXT;
+    UPDATE findings SET category_legacy = category;
+    UPDATE findings SET category = NULL, category_source = NULL
+        WHERE category_source = 'classifier' OR category IS NULL
+           OR category NOT IN ('security', 'requirements', 'correctness', 'compatibility',
+                               'operability', 'performance', 'verification', 'maintainability');
+    CREATE TABLE followup_reviews (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        feature_mr_id  INTEGER NOT NULL,
+        kind           TEXT NOT NULL,
+        source_ref     TEXT NOT NULL,
+        verdict        TEXT NOT NULL,              -- 'confirmed' | 'unrelated'
+        reason         TEXT,
+        actor          TEXT NOT NULL,
+        created_at     TEXT NOT NULL
+    );
+    CREATE INDEX followup_reviews_key ON followup_reviews(feature_mr_id, kind, source_ref);
+    """,
+    # 8: AI-written 優點 / 缺點 per person (history/evaluate.py); newest row wins
+    """
+    CREATE TABLE person_evaluations (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        gitlab_id        INTEGER NOT NULL,
+        created_at       TEXT NOT NULL,
+        formula_version  INTEGER,
+        input_hash       TEXT NOT NULL,           -- the record it was written from
+        summary          TEXT NOT NULL,
+        strengths        TEXT NOT NULL,           -- JSON [{point, evidence}]
+        weaknesses       TEXT NOT NULL,           -- JSON [{point, evidence, advice}]
+        engine           TEXT,
+        trigger          TEXT
+    );
+    CREATE INDEX person_evaluations_person ON person_evaluations(gitlab_id, created_at);
+    """,
 ]
 SCALE_CHANGE_NOTE = "評分改成 10 分制(越高越好、每項各自給分)"
+TAXONOMY_CHANGE_NOTE = "評分改成 8 個面向、每項 5 分(滿分 40)"
+SCALE_NOTES = (SCALE_CHANGE_NOTE, TAXONOMY_CHANGE_NOTE)
 TEAM = -1
 
 ROLES = {"member": "成員", "lead": "Team leader", "departed": "已離職"}
@@ -287,6 +336,8 @@ def migrate(conn: sqlite3.Connection) -> int:
                               "system", now_iso()))
         if number == 6:
             _to_ten_point_scale(conn)
+        if number == 7:
+            _to_eight_items(conn)
     return len(MIGRATIONS)
 
 
@@ -305,6 +356,23 @@ def _to_ten_point_scale(conn) -> None:
                       "system", now_iso()))
         conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
                      (SCALE_CHANGE_NOTE,))
+
+
+def _to_eight_items(conn) -> None:
+    """Successor config for the 8 × 5 scale: tuned severity / follow-up weights
+    and the window are kept, everything shaped by the taxonomy is new."""
+    version, cfg = scoring_config(conn)
+    if "item_max" in cfg:
+        return                                    # fresh db: v1 is already this shape
+    keep = ("window_days", "min_reviewed_mrs", "severity_weight", "followup_weight",
+            "followup_days")
+    new = {**DEFAULT_SCORING, **{k: cfg[k] for k in keep if k in cfg}}
+    with conn:
+        conn.execute("INSERT INTO scoring_configs VALUES (?, ?, ?, ?, ?)",
+                     (version + 1, json.dumps(new, ensure_ascii=False), TAXONOMY_CHANGE_NOTE,
+                      "system", now_iso()))
+        conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
+                     (TAXONOMY_CHANGE_NOTE,))
 
 
 def get_state(conn, key: str, default=None):

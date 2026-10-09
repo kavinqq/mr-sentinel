@@ -17,18 +17,19 @@ from history import db as hdb
 from history import score, snapshot
 from history.parse import CATEGORIES
 
-from .models import (EmailAlias, Finding, FindingReview, MergeRequest, Person, PersonRole,
-                     RosterAddition, ScoreEvent, ScoringConfig, SyncRequest)
+from .models import (EmailAlias, Finding, FindingReview, FollowupReview, MergeRequest, Person,
+                     PersonRole, RosterAddition, ScoreEvent, ScoringConfig, SyncRequest)
 
-CATEGORY_LABELS = {**CATEGORIES, score.UNCATEGORIZED: "未分類"}
+CATEGORY_LABELS = {**CATEGORIES, score.UNCATEGORIZED: "未分類", "needs_review": "待覆核"}
 RADAR_AXES = list(score.ITEMS)
 RADAR_LABELS = list(score.ITEMS.values())
-_SHORT = {"code_quality": "品質", "code_smell": "Smell"}
+_SHORT = {"requirements": "需求", "compatibility": "相容", "operability": "營運",
+          "verification": "驗證", "maintainability": "維護"}
 ITEM_SHORT = {k: _SHORT.get(k, v) for k, v in score.ITEMS.items()}   # column headers
 SEVERITY_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 ROLES = hdb.ROLES
 SEVERITY_ORDER = ("high", "medium", "low")
-SYNC_KINDS = {"sync": "增量同步", "full_sync": "完整同步"}
+SYNC_KINDS = {"sync": "增量同步", "full_sync": "完整同步", "evaluate": "重新產生評價"}
 
 
 def history_path() -> Path:
@@ -95,10 +96,23 @@ def mr_records(row: dict, attributed: dict) -> list[dict]:
     return out
 
 
+def evaluations() -> tuple[dict, set]:
+    """(gitlab_id -> newest evaluation, ids whose record changed since)."""
+    from history import evaluate
+    conn = history_conn()
+    try:
+        return evaluate.latest(conn), evaluate.stale(conn)
+    finally:
+        conn.close()
+
+
 def overview() -> dict:
     version, cfg, rows, attributed = team_full()
+    evals, stale = evaluations()
     for r in rows:
         r["item_list"] = [{"key": k, **v} for k, v in r["items"].items()]
+        r["evaluation"] = evals.get(r["author_id"])
+        r["evaluation_stale"] = r["author_id"] in stale
         r["records"] = mr_records(r, attributed)
     ranked = [r for r in rows if r["ranked"]]
     leads = [r for r in rows if r["role"] == "lead"]
@@ -115,14 +129,16 @@ def overview() -> dict:
                 "followups": sum(sum(r["followups"].values()) for r in ranked),
                 "levels": levels,
                 "unrated": sum(1 for r in ranked if r["level"] is None)},
-        "radar": radar_chart(score.team_average(rows, cfg), None, "團隊平均"),
+        "radar": radar_chart(score.team_average(rows, cfg), None, "團隊平均", cfg["item_max"]),
         "team_score": score.team_score(rows, cfg), "item_short": ITEM_SHORT,
+        "max_total": score.max_total(cfg), "categories": CATEGORY_LABELS,
         "unattributed": len(attributed["unattributed"]),
         "via_release": sum(1 for f in attributed["findings"] if f["via_release"]),
     }
 
 
-def radar_chart(team_avg: dict, mine: dict | None, mine_label: str | None) -> dict | None:
+def radar_chart(team_avg: dict, mine: dict | None, mine_label: str | None,
+                item_max: float = 5) -> dict | None:
     """Chart.js radar config (unfold renders `.chart` canvases): each item's score
     out of 10 (farther out = better), ≤ 2 datasets so it stays readable."""
     if not team_avg:
@@ -144,7 +160,7 @@ def radar_chart(team_avg: dict, mine: dict | None, mine_label: str | None) -> di
                                           "boxWidth": 14, "boxHeight": 2}},
                     "tooltip": {"enabled": True}},
         # exact numbers live in the table next to the chart; ticks only add clutter
-        "scales": {"r": {"min": 0, "max": 10,
+        "scales": {"r": {"min": 0, "max": item_max,
                          "ticks": {"display": False, "stepSize": 2},
                          "pointLabels": {"font": {"size": 15}, "color": "#1B1C1F"},
                          "grid": {"color": "#E8E8EC"}, "angleLines": {"color": "#E8E8EC"}}},
@@ -170,6 +186,7 @@ def person_detail(author_id: int) -> dict | None:
     """Findings come from the core's attribution, so this page lists exactly the
     findings the score counted — including ones found in a release MR."""
     version, cfg, rows, attributed = team_full()
+    evals, stale = evaluations()
     summary = next((r for r in rows if r["author_id"] == author_id), None)
 
     person = Person.objects.filter(gitlab_id=author_id).first()
@@ -202,13 +219,14 @@ def person_detail(author_id: int) -> dict | None:
     findings.sort(key=lambda f: f.get("created_at") or "", reverse=True)
     own_notes = {str(f["note_id"]) for f in attributed["findings"] if f["owner_author_id"] == author_id}
     # same rules as team_report: excluded / appeal-accepted, or the person's own finding
-    followups = _followups(by_id, attributed["uncounted_notes"] | own_notes, window_start)
+    followups = _followups(by_id, attributed["uncounted_notes"] | own_notes, window_start,
+                           attributed, cfg)
     mrs = list(by_id.values())
 
     radar = None
     if summary and summary["reviewed_mrs"]:
         radar = radar_chart(score.team_average(rows, cfg), score.per_mr_profile(summary),
-                            person.name or person.username)
+                            person.name or person.username, cfg["item_max"])
     latest = PersonRole.objects.filter(person_id=author_id).first()       # ordered newest first
     role = summary["role"] if summary else (latest.role if latest else "member")
     return {"person": person, "summary": summary, "version": version, "cfg": cfg,
@@ -216,15 +234,27 @@ def person_detail(author_id: int) -> dict | None:
             "findings": findings, "followups": followups,
             "trend": _trend(mrs, findings, followups, cfg),
             "items": [{"key": k, **v} for k, v in summary["items"].items()] if summary else [],
-            "window_start": window_start}
+            "window_start": window_start, "max_total": score.max_total(cfg),
+            "evaluation": evals.get(author_id), "evaluation_stale": author_id in stale,
+            "followup_verdicts": FOLLOWUP_VERDICTS}
 
 
-def _followups(by_id: dict, uncounted_notes: set[str], window_start: str) -> list[dict]:
+def _followups(by_id: dict, uncounted_notes: set[str], window_start: str,
+               attributed: dict, cfg: dict) -> list[dict]:
     """Same filter as history.score.team_report: an AI re-find whose finding is
-    excluded / appeal-accepted does not count."""
-    from .models import Followup
-    rows = [r for r in Followup.objects.filter(feature_mr_id__in=list(by_id)).values()
-            if not (r["kind"] == "ai_refind" and r["source_ref"] in uncounted_notes)]
+    excluded / appeal-accepted does not count. Each row carries the category it
+    counts under, the human verdict and what it costs — the same core helpers."""
+    conn = history_conn()
+    try:
+        annotated = score.annotated_followups(
+            conn, attributed["findings"] + attributed["unattributed"])
+    finally:
+        conn.close()
+    rows = [r for r in annotated if r["feature_mr_id"] in by_id
+            and not (r["kind"] == "ai_refind" and r["source_ref"] in uncounted_notes)]
+    for r in rows:
+        r["counts_under"] = CATEGORY_LABELS[score.followup_category(r)]
+        r["weight"] = round(score.followup_weight(r, cfg), 2)
     fix_ids = [int(r["source_ref"]) for r in rows if r["kind"] == "fix_mr"]
     fixes = {m.mr_id: m for m in MergeRequest.objects.filter(mr_id__in=fix_ids)}
     out = []
@@ -239,27 +269,32 @@ def _followups(by_id: dict, uncounted_notes: set[str], window_start: str) -> lis
 
 def _trend(mrs: list, findings: list[dict], followups: list[dict], cfg: dict) -> list[dict]:
     """Per month (of the MR): reviewed MRs, counted findings, and that month's
-    score out of 10 — findings + follow-ups, the same formula as the total."""
-    months = defaultdict(lambda: {"mrs": 0, "findings": 0, "weight": 0.0})
+    total — findings + follow-ups per item, the same formula as the score."""
+    months = defaultdict(lambda: {"mrs": 0, "findings": 0, "weight": 0.0,
+                                  "weights": defaultdict(float)})
     for m in mrs:
         if m.reviewed and m.created_at:
             months[m.created_at[:7]]["mrs"] += 1
     for f in findings:
-        if f["counted"] and f["mr"].created_at:
+        if f["counted"] and f["category"] in CATEGORIES and f["mr"].created_at:
             month = months[f["mr"].created_at[:7]]
             month["findings"] += 1
-            month["weight"] += (cfg["severity_weight"].get(f.get("severity") or "low", 0)
-                                * cfg["category_multiplier"].get(f["category"], 1.0))
+            w = score.finding_weight(f, cfg)
+            month["weight"] += w
+            month["weights"][f["category"]] += w
     for fu in followups:
-        if fu["feature"].created_at:
-            months[fu["feature"].created_at[:7]]["weight"] += cfg["followup_weight"].get(fu["kind"], 0)
+        if fu["feature"].created_at and fu.get("verdict") != "unrelated":
+            month = months[fu["feature"].created_at[:7]]
+            month["weight"] += fu["weight"]
+            month["weights"][score.followup_category(fu)] += fu["weight"]
+    top = score.max_total(cfg)
     out = []
     for key in sorted(months):
         v = months[key]
-        month_score = (score.total_score({"all": v["weight"]}, v["mrs"], cfg)
-                       if v["mrs"] else None)
-        out.append({"month": key, **v, "weight": round(v["weight"], 2), "score": month_score,
-                    "bar": round(10 * month_score) if month_score is not None else 0})
+        month_score = score.total_score(v["weights"], v["mrs"], cfg) if v["mrs"] else None
+        out.append({"month": key, "mrs": v["mrs"], "findings": v["findings"],
+                    "weight": round(v["weight"], 2), "score": month_score,
+                    "bar": round(100 * month_score / top) if month_score is not None else 0})
     return out
 
 
@@ -364,6 +399,26 @@ def review_finding(note_id: int, actor: str, category: str | None = None,
     return saved
 
 
+FOLLOWUP_VERDICTS = {"confirmed": "確認是後續 bug", "unrelated": "不是同一個問題"}
+
+
+def review_followup(feature_mr_id: int, kind: str, source_ref: str, verdict: str,
+                    actor: str, reason: str = ""):
+    """Append a verdict on a guessed follow-up, then rescore (same chain as a
+    finding review). The follow-up itself must exist — a verdict is never free text."""
+    from .models import Followup
+    if verdict not in FOLLOWUP_VERDICTS:
+        raise ValueError(f"unknown verdict {verdict!r}")
+    if not Followup.objects.filter(feature_mr_id=feature_mr_id, kind=kind,
+                                   source_ref=source_ref).exists():
+        raise ValueError("沒有這筆後續 bug")
+    saved = FollowupReview.objects.create(
+        feature_mr_id=feature_mr_id, kind=kind, source_ref=source_ref, verdict=verdict,
+        reason=reason.strip() or None, actor=actor, created_at=hdb.now_iso())
+    record(f"後續 bug 覆核(MR {feature_mr_id} · {kind}):{FOLLOWUP_VERDICTS[verdict]}", actor)
+    return saved
+
+
 def validate_scoring(cfg) -> list[str]:
     """Same shape as history.db.DEFAULT_SCORING, sane numbers, ordered levels."""
     errors = []
@@ -372,9 +427,16 @@ def validate_scoring(cfg) -> list[str]:
     missing = set(hdb.DEFAULT_SCORING) - set(cfg)
     if missing:
         errors.append(f"缺少欄位: {', '.join(sorted(missing))}")
-    for key in ("window_days", "min_reviewed_mrs", "followup_days", "deduction_per_weight"):
+    for key in ("window_days", "min_reviewed_mrs", "followup_days", "deduction_per_weight",
+                "item_max"):
         if key in cfg and not (isinstance(cfg[key], (int, float)) and cfg[key] > 0):
             errors.append(f"{key} 必須是正數")
+    for key in ("escape_multiplier", "unconfirmed_followup_factor"):
+        if key in cfg and not (isinstance(cfg[key], (int, float)) and cfg[key] >= 0):
+            errors.append(f"{key} 必須是非負數")
+    if isinstance(cfg.get("unconfirmed_followup_factor"), (int, float)) and \
+            cfg["unconfirmed_followup_factor"] > 1:
+        errors.append("unconfirmed_followup_factor 不能大於 1(未確認的不該比確認的重)")
     for key in ("severity_weight", "category_multiplier", "followup_weight"):
         values = cfg.get(key)
         if key in cfg and (not isinstance(values, dict) or not all(
@@ -395,8 +457,11 @@ def validate_scoring(cfg) -> list[str]:
             errors.append("levels 必須是 [{level, min_score}, …]")
         else:
             floors = [lv.get("min_score") for lv in levels]
-            if not all(c is None or (isinstance(c, (int, float)) and 0 <= c <= 10) for c in floors):
-                errors.append("min_score 必須是 0~10 或 null")
+            top = (cfg["item_max"] * len(score.ITEMS)
+                   if isinstance(cfg.get("item_max"), (int, float)) else 40)
+            if not all(c is None or (isinstance(c, (int, float)) and 0 <= c <= top)
+                       for c in floors):
+                errors.append(f"min_score 必須是 0~{top:g} 或 null")
             elif floors[-1] is not None or any(c is None for c in floors[:-1]):
                 errors.append("只有最後一級的 min_score 可以是 null(其餘級距都要有下限)")
             elif floors[:-1] != sorted(floors[:-1], reverse=True) or \
@@ -410,11 +475,14 @@ def validate_scoring(cfg) -> list[str]:
                 if unknown:
                     errors.append(f"{lv['level']}: 不認得的欄位 {', '.join(sorted(unknown))}"
                                   f"(可用: {', '.join(score.GATES)})")
-                for key in ("max_high", "max_fix_mr"):
+                for key in ("max_high", "max_fix_mr", "max_escaped"):
                     v = lv.get(key)
                     if v is not None and not (isinstance(v, int) and not isinstance(v, bool)
                                               and v >= 0):
                         errors.append(f"{lv['level']}: {key} 必須是非負整數或省略")
+                v, cap = lv.get("min_item"), cfg.get("item_max", 5)
+                if v is not None and not (isinstance(v, (int, float)) and 0 <= v <= cap):
+                    errors.append(f"{lv['level']}: min_item 必須在 0 到 item_max 之間")
                 v = lv.get("min_clean_rate")
                 if v is not None and not (isinstance(v, (int, float)) and 0 <= v <= 1):
                     errors.append(f"{lv['level']}: min_clean_rate 必須在 0 到 1 之間(0.9 = 90%)")

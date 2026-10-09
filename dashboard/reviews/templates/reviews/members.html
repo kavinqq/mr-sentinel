@@ -32,7 +32,7 @@
         <thead><tr><th>開發者</th><th>目前身分</th><th class="ms-num">MR(全部歷史)</th><th>變更身分</th></tr></thead>
         <tbody>{% for p in people %}
           <tr>
-            <td><a class="ms-who" href="{% url 'person' p.person.gitlab_id %}"><span class="avatar" aria-hidden="true">{{ p.person.name|default:p.person.username|initial }}</span>{{ p.person.name|default:p.person.username }} <span class="handle">{{ p.person.username }}</span></a></td>
+            <td><a class="ms-who" href="{% url 'person' p.person.gitlab_id %}">{{ p.person.name|default:p.person.username }} <span class="handle">{{ p.person.username }}</span></a></td>
             <td>{% if p.role == "member" %}<span class="ms-dim">成員</span>{% else %}<span class="ms-chip{% if p.role == 'lead' %} accent{% endif %}">{{ p.role_label }}</span>{% endif %}</td>
             <td class="ms-num">{{ p.mrs }}</td>
             <td><form method="post" action="{% url 'member_role' p.person.gitlab_id %}" class="ms-row">{% csrf_token %}

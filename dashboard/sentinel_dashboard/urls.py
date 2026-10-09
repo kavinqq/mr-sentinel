@@ -15,6 +15,8 @@ urlpatterns = [
     path("", lambda request: redirect("admin:index")),
     path("admin/review/people/<int:author_id>/", _admin(views.person), name="person"),
     path("admin/review/people/<int:author_id>/role/", _admin(views.set_role), name="set_role"),
+    path("admin/review/people/<int:author_id>/followups/review/", _admin(views.review_followup),
+         name="review_followup"),
     path("admin/review/findings/<int:note_id>/review/", _admin(views.review_finding),
          name="review_finding"),
     path("admin/review/scoring/", _admin(views.scoring), name="scoring"),

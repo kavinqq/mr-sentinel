@@ -1,0 +1,39 @@
+{% load sentinel %}{% if evaluation %}
+<div class="ms-eval{% if compact %} compact{% endif %}">
+  <div class="ms-eval-summary" role="note">
+    <span class="ms-eval-tag">總評</span>
+    <p>{{ evaluation.summary }}</p>
+  </div>
+
+  {% for part in "strengths weaknesses"|split %}
+  {% with items=evaluation|get:part good=forloop.first %}
+  <section class="ms-eval-part {% if good %}good{% else %}bad{% endif %}" aria-label="{% if good %}優點{% else %}缺點{% endif %}">
+    <h4 class="ms-eval-h">
+      <span class="material-symbols-outlined" aria-hidden="true">{% if good %}thumb_up{% else %}report{% endif %}</span>
+      {% if good %}優點{% else %}缺點{% endif %}<span class="count">{{ items|length }}</span>
+    </h4>
+    {% if items %}
+    <ol class="ms-eval-list">
+      {% for it in items %}
+      <li>
+        <span class="ms-eval-no" aria-hidden="true">{{ forloop.counter }}</span>
+        <div class="ms-eval-body">
+          <p class="ms-eval-point">{{ it.point }}</p>
+          {% if not compact %}
+          {% if it.advice %}<p class="ms-eval-advice"><span>建議</span>{{ it.advice }}</p>{% endif %}
+          {% if it.evidence %}<details class="ms-eval-evidence"><summary>依據</summary><p>{{ it.evidence }}</p></details>{% endif %}
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}<p class="ms-eval-empty">{% if good %}沒有足以佐證的優點{% else %}沒有明顯缺點{% endif %}</p>{% endif %}
+  </section>
+  {% endwith %}
+  {% endfor %}
+
+  <p class="ms-eval-meta">AI 依 review 紀錄撰寫 · {{ evaluation.created_at|tw }} · 公式 v{{ evaluation.formula_version }}
+    {% if stale %}<span class="ms-chip warn">紀錄已變動,下次同步會更新</span>{% endif %}
+    {% if compact %}· <a class="ms-link" href="{% url 'person' person_id %}">看建議與依據 →</a>{% endif %}</p>
+</div>
+{% else %}<p class="ms-eval-empty">還沒有評價{% if stale %} — 下次同步會產生,或到個人頁按「重新產生評價」{% endif %}</p>{% endif %}
