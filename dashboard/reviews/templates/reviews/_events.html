@@ -5,7 +5,11 @@
     <div class="ms-feed-who">
       {% if e.gitlab_id == -1 %}<strong>團隊</strong>{% else %}<a class="ms-feed-name" href="{% url 'person' e.gitlab_id %}">{{ e.name }}</a>{% endif %}
       {% if e.old_level != e.new_level and e.old_score is not None %}
-        <span class="ms-tag c-indigo">{{ e.old_level|default:"—" }} → {{ e.new_level|default:"—" }}</span>
+        <span class="ms-level-change">
+          <span class="ms-tag {{ e.old_level|tag:'level' }}">{{ e.old_level|default:"無等級" }}</span>
+          <span class="material-symbols-outlined" aria-label="變成">arrow_forward</span>
+          <span class="ms-tag {{ e.new_level|tag:'level' }}">{{ e.new_level|default:"無等級" }}</span>
+        </span>
       {% elif e.new_level %}<span class="ms-tag {{ e.new_level|tag:'level' }}">{{ e.new_level }}</span>{% endif %}
     </div>
     <div class="ms-feed-score">

@@ -421,3 +421,5 @@ td.path code { word-break: break-all; }
 .ms .c-gray    { background: #F0F0F0; border-color: #D9D9D9; color: #646464; }
 .ms .c-solid-red { background: #E5484D; border-color: #E5484D; color: #fff; }
 .ms .ms-tag.lg { font-size: 1rem; padding: 3px 10px; }
+.ms .ms-level-change { display: inline-flex; align-items: center; gap: 4px; }
+.ms .ms-level-change .material-symbols-outlined { font-size: 16px; color: var(--ms-muted); }
