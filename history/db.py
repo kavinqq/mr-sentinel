@@ -5,13 +5,14 @@ the schema, add a new entry to MIGRATIONS — never edit a shipped one, because 
 db that already ran it will not run it again.
 """
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sentinel_config import SCRIPT_DIR
 
-DEFAULT_PATH = SCRIPT_DIR / "sentinel.db"
+DEFAULT_PATH = SCRIPT_DIR / "sentinel.db"     # see resolve_path() for the overrides
 
 # Severity weights, the security multiplier and the level thresholds live in
 # the db (scoring_configs) so they can be tuned — and every change is a new
@@ -23,10 +24,18 @@ DEFAULT_SCORING = {
     "category_multiplier": {"security": 1.5},
     "followup_weight": {"fix_mr": 3.0, "ai_refind": 1.0},
     "followup_days": 30,             # a fix / new finding this soon after a feature ships counts
-    # score = weighted problems per reviewed MR; lower is better
-    "levels": [{"level": "senior", "max_score": 0.8},
-               {"level": "mid", "max_score": 2.5},
-               {"level": "junior", "max_score": None}],
+    # out of 10, higher is better: each item starts at 10 and loses
+    # deduction_per_weight × (its weight per reviewed MR); the total loses the sum.
+    # One medium finding per 10 MRs = −0.8, one high per 10 MRs = −2.
+    "deduction_per_weight": 4.0,
+    # best level first, every gate must hold (history/score.py GATES). Code is
+    # AI-written, so this grades what a person lets merge: senior means almost
+    # nothing ever gets through.
+    "levels": [{"level": "senior", "min_score": 9.5, "max_high": 0, "max_fix_mr": 0,
+                "min_clean_rate": 0.95},
+               {"level": "mid+", "min_score": 8.5, "max_high": 0, "min_clean_rate": 0.85},
+               {"level": "mid", "min_score": 6.0, "max_high": 1},
+               {"level": "junior", "min_score": None}],
 }
 
 MIGRATIONS = [
@@ -119,7 +128,111 @@ MIGRATIONS = [
         result        TEXT
     );
     """,
+    # 2: team roles — a lead is shown separately and never ranked (append-only;
+    #    the latest row per person wins)
+    """
+    CREATE TABLE person_roles (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        gitlab_id   INTEGER NOT NULL REFERENCES people(gitlab_id),
+        role        TEXT NOT NULL,                  -- 'member' | 'lead'
+        actor       TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    );
+    """,
+    # 3: who actually wrote a line — git blame for findings on release MRs
+    """
+    ALTER TABLE mrs ADD COLUMN head_sha TEXT;
+    ALTER TABLE mrs ADD COLUMN commits_synced INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE mr_commits (                       -- commits of personal MRs
+        mr_id         INTEGER NOT NULL REFERENCES mrs(mr_id),
+        sha           TEXT NOT NULL,
+        author_email  TEXT,
+        author_name   TEXT,
+        PRIMARY KEY (mr_id, sha)
+    );
+    CREATE INDEX mr_commits_sha ON mr_commits(sha);
+    CREATE TABLE finding_blame (
+        note_id       INTEGER PRIMARY KEY REFERENCES findings(note_id),
+        commit_sha    TEXT,
+        author_email  TEXT,
+        author_name   TEXT,
+        error         TEXT,                         -- why it could not be blamed, if so
+        blamed_at     TEXT NOT NULL
+    );
+    """,
+    # 4: confirmed commit-email -> person (append-only, latest per email wins;
+    #    gitlab_id NULL = "not one of us / ignore"), and people added by hand
+    #    before they ever opened an MR
+    """
+    ALTER TABLE findings ADD COLUMN head_sha TEXT;   -- the commit the comment was made on
+    CREATE TABLE email_aliases (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        email       TEXT NOT NULL,
+        gitlab_id   INTEGER REFERENCES people(gitlab_id),
+        actor       TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    );
+    CREATE TABLE roster_additions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        username    TEXT NOT NULL,
+        actor       TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        resolved_id INTEGER,                        -- set by the sync once GitLab knows them
+        error       TEXT
+    );
+    """,
+    # 5: score change log — every recompute compares with the last known state and
+    #    appends one row per person (or the team, gitlab_id -1) whose score changed
+    """
+    CREATE TABLE score_state (
+        gitlab_id     INTEGER PRIMARY KEY,           -- -1 = the team as a whole
+        score         REAL,
+        level         TEXT,
+        reviewed_mrs  INTEGER,
+        findings      INTEGER,
+        updated_at    TEXT NOT NULL
+    );
+    CREATE TABLE score_events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at      TEXT NOT NULL,
+        gitlab_id       INTEGER NOT NULL,            -- -1 = the team
+        name            TEXT,
+        old_score       REAL,
+        new_score       REAL,
+        old_level       TEXT,
+        new_level       TEXT,
+        old_findings    INTEGER,
+        new_findings    INTEGER,
+        formula_version INTEGER,
+        trigger         TEXT NOT NULL,               -- what caused the recompute
+        actor           TEXT NOT NULL
+    );
+    CREATE INDEX score_events_person ON score_events(gitlab_id, created_at);
+    """,
+    # 6: data only — scores become "out of 10, higher is better" (see migrate())
+    "SELECT 1;",
 ]
+SCALE_CHANGE_NOTE = "評分改成 10 分制(越高越好、每項各自給分)"
+TEAM = -1
+
+ROLES = {"member": "成員", "lead": "Team leader", "departed": "已離職"}
+UNRANKED_ROLES = {"lead", "departed"}       # reported, never ranked, not in the team average
+
+
+def confirmed_aliases(conn) -> dict[str, int | None]:
+    """email -> gitlab_id confirmed by a person (latest wins; None = ignore)."""
+    out = {}
+    for row in conn.execute("SELECT email, gitlab_id FROM email_aliases ORDER BY created_at, id"):
+        out[row["email"].lower()] = row["gitlab_id"]
+    return out
+
+
+def person_roles(conn) -> dict[int, str]:
+    """Current role per person (latest row wins); anyone missing is a member."""
+    roles = {}
+    for row in conn.execute("SELECT gitlab_id, role FROM person_roles ORDER BY created_at, id"):
+        roles[row["gitlab_id"]] = row["role"]
+    return roles
 
 
 def now_iso() -> str:
@@ -138,10 +251,20 @@ def utc(value) -> str | None:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def resolve_path(config: dict | None = None) -> Path:
+    """MR_SENTINEL_DB > config history.db_path > <repo>/sentinel.db — the same order
+    for the CLI, the review hooks and the dashboard, so they all open one file."""
+    env = os.environ.get("MR_SENTINEL_DB")
+    configured = ((config or {}).get("history") or {}).get("db_path")
+    path = Path(env or configured or SCRIPT_DIR / "sentinel.db")
+    # relative paths are relative to the repo, never to whoever's cwd
+    return path if path.is_absolute() else SCRIPT_DIR / path
+
+
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
     """Open (creating if needed) and migrate. WAL lets the dashboard read while a
     sync writes; busy_timeout covers the reviewer/listener writing at the same time."""
-    path = Path(path or DEFAULT_PATH)
+    path = Path(path or resolve_path())
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -162,7 +285,26 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute("INSERT INTO scoring_configs VALUES (1, ?, ?, ?, ?)",
                              (json.dumps(DEFAULT_SCORING), "initial defaults — to be calibrated",
                               "system", now_iso()))
+        if number == 6:
+            _to_ten_point_scale(conn)
     return len(MIGRATIONS)
+
+
+def _to_ten_point_scale(conn) -> None:
+    """An old "lower is better" config gets a successor in the new shape: the
+    weights a human tuned are kept, the scale and levels are the new defaults.
+    The next score log entry names the change instead of whatever triggered it."""
+    version, cfg = scoring_config(conn)
+    if "deduction_per_weight" in cfg:
+        return                                    # fresh db: v1 is already new-style
+    new = {**cfg, "deduction_per_weight": DEFAULT_SCORING["deduction_per_weight"],
+           "levels": DEFAULT_SCORING["levels"]}
+    with conn:
+        conn.execute("INSERT INTO scoring_configs VALUES (?, ?, ?, ?, ?)",
+                     (version + 1, json.dumps(new, ensure_ascii=False), SCALE_CHANGE_NOTE,
+                      "system", now_iso()))
+        conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
+                     (SCALE_CHANGE_NOTE,))
 
 
 def get_state(conn, key: str, default=None):

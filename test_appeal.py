@@ -86,6 +86,7 @@ class Harness:
                  mock.patch.object(appeal.reviewer, "_slack_say",
                                    side_effect=lambda cfg, text, ts, b=None: self.said.append((text, b))), \
                  mock.patch.object(appeal.reviewer, "_maybe_auto_merge") as self.merge, \
+                 mock.patch.object(appeal.history_sync, "sync_mr") as self.history, \
                  mock.patch.object(appeal.engines, "get_engine", return_value=engine):
                 self.rc = appeal.run_appeal("g/app", "5", "100", self.cfg, {})
         return self
@@ -111,6 +112,7 @@ class TestRunAppeal(unittest.TestCase):
         self.assertTrue(buttons)                              # still open -> can press again
         h.merge.assert_not_called()
         self.assertEqual([a["id"] for a in h.ctx["appeals"]], ["d1", "d2"])
+        self.assertIn("申訴", h.history.call_args.kwargs["trigger"])   # re-scored after verdicts
 
     def test_nothing_to_judge_skips_the_engine(self):
         h = Harness([{"id": "d1", "notes": [note(ME, AI)]}], []).run()

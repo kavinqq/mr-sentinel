@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import gitlab_client
 import review_common
 from history import db
-from history.parse import is_fix_mr, parse_comment
+from history.parse import is_fix_mr, is_release_mr, parse_comment
 
 log = logging.getLogger("mr_sentinel.history")
 
@@ -43,7 +43,7 @@ def _upsert_person(conn, user: dict | None) -> int | None:
 
 
 def store_mr(conn, project: str, mr: dict, discussions: list, awards: list, me: int,
-             files: list[str] | None) -> int:
+             files: list[str] | None, commits: list[dict] | None = None) -> int:
     """Write one MR and its AI findings (pure DB work, given the fetched GitLab data).
     Returns how many AI findings the MR currently has on GitLab."""
     now = db.now_iso()
@@ -62,37 +62,40 @@ def store_mr(conn, project: str, mr: dict, discussions: list, awards: list, me: 
     reviewed = int(bool(found) or review_common.has_own_award_emoji(awards, me))
     conn.execute("""
         INSERT INTO mrs(mr_id, project, iid, author_id, title, state, source_branch, target_branch,
-                        web_url, created_at, merged_at, updated_at, is_fix, reviewed, synced_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        web_url, created_at, merged_at, updated_at, is_fix, reviewed, synced_at,
+                        head_sha)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(mr_id) DO UPDATE SET
             author_id = excluded.author_id, title = excluded.title, state = excluded.state,
             source_branch = excluded.source_branch, target_branch = excluded.target_branch,
             web_url = excluded.web_url, merged_at = excluded.merged_at,
             updated_at = excluded.updated_at, is_fix = excluded.is_fix,
             -- once reviewed, always reviewed: a rerun briefly removes our :eyes:
-            reviewed = MAX(mrs.reviewed, excluded.reviewed), synced_at = excluded.synced_at
+            reviewed = MAX(mrs.reviewed, excluded.reviewed), synced_at = excluded.synced_at,
+            head_sha = COALESCE(excluded.head_sha, mrs.head_sha)
     """, (mr["id"], project, mr["iid"], author, mr.get("title"), mr.get("state"),
           mr.get("source_branch"), mr.get("target_branch"), mr.get("web_url"),
           db.utc(mr.get("created_at")), db.utc(mr.get("merged_at")), db.utc(mr.get("updated_at")),
-          int(is_fix_mr(mr.get("title"), mr.get("source_branch"))), reviewed, now))
+          int(is_fix_mr(mr.get("title"), mr.get("source_branch"))), reviewed, now, mr.get("sha")))
 
     for note_id, discussion_id, parsed, position, first, status, verdict in found:
         conn.execute("""
             INSERT INTO findings(note_id, discussion_id, mr_id, severity, title, category,
                                  category_source, file, line, body, created_at, status,
-                                 appeal_verdict, present, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                                 appeal_verdict, present, last_seen_at, head_sha)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT(note_id) DO UPDATE SET
                 severity = excluded.severity, title = excluded.title, body = excluded.body,
                 status = excluded.status, appeal_verdict = excluded.appeal_verdict,
                 present = 1, last_seen_at = excluded.last_seen_at,
                 -- a marker in the comment is authoritative; otherwise keep the classifier's
                 category = COALESCE(excluded.category, findings.category),
-                category_source = COALESCE(excluded.category_source, findings.category_source)
+                category_source = COALESCE(excluded.category_source, findings.category_source),
+                head_sha = COALESCE(findings.head_sha, excluded.head_sha)
         """, (note_id, discussion_id, mr["id"], parsed["severity"], parsed["title"],
               parsed["category"], "review" if parsed["category"] else None,
               position.get("new_path"), position.get("new_line"), first.get("body"),
-              db.utc(first.get("created_at")), status, verdict, now))
+              db.utc(first.get("created_at")), status, verdict, now, position.get("head_sha")))
 
     seen = [f[0] for f in found]
     # careful: `NOT IN (NULL)` matches nothing, so "every finding gone" needs its own branch
@@ -107,6 +110,16 @@ def store_mr(conn, project: str, mr: dict, discussions: list, awards: list, me: 
         conn.executemany("INSERT INTO mr_files(mr_id, path) VALUES (?, ?)",
                          [(mr["id"], p) for p in files if not review_common.is_noise_path(p)])
         conn.execute("UPDATE mrs SET files_synced = 1 WHERE mr_id = ?", (mr["id"],))
+    if commits is not None:
+        # (list, complete) from gitlab_client; a bare list (tests) counts as complete
+        commits, complete = commits if isinstance(commits, tuple) else (commits, True)
+        conn.executemany("INSERT OR IGNORE INTO mr_commits(mr_id, sha, author_email, author_name) "
+                         "VALUES (?, ?, ?, ?)",
+                         [(mr["id"], c["id"], (c.get("author_email") or "").lower() or None,
+                           c.get("author_name")) for c in commits if c.get("id")])
+        # 1 = complete list, 2 = truncated (credit only, never proof of who an email is)
+        conn.execute("UPDATE mrs SET commits_synced = ? WHERE mr_id = ?",
+                     (1 if complete else 2, mr["id"]))
     return len(found)
 
 
@@ -122,13 +135,17 @@ def sync_one(conn, base: str, token: str, project: str, mr: dict, me: int) -> in
         mr = gitlab_client.get_mr(base, token, project, mr["iid"])
         discussions = gitlab_client.list_discussions(base, token, project, mr["iid"])
         awards = gitlab_client.get_award_emojis(base, token, project, mr["iid"])
-        files = None
+        files = commits = None
         if mr.get("state") == "merged":
-            row = conn.execute("SELECT files_synced FROM mrs WHERE mr_id = ?",
+            row = conn.execute("SELECT files_synced, commits_synced FROM mrs WHERE mr_id = ?",
                                (mr["id"],)).fetchone()
             if not (row and row["files_synced"]):
                 files = gitlab_client.get_mr_files(base, token, project, mr["iid"])
-        found = store_mr(conn, project, mr, discussions, awards, me, files)
+            # commits prove who an email is (personal MRs only, see score.email_owners)
+            # and who took part in a release MR (its reviewed-MR credit, see team_report)
+            if not (row and row["commits_synced"]):
+                commits = gitlab_client.get_mr_commits(base, token, project, mr["iid"])
+        found = store_mr(conn, project, mr, discussions, awards, me, files, commits)
         conn.commit()
         return found
     except BaseException:
@@ -165,9 +182,35 @@ def sync_project(conn, config: dict, project: str, me: int, full: bool = False) 
     return len(mrs)
 
 
+def resolve_roster(conn, config: dict) -> int:
+    """People added by hand (dashboard 新增成員) become `people` rows once GitLab
+    confirms the username — so they show up before their first MR."""
+    rows = conn.execute("SELECT id, username FROM roster_additions "
+                        "WHERE resolved_id IS NULL AND error IS NULL").fetchall()
+    done = 0
+    for row in rows:
+        try:
+            user = gitlab_client.find_user(config["gitlab_url"], config["gitlab_token"],
+                                           row["username"])
+        except Exception as exc:
+            log.warning("roster lookup of %s failed: %s", row["username"], exc)
+            continue                                   # transient: try again next run
+        with conn:
+            if user:
+                _upsert_person(conn, user)
+                conn.execute("UPDATE roster_additions SET resolved_id = ? WHERE id = ?",
+                             (user["id"], row["id"]))
+                done += 1
+            else:
+                conn.execute("UPDATE roster_additions SET error = ? WHERE id = ?",
+                             ("GitLab 上找不到這個帳號", row["id"]))
+    return done
+
+
 def sync_all(conn, config: dict, full: bool = False) -> dict:
     me = _me(config)
     done, failed = {}, {}
+    resolve_roster(conn, config)
     for project in projects(config):
         try:
             done[project] = sync_project(conn, config, project, me, full)
@@ -180,18 +223,36 @@ def sync_all(conn, config: dict, full: bool = False) -> dict:
     return {"synced": done, "failed": failed}
 
 
-def sync_mr(config: dict, project: str, iid, conn=None) -> bool:
+def sync_mr(config: dict, project: str, iid, conn=None, trigger: str | None = None) -> bool:
     """Single-MR sync for the reviewer / listener hooks: right after a review
     posts, and right before a rerun deletes unanswered comments, so even a
     finding that lives for minutes is on record. Never raises; returns whether
-    the MR is now on record (the rerun refuses to delete comments otherwise)."""
+    the MR is now on record (the rerun refuses to delete comments otherwise).
+
+    Then the rest of the chain: blame, follow-ups, every score, the change log
+    (history.snapshot.refresh) — a failure there is logged but does not undo
+    the sync, which is what the caller depends on."""
     try:
         own = conn is None
-        conn = conn or db.connect((config.get("history") or {}).get("db_path"))
+        conn = conn or db.connect(db.resolve_path(config))
         try:
             base, token = config["gitlab_url"], config["gitlab_token"]
             mr = gitlab_client.get_mr(base, token, project, iid)
             sync_one(conn, base, token, project, mr, _me(config))
+            try:
+                from history import snapshot
+                snapshot.refresh(conn, config, trigger or f"{project.rsplit('/', 1)[-1]}!{iid} 更新",
+                                 mr_id=mr["id"])
+                with conn:
+                    db.set_state(conn, "last_refresh_error", "")
+            except Exception as exc:
+                # the MR *is* recorded (what the rerun's cleanup depends on); the derived
+                # data catches up on the next run — but the failure must be visible
+                log.exception("score refresh after %s!%s failed (the MR itself is recorded)",
+                              project, iid)
+                with conn:
+                    db.set_state(conn, "last_refresh_error",
+                                 f"{db.now_iso()} {project}!{iid}: {type(exc).__name__}: {exc}"[:300])
             return True
         finally:
             if own:

@@ -11,6 +11,8 @@ edited it. Recomputed from scratch on every run, so tuning `followup_days`
 """
 from datetime import datetime
 
+from history.parse import is_release_mr
+
 
 def _ts(value: str | None) -> datetime | None:
     if not value:
@@ -18,29 +20,45 @@ def _ts(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def compute(features: list[dict], fixes: list[dict], findings: list[dict], days: float) -> list[dict]:
-    """features: merged non-fix MRs {mr_id, project, merged_at, files}
-    fixes:    merged fix MRs       {mr_id, project, merged_at, files}
-    findings: AI findings           {note_id, mr_id, project, file, created_at}
-    -> [{feature_mr_id, kind, source_ref, file, days_after}]"""
-    by_file: dict[tuple[str, str], list[tuple[datetime, int]]] = {}
-    for f in features:
-        shipped = _ts(f["merged_at"])
-        if shipped is None:
-            continue
-        for path in f["files"]:
-            by_file.setdefault((f["project"], path), []).append((shipped, f["mr_id"]))
-    for history in by_file.values():
-        history.sort()
+class FileHistory:
+    """Which feature MR last shipped a file before a given moment.
 
-    def culprit(project: str, path: str, when: datetime, exclude_mr: int):
+    Shared by the follow-up detection and by the scoring, which hands findings
+    on release MRs back to the feature MR that wrote that code."""
+
+    def __init__(self, features: list[dict], days: float):
+        self.days = days
+        self.by_file: dict[tuple[str, str], list[tuple[datetime, int]]] = {}
+        for f in features:
+            shipped = _ts(f["merged_at"])
+            if shipped is None:
+                continue
+            for path in f["files"]:
+                self.by_file.setdefault((f["project"], path), []).append((shipped, f["mr_id"]))
+        for history in self.by_file.values():
+            history.sort()
+
+    def culprit(self, project: str, path: str | None, when, exclude_mr=None):
+        """(shipped_at, mr_id) of the latest feature MR before `when`, within `days`."""
+        when = _ts(when) if isinstance(when, str) else when
+        if when is None or not path:
+            return None
         best = None
-        for shipped, mr_id in by_file.get((project, path), []):
+        for shipped, mr_id in self.by_file.get((project, path), []):
             if shipped >= when:
                 break
-            if mr_id != exclude_mr and (when - shipped).total_seconds() <= days * 86400:
+            if mr_id != exclude_mr and (when - shipped).total_seconds() <= self.days * 86400:
                 best = (shipped, mr_id)
         return best
+
+
+def compute(features: list[dict], fixes: list[dict], findings: list[dict], days: float) -> list[dict]:
+    """features: merged feature MRs {mr_id, project, merged_at, files}  (no fixes, no releases)
+    fixes:    merged fix MRs       {mr_id, project, merged_at, files}
+    findings: AI findings           {note_id, mr_id, project, file, created_at}  (no release MRs)
+    -> [{feature_mr_id, kind, source_ref, file, days_after}]"""
+    history = FileHistory(features, days)
+    culprit = history.culprit
 
     out: dict[tuple, dict] = {}
 
@@ -75,14 +93,20 @@ def refresh(conn, days: float) -> int:
     for row in conn.execute("SELECT mr_id, path FROM mr_files"):
         files.setdefault(row["mr_id"], []).append(row["path"])
     merged = [dict(r) for r in conn.execute(
-        "SELECT mr_id, project, merged_at, is_fix FROM mrs WHERE state = 'merged'")]
+        "SELECT mr_id, project, merged_at, is_fix, title, source_branch, target_branch FROM mrs "
+        "WHERE state = 'merged'")]
     for m in merged:
         m["files"] = files.get(m["mr_id"], [])
+        m["release"] = is_release_mr(m["title"], m["source_branch"], m["target_branch"])
+    releases = {m["mr_id"] for m in merged if m["release"]}
+    # a finding on a release MR is attributed to its feature directly (score.py),
+    # so it must not count again here as an "AI re-find"
     findings = [dict(r) for r in conn.execute(
         "SELECT f.note_id, f.mr_id, m.project, f.file, f.created_at FROM findings f "
-        "JOIN mrs m ON m.mr_id = f.mr_id")]       # gone-from-GitLab ones were still found
-    rows = compute([m for m in merged if not m["is_fix"]], [m for m in merged if m["is_fix"]],
-                   findings, days)
+        "JOIN mrs m ON m.mr_id = f.mr_id")       # gone-from-GitLab ones were still found
+        if r["mr_id"] not in releases]
+    rows = compute([m for m in merged if not m["is_fix"] and not m["release"]],
+                   [m for m in merged if m["is_fix"] and not m["release"]], findings, days)
     with conn:
         conn.execute("DELETE FROM followups")
         conn.executemany("INSERT INTO followups VALUES "

@@ -1,0 +1,102 @@
+{% extends 'admin/base.html' %}
+{% load i18n sentinel %}
+
+{% block title %}團隊總覽 | {{ site_title|default:_('Django site admin') }}{% endblock %}
+{% block branding %}{% include "unfold/helpers/site_branding.html" %}{% endblock %}
+
+{% block content %}
+<div class="ms">
+  <div class="ms-head">
+    <div>
+      <h1>團隊總覽</h1>
+      <p class="ms-sub">近 {{ cfg.window_days }} 天 · 評分公式 v{{ version }} · 滿分 10 · 越高越好 · 上次同步 {{ status.last_sync_at|tw }}</p>
+    </div>
+    <div class="ms-row">
+      <form method="post" action="{% url 'sync_request' %}">{% csrf_token %}
+        <input type="hidden" name="kind" value="full_sync"><button type="submit" class="ghost">完整同步</button></form>
+      <form method="post" action="{% url 'sync_request' %}">{% csrf_token %}
+        <input type="hidden" name="kind" value="sync">
+        <button type="submit" class="primary"><span class="material-symbols-outlined">sync</span>立即同步</button></form>
+    </div>
+  </div>
+
+  {% if status.last_sync_failed %}<div class="ms-banner" role="alert">上次同步有專案失敗:{{ status.last_sync_failed }}</div>{% endif %}
+  {% if status.last_refresh_error %}<div class="ms-banner" role="alert">最近一次 MR 寫入後的分數重算失敗(資料已保存,下次同步會補算):{{ status.last_refresh_error }}</div>{% endif %}
+  {% if unknown_emails %}<div class="ms-info">有 <strong>{{ unknown_emails }} 個 commit email</strong> 還不知道是誰的,相關的 finding 暫時先算在 MR 作者身上(release MR 上的則不計)。<a class="ms-link" href="{% url 'emails' %}">去指定 →</a></div>{% endif %}
+
+  <div class="ms-stats">
+    <div class="ms-stat"><div class="k">團隊總分</div><div class="v">{{ team_score|default_if_none:"—" }}<span class="ms-dim" style="font-size:1rem"> / 10</span></div><div class="d">不含 team leader / 已離職</div></div>
+    <div class="ms-stat"><div class="k">排入評分的成員</div><div class="v">{{ kpi.people }}</div>
+      <div class="d">{% for lv, n in kpi.levels.items %}{{ lv }} {{ n }}{% if not forloop.last %} · {% endif %}{% endfor %}{% if kpi.unrated %} · 資料不足 {{ kpi.unrated }}{% endif %}</div></div>
+    <div class="ms-stat"><div class="k">被 review 的 MR</div><div class="v">{{ kpi.reviewed }}</div><div class="d">含參與的 release MR</div></div>
+    <div class="ms-stat"><div class="k">計分的 finding</div><div class="v">{{ kpi.findings }}</div><div class="d">已扣除誤判、申訴成立</div></div>
+    <div class="ms-stat"><div class="k">後續 bug(推估)</div><div class="v">{{ kpi.followups }}</div><div class="d">fix MR + AI 再次抓到</div></div>
+  </div>
+
+  {% if leads %}
+  <section class="ms-group">
+    <div class="ms-group-head"><h2>Team leader</h2><span class="count">{{ leads|length }}</span>
+      <span class="hint">不排入評分、不計入團隊平均,僅供參考</span></div>
+    <div class="ms-acc-list">
+      {% include "reviews/_acc_head.html" with score_label="參考分數" %}
+      {% for r in leads %}{% include "reviews/_member_acc.html" %}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="ms-group">
+    <div class="ms-group-head"><h2>成員</h2><span class="count">{{ ranked|length }}</span>
+      <span class="hint">每項滿分 10 · 點一列展開每一次 MR 的紀錄 · 少於 {{ cfg.min_reviewed_mrs }} 個 MR 不給等級</span></div>
+    <div class="ms-acc-list">
+      {% include "reviews/_acc_head.html" with score_label="分數" %}
+      {% for r in ranked %}{% include "reviews/_member_acc.html" %}
+      {% empty %}<div class="ms-empty">還沒有資料 — 按「完整同步」,或執行 <code>python3 -m history run --full</code></div>{% endfor %}
+    </div>
+    <p class="ms-formula">每一項從 10 分開始扣:扣分 = {{ cfg.deduction_per_weight }} × 該項的加權問題 / 參與且被 review 的 MR 數(含 release);總分 = 10 − 各項扣分加總<br>
+      加權:High {{ cfg.severity_weight.high }} · Medium {{ cfg.severity_weight.medium }} · Low {{ cfg.severity_weight.low }}{% if cfg.category_multiplier.security %}(資安 ×{{ cfg.category_multiplier.security }}){% endif %} · 後續 fix MR {{ cfg.followup_weight.fix_mr }} · AI 再抓到 {{ cfg.followup_weight.ai_refind }} — 例:10 個 MR 有 1 則 Medium,該項扣 0.8<br>
+      等級是門檻,條件全部符合才算:{% for lv in cfg.levels %}{% if lv.min_score is not None %}<strong>{{ lv.level }}</strong> 總分 ≥ {{ lv.min_score }}{% if lv.max_high is not None %}、high ≤ {{ lv.max_high }}{% endif %}{% if lv.max_fix_mr is not None %}、fix ≤ {{ lv.max_fix_mr }}{% endif %}{% if lv.min_clean_rate is not None %}、乾淨 MR ≥ {% widthratio lv.min_clean_rate 1 100 %}%{% endif %}{% if not forloop.last %} · {% endif %}{% else %}其餘 <strong>{{ lv.level }}</strong>{% endif %}{% endfor %}</p>
+  </section>
+
+  <div class="ms-cols">
+    <section class="ms-panel">
+      <div class="ms-group-head" style="margin:0 0 2px"><h3 style="margin:0">評分變動</h3>
+        <a class="ms-link hint" href="{% url 'score_log' %}">全部紀錄 →</a></div>
+      <p class="ms-sub">每次新 review、重審、申訴、覆核都會重算,有變才記一筆</p>
+      {% include "reviews/_events.html" with events=events compact=True %}
+    </section>
+    {% if radar %}
+    <section class="ms-panel">
+      <h3>團隊各項分數</h3>
+      <p class="ms-sub">各項分數(滿分 10),越靠外越好 · 不含 team leader / 已離職</p>
+      <div class="ms-radar"><canvas class="chart" data-type="radar" data-value="{{ radar.data }}" data-options="{{ radar.options }}" role="img" aria-label="團隊各項分數(滿分 10)的雷達圖"></canvas></div>
+    </section>
+    {% endif %}
+  </div>
+
+  {% if departed %}
+  <section class="ms-group">
+    <details class="ms-fold"><summary class="ms-group-head"><h2>已離職</h2><span class="count">{{ departed|length }}</span>
+      <span class="hint">不排入評分、不計入團隊平均</span></summary>
+      <div class="ms-acc-list" style="margin-top:8px">
+        {% include "reviews/_acc_head.html" with score_label="參考分數" %}
+        {% for r in departed %}{% include "reviews/_member_acc.html" %}{% endfor %}
+      </div>
+    </details>
+  </section>
+  {% endif %}
+
+  <section class="ms-panel">
+    <h3>同步紀錄</h3>
+    <p class="ms-sub">每日 03:30 自動同步;按「立即同步」會在背景執行</p>
+    {% if status.requests %}
+    <table class="ms-mini">
+      <thead><tr><th>種類</th><th>送出</th><th>誰</th><th>狀態</th></tr></thead>
+      <tbody>{% for q in status.requests %}
+        <tr><td>{{ sync_kinds|get:q.kind|default:q.kind }}</td><td class="ms-dim">{{ q.requested_at|tw }}</td><td class="ms-dim">{{ q.requested_by }}</td>
+            <td>{% if q.finished_at %}<details><summary>完成 {{ q.finished_at|tw:"%H:%M" }}</summary><pre>{{ q.result }}</pre></details>{% else %}<span class="ms-chip accent">執行中</span>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+    {% else %}<p class="ms-dim" style="margin:0">還沒有從這裡送出過同步</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

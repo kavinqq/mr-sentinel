@@ -25,7 +25,7 @@ overrides.lock
 .lock-bot
 .lock-history
 .socket-alive
-reviews/
+/reviews/
 *.log
 *.log.*
 
@@ -37,3 +37,12 @@ final_findings.json
 __pycache__/
 *.pyc
 *.tmp
+
+# dashboard (Django): its own venv, its own db (users/sessions), per-machine key
+dashboard/.venv/
+dashboard/dashboard.db
+dashboard/.secret_key
+dashboard/.test_sentinel.db*
+
+# browser screenshots / snapshots from UI checks
+.playwright-mcp/

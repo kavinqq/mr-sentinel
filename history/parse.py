@@ -20,7 +20,12 @@ _EMOJI_SEVERITY = {"🔴": "high", "🟠": "medium", "🟡": "low"}
 
 _FIX_RE = re.compile(r"(?<![a-z])(fix|hotfix|bugfix|bug)(?![a-z])|修正|修復|修bug|修 bug|bug修",
                      re.I)
-_VERSION_BUMP_RE = re.compile(r"(?<![a-z])ver(sion)?(?![a-z])|版號|版本更新|更新版本", re.I)
+# a version-bump / release title: "ver: 版號更新 1.0.1", "[ ver ] 版本更新", "版號 0.0.14"
+_VERSION_BUMP_RE = re.compile(r"^\s*(\[\s*ver(sion)?\s*\]|ver(sion)?\s*[:：])|版號|版本更新|更新版本",
+                              re.I)
+# integration branches: an MR *from* one of these carries other people's work
+RELEASE_SOURCES = {"dev", "develop", "development", "uat", "sit", "staging", "stage",
+                   "pre-prod", "preprod", "prod", "production", "main", "master"}
 
 
 def category_marker(category: str | None) -> str:
@@ -43,6 +48,24 @@ def parse_comment(body: str) -> dict:
     marker = CATEGORY_MARKER_RE.search(body)
     category = marker.group(1) if marker and marker.group(1) in CATEGORIES else None
     return {"severity": severity, "title": title, "category": category}
+
+
+PRODUCTION_TARGETS = {"main", "master", "prod", "production"}
+
+
+def is_release_mr(title: str | None, source_branch: str | None,
+                  target_branch: str | None = None) -> bool:
+    """A release / integration MR: from an integration branch (pre-prod -> master)
+    or a version bump. Its diff is everyone's work, so it is nobody's personal MR:
+    the scoring hands its findings back to the feature MRs that wrote that code.
+
+    Deliberately NOT a release: a personal merge branch to master
+    ("new-merge-branch -> master | [ feat ] 第三方登入改版") — in this team that is
+    how one person ships their own feature, so it stays theirs."""
+    source = (source_branch or "").strip().lower()
+    if source in RELEASE_SOURCES or source.startswith(("release/", "release-", "hotfix-release")):
+        return True
+    return bool(_VERSION_BUMP_RE.search(title or "")) and not _FIX_RE.search(source)
 
 
 def is_fix_mr(title: str | None, source_branch: str | None) -> bool:

@@ -1,0 +1,28 @@
+{% load sentinel %}<details class="ms-acc">
+  <summary class="ms-acc-row">
+    <span class="chev material-symbols-outlined" aria-hidden="true">chevron_right</span>
+    <span><a class="ms-who" href="{% url 'person' r.author_id %}"><span class="avatar" aria-hidden="true">{{ r.name|default:r.username|initial }}</span>{{ r.name|default:r.username }} <span class="handle">{{ r.username }}</span></a></span>
+    <span>{% if r.ranked %}<span class="ms-level"><span class="ms-dot {{ r.level|level_dot }}"></span>{{ r.level|default:"資料不足" }}</span>{% else %}<span class="ms-chip">{% if r.role == "departed" %}已離職{% else %}Team leader{% endif %}</span>{% endif %}</span>
+    <span class="ms-num ms-strong">{{ r.score|default_if_none:"—" }}</span>
+    <span class="ms-num" title="個人 {{ r.mr_ids|length|add:'0' }} · 含 release {{ r.release_mrs }}">{{ r.reviewed_mrs }}</span>
+    {% for it in r.item_list %}<span class="ms-num {{ it.score|item_cls }}" title="{{ it.label }}:{{ it.score }} / 10(扣 {{ it.deduction }},{{ it.count|default:0 }} 則)">{{ it.score }}</span>{% empty %}{% for key in item_short %}<span class="ms-num ms-dim">—</span>{% endfor %}{% endfor %}
+  </summary>
+  <div class="ms-acc-body">
+    <p class="ms-sub" style="margin:0 0 10px">{% if r.reviewed_mrs %}{{ r.explain }} · 嚴重度 High {{ r.severities.high }} · Medium {{ r.severities.medium }} · Low {{ r.severities.low }} · 後續 bug fix {{ r.followups.fix_mr|default:0 }} / AI 再抓到 {{ r.followups.ai_refind|default:0 }}{% endif %}{% if r.ranked and r.next_level %}<br>差 <strong>{{ r.next_level }}</strong>:{{ r.next_level_misses|join:"、" }}{% endif %}</p>
+    {% if r.records %}
+    <table class="ms-mini">
+      <thead><tr><th>日期</th><th>MR</th><th>類型</th><th>計分 finding</th><th class="ms-num">不計</th></tr></thead>
+      <tbody>{% for rec in r.records %}
+        <tr>
+          <td class="ms-dim" style="width:110px">{{ rec.created_at|tw:"%Y-%m-%d" }}</td>
+          <td style="white-space:normal"><a class="ms-link" href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.short }}</a> <span class="ms-dim">{{ rec.title|truncatechars:70 }}</span></td>
+          <td style="width:90px"><span class="ms-chip{% if rec.kind != '個人' %} accent{% endif %}">{{ rec.kind }}</span></td>
+          <td style="width:170px">{% if rec.total %}<span class="ms-sevs">{% if rec.counts.high %}<span><span class="ms-dot high"></span>{{ rec.counts.high }}</span>{% endif %}{% if rec.counts.medium %}<span><span class="ms-dot medium"></span>{{ rec.counts.medium }}</span>{% endif %}{% if rec.counts.low %}<span><span class="ms-dot low"></span>{{ rec.counts.low }}</span>{% endif %}</span>{% elif rec.reviewed %}<span class="ms-dim">乾淨</span>{% else %}<span class="ms-dim">未 review</span>{% endif %}</td>
+          <td class="ms-num ms-dim" style="width:50px">{{ rec.uncounted|default:"" }}</td>
+        </tr>
+      {% endfor %}</tbody>
+    </table>
+    {% else %}<p class="ms-dim" style="margin:0">近 {{ cfg.window_days }} 天沒有 MR 紀錄</p>{% endif %}
+    <p style="margin:10px 0 0"><a class="ms-link" href="{% url 'person' r.author_id %}">看完整個人頁(雷達圖、每則 finding、覆核)→</a></p>
+  </div>
+</details>

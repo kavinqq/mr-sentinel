@@ -41,5 +41,18 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   GitLab; human input goes through the append-only `finding_reviews` /
   `scoring_configs` / `sync_requests` tables. Tests must never touch the real
   db (`BotHarness` mocks `history_sync.sync_mr`; use a temp path elsewhere).
+- Scores are **out of 10, higher is better** (`history/score.py`): each item
+  (5 finding categories + follow-ups) starts at 10, the total is 10 − Σ item
+  deductions, and a level is a gate (`min_score` plus optional `max_high` /
+  `max_fix_mr` / `min_clean_rate`). The formula lives in versioned
+  `scoring_configs`; change it there (dashboard 評分設定), not in code.
+  Every recompute goes through `history.snapshot.record` so it lands in the
+  score log. A db that was never fully scanned gets `history/scan.py` (past
+  window, every project) on its first `run`; `scan_history.py` runs it by hand.
+- `dashboard/` is the one place pip dependencies are allowed (own venv,
+  `dashboard/requirements.txt`). It never migrates `sentinel.db` (models are
+  `managed=False`, see `routers.py`), raw models are read-only and human models
+  append-only in `models.py`, and scores always come from `history.score`.
+  Run its tests from `dashboard/`: `.venv/bin/python manage.py test reviews`.
 - Changing `slack.channel_id` invalidates `state.json`'s `slack_ts` (timestamps
   are per-channel): clear `slack_ts`, keep `seen`, or old MRs get re-notified.

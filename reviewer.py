@@ -383,7 +383,10 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             signature=build_signature(engine.label(review_cfg, mode)))
 
         write_review_meta(work, mode, head_sha, len(findings))
-        history_sync.sync_mr(config, project_path, iid)      # best-effort, never raises
+        # into the db -> blame -> follow-ups -> every score -> change log (never raises)
+        history_sync.sync_mr(config, project_path, iid,
+                             trigger=f"review 完成 {project_path.rsplit('/', 1)[-1]}!{iid}"
+                                     f"({len(findings)} 則)")
 
         # 8. completion message
         buttons = blocks.rerun_buttons(project_path, iid,

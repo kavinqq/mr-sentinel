@@ -192,10 +192,14 @@ Notes on how this works, because it shapes what is possible:
 (`sentinel.db`, created on first run, gitignored — it is per-person data):
 
 ```bash
-python3 -m history run --full   # first time: read every MR since history.since (default 2026-07-01)
-python3 -m history report       # per person: aspects, severities, follow-up bugs, level
+python3 scan_history.py          # first time: every project's MRs of the past 90 days
+python3 scan_history.py --dry-run   # only count what it would read
+python3 -m history report       # per person: score out of 10 per item, level
 ```
 
+- **The first scheduled `run` on a db that was never scanned does the scan
+  itself** (state `initial_scan_at`), so a new machine needs no extra step;
+  after that, runs are incremental from each project's cursor.
 - **Source of truth is GitLab**, not local files: findings a rerun deleted,
   developer replies, appeal verdicts and resolves are all there, so any
   machine can rebuild the db. A review and a rerun also record their MR
@@ -213,7 +217,14 @@ python3 -m history report       # per person: aspects, severities, follow-up bug
   rows in `scoring_configs` (v1 defaults are uncalibrated placeholders).
 - Ownership: `history/` owns the schema (append-only migrations). People act
   only through the append-only `finding_reviews`, `scoring_configs` and
-  `sync_requests` tables — the planned dashboard writes nothing else.
+  `sync_requests` tables — the dashboard writes nothing else.
+
+**Dashboard** (`dashboard/`, Django 5.2 LTS in its own venv — the core stays
+stdlib-only): `dashboard/run.sh createsuperuser` once, then `dashboard/run.sh`
+→ <http://127.0.0.1:8765>. Team overview, per-person pages (aspects, monthly
+trend, follow-ups, every finding linked to its GitLab comment), 改面向 / 標記誤判
+overrides with an audit trail, versioned scoring config, sync buttons. See
+`dashboard/README.md`.
 
 ## How the engines work
 

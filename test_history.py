@@ -1,5 +1,7 @@
 """Tests for the review-history package (sqlite in a temp dir; GitLab/engine mocked)."""
 import json
+import os
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -82,6 +84,124 @@ class TestParse(unittest.TestCase):
         for title, branch in [("[feat] 新功能", "feature/prefix-1"), ("ver: 版號更新 1.0.1", "dev"),
                               ("[ ver ] 版本更新 fix", "release")]:
             self.assertFalse(is_fix_mr(title, branch), title)
+
+
+class TestRelease(unittest.TestCase):
+    def test_release_detection(self):
+        from history.parse import is_release_mr
+        for title, src, tgt in [("ver: 版號更新 2.12.6.8", "pre-prod", "master"),
+                                ("[ ver ] 版本更新至 1.15", "dev", "master"),
+                                ("ver: 版號 0.0.14.53", "new-merge-branch", "master"),   # by title
+                                ("anything", "release/1.2", "master"),
+                                ("ver: 版號更新", "some-branch", "UAT")]:
+            self.assertTrue(is_release_mr(title, src, tgt), (title, src))
+        for title, src, tgt in [("[feat] 新增 version 檢查", "feature/version-check", "UAT"),
+                                ("[ fix ] 修登入", "fix/login", "UAT"),
+                                ("合併帳號", "feature/merge-accounts", "dev"),
+                                # someone shipping their own work via a merge branch
+                                ("[ feat ] 第三方登入改版", "new-merge-branch", "master"),
+                                ("1.49.1_任務卡片管理增加複製任務", "mr/0806_merge", "MASTER")]:
+            self.assertFalse(is_release_mr(title, src, tgt), (title, src))
+
+
+class TestAttribution(DbCase):
+    def setup_release(self):
+        with self.conn:
+            release = mr(mid=2, iid=2, author=8, title="ver: 版號更新 1.0", branch="pre-prod",
+                         merged="2026-09-05T00:00:00Z", created="2026-09-04T00:00:00Z")
+            release["target_branch"] = "master"
+            sync.store_mr(self.conn, "g/app", release, [
+                {"id": "d1", "notes": [note(10, ME, ai_body("high", "x", "security"),
+                                            position={"new_path": "a.py", "new_line": 1},
+                                            created_at="2026-09-04T12:00:00Z")]}], [], ME, ["a.py"])
+
+    def test_release_finding_without_known_author_counts_for_nobody(self):
+        self.setup_release()
+        attributed = score.attribution(self.conn, CFG, NOW)
+        self.assertEqual(attributed["findings"], [])
+        self.assertEqual([f["note_id"] for f in attributed["unattributed"]], [10])
+        self.assertNotIn("pk8", {r["username"] for r in score.team_report(self.conn, 1, CFG, NOW)})
+
+    def test_confirmed_email_hands_a_release_finding_to_its_author(self):
+        self.setup_release()
+        with self.conn:
+            sync.store_mr(self.conn, "g/app", mr(mid=1, iid=1, author=7), [], [], ME, None)
+            self.conn.execute("INSERT INTO finding_blame VALUES (10, 'c1', 'seven@x', 'S', NULL, 'now')")
+        self.assertEqual(score.attribution(self.conn, CFG, NOW)["unknown_emails"][0]["email"], "seven@x")
+        with self.conn:
+            self.conn.execute("INSERT INTO email_aliases(email, gitlab_id, actor, created_at) "
+                              "VALUES ('seven@x', 7, 'me', '2026-10-01T00:00:00Z')")
+        (f,) = score.attribution(self.conn, CFG, NOW)["findings"]
+        self.assertEqual((f["how"], f["owner_author_id"]), ("blame", 7))
+
+
+class TestBlame(DbCase):
+    PORCELAIN = ("4f3c2a1b0000000000000000000000000000abcd 12 12 1\nauthor 小華\n"
+                 "author-mail <Hua@Pocket.TW>\nauthor-time 1700000000\n\tcode\n")
+
+    def release_with_finding(self, head_sha="h" * 40):
+        rel = mr(mid=2, iid=2, author=8, title="ver: 版號更新", branch="pre-prod",
+                 created="2026-09-04T00:00:00Z", merged="2026-09-05T00:00:00Z")
+        rel.update(target_branch="master", sha=head_sha)
+        with self.conn:
+            sync.store_mr(self.conn, "g/app", rel, [{"id": "d", "notes": [note(10, ME, ai_body(),
+                          position={"new_path": "a.py", "new_line": 12},
+                          created_at="2026-09-04T12:00:00Z")]}], [], ME, None)
+
+    def test_porcelain_parsing(self):
+        from history.blame import parse_porcelain
+        self.assertEqual(parse_porcelain(self.PORCELAIN),
+                         {"sha": "4f3c2a1b0000000000000000000000000000abcd",
+                          "email": "hua@pocket.tw", "name": "小華"})
+
+    def test_blames_release_findings_once_and_records_failures(self):
+        from history import blame
+        self.release_with_finding()
+        cfg = {"review": {"project_map": {"g/app": "/clone"}}}
+        with mock.patch.object(blame, "blame_line", return_value={"sha": "c1", "email": "x@y", "name": "X"}), \
+             mock.patch("os.path.exists", return_value=True):
+            self.assertEqual(blame.blame_pending(self.conn, cfg), (1, 0))
+            self.assertEqual(blame.blame_pending(self.conn, cfg), (0, 0))     # not again
+        row = self.conn.execute("SELECT commit_sha, author_email, error FROM finding_blame").fetchone()
+        self.assertEqual(tuple(row), ("c1", "x@y", None))
+
+    def test_missing_clone_is_recorded_not_crashed(self):
+        from history import blame
+        self.release_with_finding()
+        with self.assertLogs("mr_sentinel.history", "WARNING"):
+            self.assertEqual(blame.blame_pending(self.conn, {"review": {"project_map": {}}}), (0, 1))
+        self.assertIn("no local clone",
+                      self.conn.execute("SELECT error FROM finding_blame").fetchone()[0])
+        self.assertEqual(blame.retry_failed(self.conn), 1)
+
+    def commits(self, mid, author, emails):
+        with self.conn:
+            sync.store_mr(self.conn, "g/app", mr(mid=mid, iid=mid, author=author), [], [], ME, None,
+                          [{"id": f"c{mid}{i}", "author_email": e} for i, e in enumerate(emails)])
+
+    def test_only_a_pure_mr_proves_an_email(self):
+        self.commits(1, 7, ["seven@x", "seven@x"])           # 7 alone wrote this MR: proven
+        self.commits(3, 9, ["nine@x", "seven@x", "john@x"])  # mixed merge MR: proves nothing
+        self.assertEqual(score.email_owners(self.conn), {"seven@x": 7})
+
+    def test_ambiguous_or_ignored_emails_map_to_nobody(self):
+        self.commits(1, 7, ["shared@x"])
+        self.commits(3, 9, ["shared@x"])                      # two people: ambiguous
+        self.assertEqual(score.email_owners(self.conn), {})
+        with self.conn:
+            self.conn.execute("INSERT INTO email_aliases(email, gitlab_id, actor, created_at) "
+                              "VALUES ('shared@x', 9, 'me', '2026-10-01T00:00:00Z'), "
+                              "       ('shared@x', NULL, 'me', '2026-10-02T00:00:00Z')")
+        self.assertEqual(score.email_owners(self.conn), {})        # latest says: ignore
+
+    def test_blame_moves_a_finding_off_a_merge_mr_onto_its_author(self):
+        self.commits(1, 7, ["seven@x"])                       # proves seven@x = 7
+        with self.conn:      # 9's personal merge MR carries 7's line
+            sync.store_mr(self.conn, "g/app", mr(mid=3, iid=3, author=9), [{"id": "d", "notes": [
+                note(30, ME, ai_body(), position={"new_path": "a.py", "new_line": 1})]}], [], ME, None)
+            self.conn.execute("INSERT INTO finding_blame VALUES (30, 'c10', 'seven@x', 'S', NULL, 'now')")
+        (f,) = score.attribution(self.conn, CFG, NOW)["findings"]
+        self.assertEqual((f["how"], f["owner_author_id"], f["owner_mr_id"]), ("blame", 7, None))
 
 
 class TestStoreMr(DbCase):
@@ -170,15 +290,50 @@ class TestScore(unittest.TestCase):
         fs = self.findings(("high", "security", None), ("medium", "correctness", None),
                            ("low", None, None), ("high", "correctness", "accept"))
         r = score.person_report(self.mrs(5), fs, [{"kind": "fix_mr"}], CFG, 1, NOW)
-        # 5×1.5 + 2 + 0.5 = 10 findings, +3 follow-up, /5 MRs = 2.6 -> junior (> 2.5)
-        self.assertEqual((r["finding_weight"], r["followup_weight"], r["score"]), (10.0, 3.0, 2.6))
+        # 5×1.5 + 2 + 0.5 = 10 findings, +3 follow-up = 13; ×4 / 5 MRs = 10.4 off -> 0
+        self.assertEqual((r["finding_weight"], r["followup_weight"], r["score"]), (10.0, 3.0, 0.0))
         self.assertEqual(r["level"], "junior")
+        # per item: security 10 − 4×7.5/5, correctness 10 − 4×2/5, the uncategorized
+        # low counts under code quality, follow-ups 10 − 4×3/5
+        self.assertEqual({k: v["score"] for k, v in r["items"].items()},
+                         {"security": 4.0, "correctness": 8.4, "performance": 10.0,
+                          "code_quality": 9.6, "code_smell": 10.0, "followups": 7.6})
+        self.assertEqual(r["items"]["code_quality"]["count"], 1)
         self.assertEqual(r["appeal_accepted"], 1)
         self.assertEqual(r["aspects"]["uncategorized"]["count"], 1)
 
+    def test_a_low_average_cannot_buy_back_a_high_finding(self):
+        # 1 high over 40 MRs: 10 − 4×5/40 = 9.5 would be senior on score alone
+        fs = self.findings(("high", "correctness", None))
+        r = score.person_report(self.mrs(40), fs, [], CFG, 1, NOW)
+        self.assertEqual((r["score"], r["level"]), (9.5, "mid"))
+        self.assertEqual(r["next_level"], "mid+")
+        self.assertEqual(r["next_level_misses"], ["high finding 1 則 > 0"])
+
+    def test_clean_rate_gate(self):
+        # 3 low findings on 3 different MRs of 10: 10 − 4×1.5/10 = 9.4 but only 70% clean
+        fs = score.effective_findings(
+            [{"note_id": i, "mr_id": i, "severity": "low", "category": "code_smell",
+              "appeal_verdict": None} for i in range(3)], [])
+        r = score.person_report(self.mrs(10), fs, [], CFG, 1, NOW)
+        self.assertEqual((r["score"], r["clean_mrs"], r["clean_rate"]), (9.4, 7, 0.7))
+        self.assertEqual(r["level"], "mid")
+        self.assertIn("乾淨 MR 70% < 85%", r["next_level_misses"])
+
+    def test_spotless_is_senior_and_has_nothing_above(self):
+        r = score.person_report(self.mrs(20), [], [], CFG, 1, NOW)
+        self.assertEqual((r["score"], r["level"], r["next_level"], r["next_level_misses"]),
+                         (10.0, "senior", None, []))
+
+    def test_levels_without_gates_still_work(self):
+        cfg = {**CFG, "levels": [{"level": "a", "min_score": 5}, {"level": "b", "min_score": None}]}
+        r = score.person_report(self.mrs(5), self.findings(("high", "correctness", None)), [],
+                                cfg, 1, NOW)
+        self.assertEqual(r["level"], "a")
+
     def test_too_few_mrs_has_no_level(self):
         r = score.person_report(self.mrs(4), [], [], CFG, 1, NOW)
-        self.assertEqual((r["score"], r["level"]), (0.0, None))
+        self.assertEqual((r["score"], r["level"]), (10.0, None))
 
     def test_latest_override_wins_per_field(self):
         raw = [{"note_id": 1, "mr_id": 1, "severity": "high", "category": "correctness"}]
@@ -202,7 +357,250 @@ class TestTeamReport(DbCase):
         (row,) = score.team_report(self.conn, 1, CFG, NOW)
         self.assertEqual((row["username"], row["reviewed_mrs"], row["findings"], row["excluded"]),
                          ("pk7", 5, 4, 1))
-        self.assertEqual(row["score"], 6.0)                       # 4 × 7.5 / 5
+        self.assertEqual(row["weights"]["security"], 30.0)        # 4 × 5 × 1.5
+        self.assertEqual(row["score"], 0.0)                       # 10 − 4×30/5, floored at 0
+
+
+class TestRoles(DbCase):
+    def seed(self):
+        with self.conn:
+            for author, n in ((7, 5), (8, 5)):
+                for i in range(n):
+                    sync.store_mr(self.conn, "g/app",
+                                  mr(mid=author * 100 + i, iid=author * 100 + i, author=author,
+                                     created="2026-09-20T00:00:00Z"),
+                                  [{"id": f"d{author}{i}", "notes": [note(author * 100 + i, ME,
+                                    ai_body("high", "x", "security" if author == 7 else "correctness"))]}],
+                                  [], ME, None)
+
+    def test_lead_is_reported_but_never_ranked_nor_averaged(self):
+        self.seed()
+        with self.conn:
+            self.conn.execute("INSERT INTO person_roles(gitlab_id, role, actor, created_at) "
+                              "VALUES (7, 'lead', 'me', '2026-10-01T00:00:00Z')")
+        rows = score.team_report(self.conn, 1, CFG, NOW)
+        lead = next(r for r in rows if r["author_id"] == 7)
+        self.assertEqual((lead["ranked"], lead["level"], lead["role"]), (False, None, "lead"))
+        self.assertIsNotNone(lead["score"])                    # stats still there
+        self.assertEqual(rows[-1]["author_id"], 7)             # listed after the ranked team
+        avg = score.team_average(rows, CFG)
+        self.assertEqual(avg["security"], 10.0)                # the lead's findings are not in it
+        self.assertEqual(avg["correctness"], 0.0)
+
+    def test_latest_role_wins(self):
+        self.seed()
+        with self.conn:
+            self.conn.executemany("INSERT INTO person_roles(gitlab_id, role, actor, created_at) "
+                                  "VALUES (7, ?, 'me', ?)", [("lead", "2026-10-01T00:00:00Z"),
+                                                             ("member", "2026-10-02T00:00:00Z")])
+        self.assertEqual(db.person_roles(self.conn), {7: "member"})
+
+    def test_profile_axes_match_the_average(self):
+        self.seed()
+        rows = score.team_report(self.conn, 1, CFG, NOW)
+        self.assertEqual(set(score.per_mr_profile(rows[0])), set(score.team_average(rows, CFG)))
+
+
+class TestRoster(DbCase):
+    def test_added_member_resolves_and_shows_without_mrs(self):
+        with self.conn:
+            self.conn.executemany("INSERT INTO roster_additions(username, actor, created_at) VALUES (?, 'me', 'x')",
+                                  [("newbie",), ("ghost",)])
+        found = {"newbie": {"id": 77, "username": "newbie", "name": "新人"}}
+        with mock.patch.object(sync.gitlab_client, "find_user", side_effect=lambda b, t, u: found.get(u)):
+            self.assertEqual(sync.resolve_roster(self.conn, {"gitlab_url": "u", "gitlab_token": "t"}), 1)
+        (row,) = score.team_report(self.conn, 1, CFG, NOW)
+        self.assertEqual((row["username"], row["reviewed_mrs"], row["level"]), ("newbie", 0, None))
+        self.assertIn("找不到", self.conn.execute(
+            "SELECT error FROM roster_additions WHERE username='ghost'").fetchone()[0])
+
+    def test_departed_is_not_ranked(self):
+        with self.conn:
+            for i in range(5):
+                sync.store_mr(self.conn, "g/app", mr(mid=i + 1, iid=i + 1, created="2026-09-20T00:00:00Z"),
+                              [], [], ME, None)
+            self.conn.execute("INSERT INTO person_roles(gitlab_id, role, actor, created_at) "
+                              "VALUES (7, 'departed', 'me', 'x')")
+        (row,) = score.team_report(self.conn, 1, CFG, NOW)
+        self.assertEqual((row["ranked"], row["level"], row["role"]), (False, None, "departed"))
+
+
+class TestTenPointMigration(unittest.TestCase):
+    def test_old_lower_is_better_config_gets_a_successor_and_names_itself(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
+            for number, script in enumerate(db.MIGRATIONS[:5], start=1):
+                conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {number};\nCOMMIT;")
+            old = {**CFG, "severity_weight": {"high": 9, "medium": 2, "low": 0.5},
+                   "levels": [{"level": "senior", "max_score": 0.8},
+                              {"level": "junior", "max_score": None}]}
+            del old["deduction_per_weight"]
+            conn.execute("INSERT INTO scoring_configs VALUES (1, ?, 'old', 'system', 'x')",
+                         (json.dumps(old),))
+            conn.commit(); conn.close()
+            conn = db.connect(path)
+            version, cfg = db.scoring_config(conn)
+            self.assertEqual(version, 2)
+            self.assertEqual(cfg["severity_weight"]["high"], 9)              # tuned weight kept
+            self.assertEqual(cfg["levels"], db.DEFAULT_SCORING["levels"])
+            from history import snapshot
+            with conn:
+                sync.store_mr(conn, "g/app", mr(mid=1, iid=1, created="2026-09-20T00:00:00Z"),
+                              [{"id": "d", "notes": [note(1, ME, ai_body("low", "x", "correctness"))]}],
+                              [], ME, None)
+            snapshot.record(conn, "排程同步")
+            trigger = conn.execute("SELECT trigger FROM score_events LIMIT 1").fetchone()[0]
+            self.assertTrue(trigger.startswith(db.SCALE_CHANGE_NOTE), trigger)
+            self.assertIsNone(db.get_state(conn, "score_note"))
+            conn.close()
+
+    def test_fresh_db_does_not_get_a_second_version(self):
+        with tempfile.TemporaryDirectory() as d:
+            conn = db.connect(os.path.join(d, "new.db"))
+            self.assertEqual(db.scoring_config(conn)[0], 1)
+            conn.close()
+
+
+class TestScan(DbCase):
+    CONFIG = {"gitlab_url": "u", "gitlab_token": "t",
+              "review": {"project_map": {"g/app": {}, "g/web": {}}}}
+
+    def patches(self, list_mrs):
+        from history import scan
+        return [mock.patch.object(scan.gitlab_client, "list_mrs", side_effect=list_mrs),
+                mock.patch.object(scan.sync, "_me", return_value=ME),
+                mock.patch.object(scan.sync, "resolve_roster"),
+                mock.patch.object(scan.sync, "sync_one", return_value=1),
+                mock.patch.object(scan.classify, "classify_pending", return_value=(0, 0)),
+                mock.patch.object(scan.blame, "blame_pending", return_value=(0, 0))]
+
+    def run_scan(self, list_mrs, **kw):
+        from history import scan
+        ps = self.patches(list_mrs)
+        for p in ps:
+            p.start()
+        try:
+            return scan.scan(self.conn, self.CONFIG, **kw)
+        finally:
+            for p in ps:
+                p.stop()
+
+    def test_scans_every_project_over_the_window_and_marks_it_done(self):
+        from history import scan
+        calls = []
+        def list_mrs(base, token, project, updated_after=None):
+            calls.append((project, updated_after))
+            return [{"iid": 1, "updated_at": "2026-09-01T00:00:00Z"}]
+        self.assertTrue(scan.needed(self.conn))
+        result = self.run_scan(list_mrs)
+        self.assertEqual([c[0] for c in calls], ["g/app", "g/web"])
+        self.assertEqual(result["days"], 90)                          # scoring window
+        since = datetime.fromisoformat(calls[0][1].replace("Z", "+00:00"))
+        self.assertAlmostEqual((datetime.now(timezone.utc) - since).days, 90, delta=1)
+        self.assertEqual(result["projects"]["g/app"], {"mrs": 1, "findings": 1})
+        self.assertEqual(db.get_state(self.conn, "mrs_updated_at:g/web"), "2026-09-01T00:00:00Z")
+        self.assertFalse(scan.needed(self.conn))
+
+    def test_a_failed_project_does_not_count_as_the_first_scan(self):
+        from history import scan
+        def list_mrs(base, token, project, updated_after=None):
+            if project == "g/web":
+                raise OSError("down")
+            return []
+        result = self.run_scan(list_mrs)
+        self.assertIn("g/web", result["failed"])
+        self.assertTrue(scan.needed(self.conn))                    # next run tries again
+
+    def test_dry_run_writes_nothing(self):
+        from history import scan
+        result = self.run_scan(lambda *a, **k: [{"iid": 1}, {"iid": 2}], dry_run=True, days=30)
+        self.assertEqual(result["projects"]["g/app"], {"mrs": 2})
+        self.assertTrue(scan.needed(self.conn))
+        self.assertIsNone(db.get_state(self.conn, "mrs_updated_at:g/app"))
+
+    def test_run_scans_the_first_time_then_syncs(self):
+        from history import scan
+        with mock.patch.object(scan, "scan", return_value={"failed": {}}) as first, \
+             mock.patch.object(cli.sync, "sync_all", return_value={"failed": {}}) as incremental, \
+             mock.patch.object(cli.classify, "classify_pending", return_value=(0, 0)), \
+             mock.patch.object(cli.blame, "blame_pending", return_value=(0, 0)):
+            cli.run(self.conn, self.CONFIG)
+            self.assertEqual((first.call_count, incremental.call_count), (1, 0))
+            db.set_state(self.conn, "initial_scan_at", "2026-10-09T00:00:00Z")
+            cli.run(self.conn, self.CONFIG)
+            self.assertEqual((first.call_count, incremental.call_count), (1, 1))
+
+
+class TestScoreLog(DbCase):
+    def seed(self, n=5, sev="high"):
+        with self.conn:
+            for i in range(n):
+                sync.store_mr(self.conn, "g/app", mr(mid=i + 1, iid=i + 1, created="2026-09-20T00:00:00Z"),
+                              [{"id": f"d{i}", "notes": [note(i + 1, ME, ai_body(sev, "x", "correctness"))]}],
+                              [], ME, None)
+
+    def test_first_record_then_only_changes(self):
+        from history import snapshot
+        self.seed(sev="low")
+        first = snapshot.record(self.conn, "init")
+        self.assertEqual({e["gitlab_id"] for e in first}, {7, db.TEAM})
+        self.assertEqual(snapshot.record(self.conn, "nothing new"), [])     # no change, no log
+        with self.conn:      # a human excludes one finding -> score rises
+            self.conn.execute("INSERT INTO finding_reviews(note_id, excluded, actor, created_at) "
+                              "VALUES (1, 1, 'lead', '2026-10-09T00:00:00Z')")
+        (person, team) = sorted(snapshot.record(self.conn, "覆核 note 1", "lead"),
+                                key=lambda e: e["gitlab_id"] == db.TEAM)
+        self.assertEqual((person["old_score"], person["new_score"]), (8.0, 8.4))
+        row = self.conn.execute("SELECT trigger, actor FROM score_events ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(tuple(row), ("覆核 note 1", "lead"))
+
+    def test_sync_mr_runs_the_whole_chain(self):
+        from history import snapshot
+        with mock.patch.object(sync, "sync_one"), mock.patch.object(sync, "_me", return_value=ME), \
+             mock.patch.object(sync.gitlab_client, "get_mr", return_value=mr()), \
+             mock.patch.object(snapshot, "refresh") as refresh:
+            self.assertTrue(sync.sync_mr({"gitlab_url": "u", "gitlab_token": "t"}, "g/app", 5,
+                                         conn=self.conn, trigger="review 完成 app!5"))
+        self.assertEqual(refresh.call_args.args[2], "review 完成 app!5")
+
+
+class TestCodexRound(DbCase):
+    def test_own_later_finding_is_not_also_an_ai_refind(self):
+        with self.conn:
+            for i, created in ((1, "2026-09-01T00:00:00Z"), (2, "2026-09-05T00:00:00Z")):
+                sync.store_mr(self.conn, "g/app", mr(mid=i, iid=i, created=created, merged=created),
+                              [] if i == 1 else [{"id": "d", "notes": [note(20, ME, ai_body("medium", "x", "correctness"),
+                              position={"new_path": "a.py", "new_line": 1}, created_at="2026-09-05T00:00:00Z")]}],
+                              [], ME, ["a.py"])
+        followups.refresh(self.conn, 30)
+        self.assertEqual(self.conn.execute("SELECT kind FROM followups").fetchall()[0][0], "ai_refind")
+        (row,) = score.team_report(self.conn, 1, CFG, NOW)
+        self.assertEqual((row["findings"], row["followups"]["ai_refind"]), (1, 0))   # counted once
+
+    def test_truncated_commit_list_proves_nothing(self):
+        with self.conn:
+            sync.store_mr(self.conn, "g/app", mr(mid=1, iid=1), [], [], ME, None,
+                          ([{"id": "c", "author_email": "x@y"}], False))
+        self.assertEqual(score.email_owners(self.conn), {})
+
+    def test_snapshot_logs_count_changes_too(self):
+        from history import snapshot
+        with self.conn:
+            for i in range(5):
+                sync.store_mr(self.conn, "g/app", mr(mid=i + 1, iid=i + 1, created="2026-09-20T00:00:00Z"),
+                              [], [], ME, None)
+        snapshot.record(self.conn, "init")
+        with self.conn:      # one more clean MR: score stays 0.0, MR count changes
+            sync.store_mr(self.conn, "g/app", mr(mid=9, iid=9, created="2026-09-21T00:00:00Z"), [],
+                          [{"name": "eyes", "user": {"id": ME}}], ME, None)
+        events = snapshot.record(self.conn, "new clean MR")
+        self.assertTrue(any(e["gitlab_id"] == 7 for e in events))
+
+    def test_blame_rejects_bad_shas_before_git(self):
+        from history import blame
+        with self.assertRaises(ValueError):
+            blame.blame_line("/clone", 1, "HEAD; rm -rf /", "a.py", 1)
 
 
 class TestClassify(DbCase):
@@ -239,6 +637,11 @@ class TestClassify(DbCase):
 
 
 class TestRun(DbCase):
+    def setUp(self):
+        super().setUp()
+        with self.conn:                  # already scanned once: run() is the incremental job
+            db.set_state(self.conn, "initial_scan_at", "2026-10-01T00:00:00Z")
+
     def test_dashboard_requests_are_claimed_and_closed(self):
         with self.conn:
             self.conn.execute("INSERT INTO sync_requests(kind, requested_by, requested_at) "
@@ -317,7 +720,8 @@ class TestCursor(DbCase):
              mock.patch.object(gl, "get_mr", side_effect=lambda b, t, p, iid: mrs[iid - 1]), \
              mock.patch.object(gl, "list_discussions", return_value=[]), \
              mock.patch.object(gl, "get_award_emojis", return_value=[]), \
-             mock.patch.object(gl, "get_mr_files", return_value=[]):
+             mock.patch.object(gl, "get_mr_files", return_value=[]), \
+             mock.patch.object(gl, "get_mr_commits", return_value=[]):
             sync.sync_project(self.conn, {"gitlab_url": "u", "gitlab_token": "t"}, "g/app", ME)
         # as raw strings "2026-09-01T10:00:00+08:00" would have won
         self.assertEqual(db.get_state(self.conn, "mrs_updated_at:g/app"), "2026-09-01T03:00:00Z")
@@ -328,8 +732,11 @@ class TestCursor(DbCase):
         with mock.patch.object(gl, "get_mr", return_value=fresh), \
              mock.patch.object(gl, "list_discussions", return_value=[]), \
              mock.patch.object(gl, "get_award_emojis", return_value=[]), \
-             mock.patch.object(gl, "get_mr_files", return_value=["a.py"]):
+             mock.patch.object(gl, "get_mr_files", return_value=["a.py"]), \
+             mock.patch.object(gl, "get_mr_commits", return_value=[{"id": "c1", "author_email": "A@x"}]):
             sync.sync_one(self.conn, "u", "t", "g/app", stale, ME)
+        self.assertEqual(self.conn.execute("SELECT sha, author_email FROM mr_commits").fetchall()[0][:],
+                         ("c1", "a@x"))                         # emails are stored lowercased
         self.assertEqual(self.conn.execute("SELECT state FROM mrs").fetchone()[0], "merged")
 
 

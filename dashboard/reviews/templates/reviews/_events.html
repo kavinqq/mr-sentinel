@@ -1,0 +1,15 @@
+{% load sentinel %}{% if events %}
+<table class="ms-mini">
+  <thead><tr><th>時間</th><th>對象</th><th class="ms-num">分數</th><th>等級</th><th>原因</th>{% if not compact %}<th>誰</th><th class="ms-num">公式</th>{% endif %}</tr></thead>
+  <tbody>{% for e in events %}
+    <tr>
+      <td class="ms-dim" style="white-space:nowrap">{{ e.created_at|tw:"%m-%d %H:%M" }}</td>
+      <td style="white-space:nowrap">{% if e.gitlab_id == -1 %}<strong>團隊</strong>{% else %}<a href="{% url 'person' e.gitlab_id %}">{{ e.name }}</a>{% endif %}</td>
+      <td class="ms-num" style="white-space:nowrap">{% if e.old_score is None %}<span class="ms-dim">新</span> {{ e.new_score|default_if_none:"—" }}{% else %}{{ e.old_score }} → <strong>{{ e.new_score|default_if_none:"—" }}</strong>{% if e.delta is not None %} <span class="{% if e.delta > 0 %}ms-up{% elif e.delta < 0 %}ms-down{% endif %}">{% if e.delta > 0 %}+{% endif %}{{ e.delta }}</span>{% endif %}{% endif %}</td>
+      <td style="white-space:nowrap">{% if e.old_level != e.new_level and e.old_score is not None %}{{ e.old_level|default:"—" }} → {{ e.new_level|default:"—" }}{% else %}<span class="ms-dim">{{ e.new_level|default:"—" }}</span>{% endif %}</td>
+      <td style="white-space:normal">{{ e.trigger }}</td>
+      {% if not compact %}<td class="ms-dim">{{ e.actor }}</td><td class="ms-num ms-dim">v{{ e.formula_version }}</td>{% endif %}
+    </tr>
+  {% endfor %}</tbody>
+</table>
+{% else %}<p class="ms-dim" style="margin:0">還沒有評分變動</p>{% endif %}

@@ -26,6 +26,7 @@ import engines
 import gitlab_client
 import review_common
 import reviewer
+from history import sync as history_sync
 from sentinel_config import SCRIPT_DIR, load_config, load_state
 
 REVIEWS_DIR = reviewer.REVIEWS_DIR
@@ -123,6 +124,9 @@ def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work) -> int
     """Report from what GitLab says *now*, not from what we asked it to do."""
     base, token, review_cfg = config["gitlab_url"], config["gitlab_token"], config["review"]
     say = lambda text, buttons=None: reviewer._slack_say(config, text, thread_ts, buttons)
+    # accepted appeals stop counting: re-record the MR and re-score everyone
+    history_sync.sync_mr(config, project, iid,
+                         trigger=f"申訴判斷 {project.rsplit('/', 1)[-1]}!{iid}")
     _, after = review_common.collect_appeals(
         gitlab_client.list_discussions(base, token, project, iid), me)
     still_open = review_common.open_findings(after)

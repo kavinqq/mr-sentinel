@@ -162,3 +162,23 @@ def get_mr_files(base: str, token: str, project, iid) -> list[str]:
     """Paths an MR touched (new and old path of renames), without keeping the diff."""
     changes = get_mr_changes(base, token, project, iid).get("changes") or []
     return sorted({p for c in changes for p in (c.get("new_path"), c.get("old_path")) if p})
+
+
+def get_mr_commits(base: str, token: str, project, iid, per_page: int = 100,
+                   max_pages: int = 20) -> tuple[list, bool]:
+    """An MR's commits (sha, author_email, author_name …) and whether the list is
+    complete — a truncated list must never be used as proof of anything."""
+    out: list = []
+    for page in range(1, max_pages + 1):
+        batch = json.loads(_call(f"{_mr(base, project, iid)}/commits?per_page={per_page}&page={page}",
+                                 token))
+        out += batch
+        if len(batch) < per_page:
+            return out, True
+    return out, False
+
+
+def find_user(base: str, token: str, username: str) -> dict | None:
+    """Exact username lookup (works without admin rights)."""
+    users = json.loads(_call(f"{base}/api/v4/users?username={urllib.parse.quote(username)}", token))
+    return users[0] if users else None

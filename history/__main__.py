@@ -1,6 +1,10 @@
 """python3 -m history <command>
 
-    run                  the scheduled job: queued requests + sync + follow-ups + classify
+    run                  the scheduled job: queued requests + sync + follow-ups + classify + blame
+                         (the first time: a full scan instead of the sync, see history/scan.py)
+    scan [--days N] [--project P] [--dry-run]
+                         every project's MRs of the last N days (default: scoring window)
+    blame [--retry]      git blame findings on release MRs (who wrote the flagged line)
     sync [--full]        GitLab -> db (incremental by default)
     classify [--limit N] fill in missing categories with the model
     followups            recompute follow-up bugs
@@ -14,7 +18,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
-from history import classify, db, followups, score, sync
+from history import blame, classify, db, followups, scan, score, snapshot, sync
 from history.parse import CATEGORIES
 from sentinel_config import SCRIPT_DIR, load_config
 
@@ -42,12 +46,18 @@ def run(conn, config: dict, full: bool = False) -> dict:
     wanted_full, request_ids = _requested(conn)
     result: dict = {"failed": {}}
     try:
+        if scan.needed(conn):         # a new db / machine: the whole window first
+            result.update(scan.scan(conn, config, progress=log.info))
+            return result
         result.update(sync.sync_all(conn, config, full=full or wanted_full))
         version, cfg = db.scoring_config(conn)
         result["followups"] = followups.refresh(conn, cfg.get("followup_days", 30))
         result["classified"], bad_batches = classify.classify_pending(conn, config)
         if bad_batches:
             result["failed"]["classify"] = f"{bad_batches} batch(es) failed"
+        result["blamed"], result["blame_failed"] = blame.blame_pending(conn, config)
+        result["score_changes"] = len(snapshot.record(
+            conn, "dashboard 同步請求" if request_ids else "排程同步"))
     except Exception as exc:
         result["failed"]["run"] = f"{type(exc).__name__}: {exc}"
         raise
@@ -62,18 +72,18 @@ def run(conn, config: dict, full: bool = False) -> dict:
 
 
 def print_report(rows: list[dict], version: int, cfg: dict) -> None:
-    names = {**CATEGORIES, score.UNCATEGORIZED: "未分類"}
-    print(f"評分公式 v{version}:(Σ finding 權重 + Σ 後續 bug 權重) / 被 review 的 MR 數,"
-          f"越低越好;近 {cfg['window_days']} 天;少於 {cfg['min_reviewed_mrs']} 個 MR 不給等級")
-    print(f"門檻:" + " / ".join(f"{lv['level']} ≤ {lv['max_score']}" if lv["max_score"] is not None
+    print(f"評分公式 v{version}:滿分 10,越高越好;每項扣 {cfg['deduction_per_weight']} × "
+          f"(該項加權問題 / 被 review 的 MR 數),總分 = 10 − 各項扣分;"
+          f"近 {cfg['window_days']} 天;少於 {cfg['min_reviewed_mrs']} 個 MR 不給等級")
+    print(f"門檻:" + " / ".join(f"{lv['level']} ≥ {lv['min_score']}" if lv["min_score"] is not None
                               else f"{lv['level']} 其餘" for lv in cfg["levels"]))
     print("後續 bug 為推估值(30 天內同檔案的 fix MR / AI 再次抓到)\n")
     for r in rows:
-        level = r["level"] or "資料不足"
+        level = "Team leader(不排入評分)" if not r["ranked"] else (r["level"] or "資料不足")
         print(f"■ {r['name'] or r['username']} ({r['username']}) — {level}"
-              f"  score={r['score']}  [{r['explain']}]")
-        aspects = ", ".join(f"{names.get(k, k)} {v['count']}" for k, v in r["aspects"].items())
-        print(f"   面向: {aspects or '—'}")
+              f"  {r['score']} / 10  [{r['explain']}]")
+        items = "  ".join(f"{v['label']} {v['score']}" for v in r["items"].values())
+        print(f"   各項: {items or '—'}")
         sev = r["severities"]
         print(f"   嚴重度: 🔴{sev['high']} 🟠{sev['medium']} 🟡{sev['low']}"
               f"   後續 bug: fix MR {r['followups'].get('fix_mr', 0)} · AI 再抓到 "
@@ -88,8 +98,14 @@ def main(argv=None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--full", action="store_true", help="re-read every MR, not just updated ones")
     sub.add_parser("followups")
+    p = sub.add_parser("blame", help="git blame findings on release MRs")
+    p.add_argument("--retry", action="store_true", help="retry the ones that failed before")
     p = sub.add_parser("classify")
     p.add_argument("--limit", type=int, default=200)
+    p = sub.add_parser("scan", help="first-time scan of every project's recent MRs")
+    p.add_argument("--days", type=int, help="how far back (default: scoring window_days)")
+    p.add_argument("--project", action="append", help="only this project (repeatable)")
+    p.add_argument("--dry-run", action="store_true", help="only count the MRs, write nothing")
     p = sub.add_parser("report")
     p.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
@@ -102,7 +118,7 @@ def main(argv=None) -> int:
                         handlers=handlers)
 
     config = load_config()
-    conn = db.connect((config.get("history") or {}).get("db_path"))
+    conn = db.connect(db.resolve_path(config))
     if args.cmd == "report":
         version, cfg = db.scoring_config(conn)
         rows = score.team_report(conn, version, cfg)
@@ -121,8 +137,16 @@ def main(argv=None) -> int:
             return 0
         if args.cmd == "run":
             result = run(conn, config, full=args.full)
+        elif args.cmd == "scan":
+            result = scan.scan(conn, config, days=args.days, only=args.project,
+                               dry_run=args.dry_run, progress=lambda m: print(m, flush=True))
         elif args.cmd == "sync":
             result = sync.sync_all(conn, config, full=args.full)
+        elif args.cmd == "blame":
+            if args.retry:
+                blame.retry_failed(conn)
+            done, bad = blame.blame_pending(conn, config)
+            result = {"blamed": done, "blame_failed": bad}
         elif args.cmd == "followups":
             result = {"followups": followups.refresh(conn, db.scoring_config(conn)[1]
                                                      .get("followup_days", 30))}
@@ -130,7 +154,8 @@ def main(argv=None) -> int:
             done, bad = classify.classify_pending(conn, config, args.limit)
             result = {"classified": done, "failed": {"classify": f"{bad} batch(es)"} if bad else {}}
     log.info("history %s: %s", args.cmd, result)
-    print(json.dumps(result, ensure_ascii=False, indent=1))
+    if args.cmd != "scan":                       # scan already printed its progress
+        print(json.dumps(result, ensure_ascii=False, indent=1))
     return 1 if result.get("failed") else 0
 
 

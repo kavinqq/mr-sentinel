@@ -723,7 +723,8 @@ class Bot:
 
         # record the comments about to be deleted, so the history keeps them; if
         # that failed, deleting would lose them for good — keep them instead
-        recorded = history_sync.sync_mr(self.config, project, iid)
+        recorded = history_sync.sync_mr(self.config, project, iid,
+                                        trigger=f"重審前紀錄 {project.rsplit('/', 1)[-1]}!{iid}")
         unclaimed = self.unclaim(base, token, project, iid)
         deleted = self.clear_previous_comments(base, token, project, iid) if recorded else 0
 
