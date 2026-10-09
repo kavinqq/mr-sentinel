@@ -32,6 +32,7 @@ hide a weak one) and `min_clean_rate` (share of reviewed MRs with no counted
 finding of theirs). All must hold — a high total cannot buy back a shipped
 high-severity bug.
 """
+import json
 from datetime import datetime, timedelta, timezone
 
 from history import db
@@ -209,7 +210,8 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
                   ratings: dict | None = None) -> dict:
     """One author's MRs (in window), their effective findings and their followups."""
     ratings = ratings or {}
-    reviewed = [m for m in mrs if m["reviewed"]]
+    # reviewed by the bot, or graded (an MR outside the reviewed projects still counts)
+    reviewed = [m for m in mrs if m["reviewed"] or m["mr_id"] in ratings]
     # personal MRs, plus release MRs where this person's own commits were graded
     # (history/rate.py slices); a release MR as a whole is nobody's
     own = [m for m in reviewed if not m.get("release") or m["mr_id"] in ratings]
@@ -299,26 +301,6 @@ def decide_level(score, stats: dict, missing: list, rated_mrs: int, cfg: dict) -
     nxt = cfg["levels"][above] if above >= 0 else None
     return {"level": level, "next_level": nxt and nxt["level"],
             "next_level_misses": level_misses(stats, nxt) if nxt else []}
-
-
-def with_contribution(conn, report: dict, pid: int, attributed: dict, followups: list[dict],
-                      cfg: dict, since: str, slices: dict) -> dict:
-    """A lead's third track (history/contrib.py). It can only lift the total:
-    total = max(front/back-end total, all tracks weighted by their evidence)."""
-    from history import contrib
-    obs = contrib.observations(conn, pid, attributed, followups, cfg, since, slices)
-    if not obs:
-        return report
-    t = contrib.track(obs, cfg)
-    report.setdefault("tracks", {})["contribution"] = t
-    parts = [(x["score"], x["rated_mrs"]) for x in report["tracks"].values()
-             if x["score"] is not None and x["rated_mrs"]]
-    weighted = round(sum(s * w for s, w in parts) / sum(w for _, w in parts), 1)
-    code = report["score"]
-    report["score_code_only"] = code
-    report["score"] = weighted if code is None else max(code, weighted)
-    report["contribution_lifted"] = code is None or weighted > code
-    return report
 
 
 def track_of(project: str | None, cfg: dict) -> str:
@@ -515,6 +497,7 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
     followups = annotated_followups(conn, attributed["findings"] + attributed["unattributed"])
     ratings = latest_ratings(conn)
     slices = slice_ratings(conn)
+    batches = batch_ratings(conn)
     project_of = {i: m["project"] for i, m in all_mrs.items()}
 
     people: dict[int, dict] = {}
@@ -539,6 +522,29 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
             people[person_id] = {"author_id": person_id, "username": row["username"],
                                  "name": row["name"], "mrs": []}
         people[person_id]["release_mrs"] = credited
+    # someone whose work in the window was only direct commits still shows up
+    for b in batches.values():
+        pid = b["author_id"]
+        if pid not in people and window_ok(b["week"], since):
+            row = conn.execute("SELECT username, name FROM people WHERE gitlab_id = ?", (pid,)).fetchone()
+            if row is not None:
+                people[pid] = {"author_id": pid, "username": row["username"], "name": row["name"],
+                               "mrs": []}
+    # every non-merge commit of the window per person and track (history/discover.py)
+    in_mr = {r[0] for r in conn.execute("SELECT sha FROM mr_commits")}
+    commits: dict[int, dict] = {}
+    for r in conn.execute("SELECT sha, project, author_email FROM project_commits WHERE created_at >= ?",
+                          (since,)):
+        pid = owners.get((r["author_email"] or "").lower())
+        if pid is None:
+            continue
+        c = commits.setdefault(pid, {"total": 0, "direct": 0, "tracks": {}})
+        t = c["tracks"].setdefault(track_of(r["project"], cfg), {"total": 0, "direct": 0})
+        direct = r["sha"] not in in_mr
+        c["total"] += 1
+        t["total"] += 1
+        c["direct"] += direct
+        t["direct"] += direct
     roles = db.person_roles(conn)
     # a team lead shows up even with no MR of their own: their work is reviewing,
     # merging and taking over (history/contrib.py)
@@ -562,13 +568,30 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
         for (mr_id, author), cats in slices.items():
             if author == person["author_id"]:
                 mine_ratings[mr_id] = cats
-        all_mrs_p = person["mrs"] + person.get("release_mrs", [])
+        # commits that never went through an MR: each graded batch counts like an MR
+        direct = []
+        for key, b in batches.items():
+            if b["author_id"] == person["author_id"] and window_ok(b["week"], since):
+                mid = f"commits:{key}"
+                direct.append({"mr_id": mid, "reviewed": 1, "project": b["project"], "release": False,
+                               "created_at": week_start(b["week"]), "author_id": b["author_id"],
+                               "commits": b["commits"]})
+                mine_ratings[mid] = b["cats"]
+                project_of[mid] = b["project"]
+        all_mrs_p = person["mrs"] + person.get("release_mrs", []) + direct
         report = person_report(all_mrs_p, mine, fus, cfg, version, now, mine_ratings)
         report = with_tracks(report, all_mrs_p, mine, fus, cfg, version, mine_ratings, project_of)
         if roles.get(person["author_id"]) == "lead":
-            report = with_contribution(conn, report, person["author_id"], attributed, followups,
-                                       cfg, since, slices)
+            # a lead is not scored: what they contribute is shown as facts
+            from history import contrib
+            report["contribution"] = contrib.facts(conn, person["author_id"], attributed,
+                                                   followups, since)
         report["release_mrs"] = len(person.get("release_mrs", []))
+        c = commits.get(person["author_id"], {"total": 0, "direct": 0, "tracks": {}})
+        report["commits"], report["direct_commits"] = c["total"], c["direct"]
+        for key, t in (report.get("tracks") or {}).items():
+            t["commits"] = c["tracks"].get(key, {}).get("total", 0)
+            t["direct_commits"] = c["tracks"].get(key, {}).get("direct", 0)
         # which MRs the score stood on (own + credited releases), for the drill-down
         report["mr_ids"] = [m["mr_id"] for m in person["mrs"] + person.get("release_mrs", [])]
         role = roles.get(person["author_id"], "member")
@@ -607,6 +630,32 @@ def latest_ratings(conn) -> dict[int, dict[str, dict]]:
     out: dict[int, dict] = {}
     for r in conn.execute("SELECT * FROM mr_ratings WHERE author_id IS NULL ORDER BY rated_at, id"):
         out.setdefault(r["mr_id"], {})[r["category"]] = dict(r)
+    return out
+
+
+def week_start(week: str) -> str:
+    """'2026-W40' -> that ISO week's Monday as a stored timestamp."""
+    from datetime import date
+    y, w = week.split("-W")
+    return date.fromisocalendar(int(y), int(w), 1).strftime("%Y-%m-%dT00:00:00Z")
+
+
+def window_ok(week: str, since: str) -> bool:
+    """The batch's week ends inside the window (its commits were all recorded since)."""
+    from datetime import date, timedelta as td
+    y, w = week.split("-W")
+    end = date.fromisocalendar(int(y), int(w), 7) + td(days=1)
+    return end.strftime("%Y-%m-%dT00:00:00Z") > since
+
+
+def batch_ratings(conn) -> dict[str, dict]:
+    """batch key -> {project, author_id, week, categories} for direct commits."""
+    out: dict[str, dict] = {}
+    for r in conn.execute("SELECT * FROM commit_ratings ORDER BY rated_at, id"):
+        b = out.setdefault(r["batch"], {"project": r["project"], "author_id": r["author_id"],
+                                        "week": r["week"], "commits": len(json.loads(r["shas"])),
+                                        "cats": {}})
+        b["cats"][r["category"]] = dict(r)
     return out
 
 

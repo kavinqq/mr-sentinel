@@ -157,7 +157,7 @@ td.path code { word-break: break-all; }
 /* ---------- member accordion (overview) ---------- */
 .ms-acc-list { border: 1px solid var(--ms-line); border-radius: 8px; overflow: hidden; }
 .ms-acc-row { display: grid; align-items: center; gap: 12px; padding: 10px 14px;
-  grid-template-columns: 20px minmax(170px, 2fr) 96px 60px 64px repeat(8, 54px); }
+  grid-template-columns: 20px minmax(150px, 2fr) 96px 60px 60px 96px repeat(8, 52px); }
 .ms-item { font-variant-numeric: tabular-nums; }
 .ms-item.good { color: #15803D; font-weight: 700; }
 .ms-item.soft { color: #B26A00; font-weight: 600; }
@@ -438,3 +438,25 @@ td.path code { word-break: break-all; }
 .ms .ms-contrib-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0;
   border: 1px solid var(--ms-line); border-radius: 8px; overflow: hidden; }
 .ms .ms-contrib-cards .ms-stat { border-right: 1px solid var(--ms-line); }
+
+/* ---------- Team leader: facts, not scores ---------- */
+.ms .ms-lead { border: 1px solid var(--ms-line); border-radius: 8px; background: #fff; }
+.ms .ms-lead + .ms-lead { margin-top: 12px; }
+.ms .ms-lead-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 14px 18px;
+  border-bottom: 1px solid var(--ms-line); }
+.ms .ms-lead-name { font-weight: 700; font-size: 1.05rem; color: var(--ms-text); }
+.ms .ms-lead-name .handle { font-weight: 400; color: var(--ms-muted); font-size: .9rem; margin-left: 4px; }
+.ms .ms-lead-head .hint { color: var(--ms-muted); font-size: .9rem; }
+.ms .ms-lead-head .ms-link { margin-left: auto; }
+.ms .ms-lead-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.ms .ms-fact { padding: 16px 18px; border-right: 1px solid var(--ms-line); min-width: 0; }
+.ms .ms-fact:last-child { border-right: 0; }
+.ms .ms-fact .k { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: .92rem;
+  color: var(--ms-muted); }
+.ms .ms-fact .k .material-symbols-outlined { font-size: 18px; color: var(--ms-accent); }
+.ms .ms-fact .v { font-size: 1.6rem; font-weight: 700; margin: 6px 0 8px; font-variant-numeric: tabular-nums; }
+.ms .ms-fact .v .unit { font-size: .92rem; font-weight: 500; color: var(--ms-muted); margin-left: 6px; }
+.ms .ms-fact .ms-tags { margin: 0; }
+@media (max-width: 900px) { .ms .ms-fact { border-right: 0; border-top: 1px solid var(--ms-line); } }
+.ms .ms-fact .ms-tag { white-space: normal; }
+.ms .ms-fact-note { margin: 4px 0 0; font-size: .88rem; color: var(--ms-muted); }

@@ -39,7 +39,7 @@ def record(conn, trigger: str, actor: str = "system") -> list[dict]:
     with conn:
         if note:
             conn.execute("DELETE FROM sync_state WHERE key = 'score_note'")
-        for r in [*rows, _team_row(rows, cfg)]:
+        for r in [*(r for r in rows if r.get("role") != "lead"), _team_row(rows, cfg)]:
             pid = r["author_id"]
             before = state.get(pid)
             new = (r["score"], r["level"], r["reviewed_mrs"], r["findings"])

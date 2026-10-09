@@ -9,7 +9,7 @@
     <div class="ms-who" style="gap:14px">
       <div>
         <h1>{{ person.name|default:person.username }}</h1>
-        <p class="ms-sub">{{ person.username }} · {{ role_label }}{% if summary %} · 近 {{ cfg.window_days }} 天 · 公式 v{{ version }}{% endif %}</p>
+        <p class="ms-sub">{{ person.username }} · {{ role_label }}{% if summary and not lead %} · 近 {{ cfg.window_days }} 天 · 公式 v{{ version }}{% endif %}</p>
       </div>
     </div>
     <form method="post" action="{% url 'set_role' person.gitlab_id %}" class="ms-row">{% csrf_token %}
@@ -19,6 +19,9 @@
     </form>
   </div>
 
+  {% if lead %}
+  {% include "reviews/_lead_detail.html" %}
+  {% else %}
   {% if summary %}
   <div class="ms-stats">
     <div class="ms-stat"><div class="k">等級</div>
@@ -76,27 +79,6 @@
     </section>
   </div>
 
-  {% if contribution %}
-  <section class="ms-group" id="contribution">
-    <div class="ms-group-head"><h2>團隊貢獻</h2><span class="ms-tag c-teal">{{ contribution.score|default_if_none:"—" }} / {{ max_total|floatformat:0 }}</span>
-      <span class="hint">review 別人的 MR、決定能不能 merge、接手、上版 · 只會拉高總分{% if summary.score_code_only is not None %}(只看 code:{{ summary.score_code_only }}){% endif %}</span></div>
-    <div class="ms-contrib-cards">
-      {% for it in contribution.item_list %}
-      <div class="ms-stat"><div class="k">{{ it.label }}</div><div class="v {{ it.score|item_cls:cfg.item_max }}">{% if it.score is None %}—{% else %}{{ it.score|floatformat:1 }}{% endif %}<span class="ms-dim" style="font-size:1rem"> / 5</span></div><div class="d">{{ it.n }} 筆證據</div></div>
-      {% endfor %}
-    </div>
-    <ol class="ms-recs" style="margin-top:12px">
-      {% for o in contribution.rows %}
-      <li class="ms-rec">
-        <div class="ms-rec-main">
-          <div class="ms-tags"><span class="ms-tag c-teal">{{ o.label }}</span><span class="ms-tag {% if o.value >= 4 %}c-green{% elif o.value >= 3 %}c-blue{% elif o.value >= 2 %}c-amber{% else %}c-red{% endif %}">{{ o.value|floatformat:1 }} / 5</span></div>
-          <p class="ms-rec-title">{% if o.mr %}<a href="{{ o.mr.web_url }}" target="_blank" rel="noopener">{{ o.mr|short_mr }}</a><span>{{ o.mr.title }}</span>{% endif %}</p>
-          {% if o.detail %}<p class="ms-rec-note" style="margin-top:6px"><span class="material-symbols-outlined" aria-hidden="true">rate_review</span><span>{{ o.detail }}</span></p>{% endif %}
-        </div>
-      </li>
-      {% endfor %}
-    </ol>
-  </section>
   {% endif %}
 
   <section class="ms-group" id="followups">

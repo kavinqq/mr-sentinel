@@ -245,7 +245,7 @@ def person_detail(author_id: int) -> dict | None:
             "trend": _trend(summary, cfg),
             "items": _items_with_tracks(summary),
             "track_cols": [{"key": k, **t} for k, t in _code_tracks(summary)],
-            "contribution": _contribution(summary),
+            "lead": _lead_facts(summary),
             "window_start": window_start, "max_total": score.max_total(cfg),
             "evaluation": evals.get(author_id), "evaluation_stale": author_id in stale,
             "followup_verdicts": FOLLOWUP_VERDICTS}
@@ -256,16 +256,20 @@ def _code_tracks(summary: dict | None) -> list[tuple]:
             if t["own_mrs"] and t.get("kind") != "contribution"]
 
 
-def _contribution(summary: dict | None) -> dict | None:
-    """The lead's 團隊貢獻 track with each piece of evidence resolved to its MR."""
-    t = ((summary or {}).get("tracks") or {}).get("contribution")
-    if not t:
+def _lead_facts(summary: dict | None) -> dict | None:
+    """A lead's contribution facts with every MR resolved, risky merges first."""
+    f = (summary or {}).get("contribution")
+    if not f:
         return None
-    mrs = {m.mr_id: m for m in MergeRequest.objects.filter(
-        mr_id__in={o["mr_id"] for o in t["observations"]})}
-    rows = [{**o, "mr": mrs.get(o["mr_id"]), "label": t["items"][o["category"]]["label"]}
-            for o in sorted(t["observations"], key=lambda o: o.get("created_at") or "", reverse=True)]
-    return {**t, "rows": rows, "item_list": [{"key": k, **v} for k, v in t["items"].items()]}
+    ids = {m["mr_id"] for m in f["merges"] + f["releases"]} | {h["mr_id"] for h in f["handover"]}
+    mrs = {m.mr_id: m for m in MergeRequest.objects.filter(mr_id__in=ids)}
+    order = {"escaped": 0, "cleared": 1, "clean": 2}
+
+    def rows(items):
+        return sorted(({**x, "mr": mrs.get(x["mr_id"])} for x in items),
+                      key=lambda x: (order.get(x.get("outcome"), 3), -(x.get("findings") or 0)))
+    return {**f, "merges": rows(f["merges"]), "releases": rows(f["releases"]),
+            "handover": [{**h, "mr": mrs.get(h["mr_id"])} for h in f["handover"]]}
 
 
 def _items_with_tracks(summary: dict | None) -> list[dict]:
@@ -391,7 +395,24 @@ def email_page() -> dict:
     manual = set(EmailAlias.objects.values_list("email", flat=True))
     known = [{"email": e, "person": people.get(pid), "manual": e in manual}
              for e, pid in sorted(owners.items())]
-    return {"unknown": attributed["unknown_emails"], "known": known,
+    # commit emails from the projects the team works in (history/discover.py) —
+    # someone we cannot name has their direct commits and MRs left out
+    unknown = {e["email"]: dict(e, commits=0, projects=[]) for e in attributed["unknown_emails"]}
+    conn = history_conn()
+    try:
+        for r in conn.execute("SELECT author_email, author_name, project, COUNT(*) AS n FROM project_commits "
+                              "WHERE author_email IS NOT NULL GROUP BY author_email, project"):
+            if r["author_email"] in owners:
+                continue
+            e = unknown.setdefault(r["author_email"], {"email": r["author_email"], "name": r["author_name"],
+                                                       "findings": 0, "release_findings": 0,
+                                                       "commits": 0, "projects": []})
+            e["commits"] += r["n"]
+            e["projects"].append(r["project"].rsplit("/", 1)[-1])
+    finally:
+        conn.close()
+    unknown = sorted(unknown.values(), key=lambda e: (-e["findings"], -e["commits"]))
+    return {"unknown": unknown, "known": known,
             "people": sorted(people.values(), key=lambda p: p.name or p.username),
             "history": list(EmailAlias.objects.select_related("person")[:30])}
 

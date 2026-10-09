@@ -1,0 +1,60 @@
+{% load sentinel %}
+<section class="ms-group" id="contribution">
+  {% include "reviews/_lead_card.html" with r=summary on_person_page=True %}
+</section>
+
+{% with f=lead %}
+<section class="ms-group">
+  <div class="ms-group-head"><h2>你 merge 的別人 MR</h2><span class="count">{{ f.merges|length }}</span>
+    <span class="hint">帶著未處理 finding 的排在最前面,可以直接點進去追蹤</span></div>
+  {% if f.merges %}
+  <ol class="ms-recs">
+    {% for m in f.merges %}
+    <li class="ms-rec">
+      <div class="ms-rec-main">
+        <div class="ms-tags">
+          {% if m.outcome == "escaped" %}<span class="ms-tag c-red">{{ m.escaped }} 則未處理就 merge</span>{% if m.worst %}<span class="ms-tag {{ m.worst|tag:'sev' }}">最嚴重 {{ m.worst|sev_label }}</span>{% endif %}
+          {% elif m.outcome == "cleared" %}<span class="ms-tag c-green">finding 處理完才 merge</span>
+          {% else %}<span class="ms-tag c-gray">沒有 finding</span>{% endif %}
+          {% if m.followup %}<span class="ms-tag c-orange">上線後確認有 bug</span>{% endif %}
+        </div>
+        <p class="ms-rec-title">{% if m.mr %}<a href="{{ m.mr.web_url }}" target="_blank" rel="noopener">{{ m.mr|short_mr }}</a><span>{{ m.mr.title }}</span>{% endif %}</p>
+        {% if m.mr %}<ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ m.mr.merged_at|tw }}</li>
+          <li><span class="material-symbols-outlined" aria-hidden="true">person</span>{{ m.mr.author.name|default:m.mr.author.username }}</li></ul>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}<p class="ms-empty-block">這段期間沒有 merge 別人的 MR</p>{% endif %}
+</section>
+
+<section class="ms-group">
+  <div class="ms-group-head"><h2>你負責的 release MR</h2><span class="count">{{ f.releases|length }}</span></div>
+  {% if f.releases %}
+  <ol class="ms-recs">
+    {% for m in f.releases %}
+    <li class="ms-rec"><div class="ms-rec-main">
+      <div class="ms-tags">{% if m.outcome == "escaped" %}<span class="ms-tag c-red">{{ m.escaped }} 則未處理就上版</span>{% elif m.outcome == "cleared" %}<span class="ms-tag c-green">finding 處理完才上版</span>{% else %}<span class="ms-tag c-gray">沒有 finding</span>{% endif %}{% if m.followup %}<span class="ms-tag c-orange">上線後確認有 bug</span>{% endif %}</div>
+      <p class="ms-rec-title">{% if m.mr %}<a href="{{ m.mr.web_url }}" target="_blank" rel="noopener">{{ m.mr|short_mr }}</a><span>{{ m.mr.title }}</span>{% endif %}</p>
+    </div></li>
+    {% endfor %}
+  </ol>
+  {% else %}<p class="ms-empty-block">這段期間沒有 release MR</p>{% endif %}
+</section>
+
+<section class="ms-group">
+  <div class="ms-group-head"><h2>接手與協作</h2><span class="count">{{ f.handover|length }}</span>
+    <span class="hint">別人的 MR 裡有你的 commit</span></div>
+  {% if f.handover %}
+  <ol class="ms-recs">
+    {% for h in f.handover %}
+    <li class="ms-rec"><div class="ms-rec-main">
+      <div class="ms-tags"><span class="ms-tag c-teal">{{ h.commits }} 個 commit</span></div>
+      <p class="ms-rec-title">{% if h.mr %}<a href="{{ h.mr.web_url }}" target="_blank" rel="noopener">{{ h.mr|short_mr }}</a><span>{{ h.mr.title }}</span>{% endif %}</p>
+      {% if h.mr %}<ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">person</span>{{ h.mr.author.name|default:h.mr.author.username }} 的 MR</li></ul>{% endif %}
+    </div></li>
+    {% endfor %}
+  </ol>
+  {% else %}<p class="ms-empty-block">這段期間別人的 MR 裡沒有你的 commit</p>{% endif %}
+</section>
+{% endwith %}

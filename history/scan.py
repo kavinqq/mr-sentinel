@@ -14,7 +14,7 @@ Safe to run again: every MR is re-read and upserted, nothing is duplicated.
 import logging
 from datetime import datetime, timedelta, timezone
 
-from history import blame, classify, db, followups, rate, snapshot, sync
+from history import blame, classify, db, discover, followups, rate, snapshot, sync
 import gitlab_client
 
 log = logging.getLogger("mr_sentinel.history")
@@ -45,8 +45,14 @@ def scan(conn, config: dict, days: int | None = None, only: list[str] | None = N
     days = days or cfg["window_days"]
     since = since_for(days)
     base, token = config["gitlab_url"], config["gitlab_token"]
-    targets = only or sync.projects(config)
     result: dict = {"since": since, "days": days, "projects": {}, "failed": {}}
+    if not only and not dry_run:            # find every project the team works in first
+        try:
+            result["discovered"] = discover.discover(conn, config, since, progress)
+        except Exception as exc:          # the reviewed projects still get scanned
+            log.exception("project discovery failed")
+            result["failed"]["discover"] = f"{type(exc).__name__}: {exc}"
+    targets = only or sync.projects(config, conn)
     progress(f"掃描近 {days} 天(自 {since[:10]} 起)的 MR,共 {len(targets)} 個專案"
              + (",只計數不寫入" if dry_run else ""))
     me = None if dry_run else sync._me(config)

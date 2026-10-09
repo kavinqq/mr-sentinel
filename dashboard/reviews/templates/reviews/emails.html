@@ -14,9 +14,9 @@
     {% if unknown %}
     <div class="ms-list-wrap">
       <table class="ms-list">
-        <thead><tr><th>Commit email</th><th>commit 上的名字</th><th class="ms-num">相關 finding</th><th class="ms-num">在 release MR</th><th>這是誰</th></tr></thead>
+        <thead><tr><th>Commit email</th><th>commit 上的名字</th><th class="ms-num">相關 finding</th><th class="ms-num">commit</th><th>專案</th><th>這是誰</th></tr></thead>
         <tbody>{% for e in unknown %}
-          <tr><td><code>{{ e.email }}</code></td><td>{{ e.name|default:"—" }}</td><td class="ms-num">{{ e.findings }}</td><td class="ms-num">{{ e.release_findings }}</td>
+          <tr><td><code>{{ e.email }}</code></td><td>{{ e.name|default:"—" }}</td><td class="ms-num">{{ e.findings }}</td><td class="ms-num">{{ e.commits }}</td><td class="wrap">{{ e.projects|join:"、"|truncatechars:60 }}</td>
             <td><form method="post" class="ms-row">{% csrf_token %}<input type="hidden" name="email" value="{{ e.email }}">
               <label class="sr-only" for="who-{{ forloop.counter }}">對應到誰</label>
               <select id="who-{{ forloop.counter }}" name="person" required><option value="" disabled selected>選擇…</option>

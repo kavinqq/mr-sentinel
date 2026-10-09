@@ -136,14 +136,15 @@ def rate_one(conn, config: dict, mr: dict, ctx: dict | None = None,
 
 
 def pending(conn, since: str) -> list[dict]:
-    """Reviewed, personal (non-release) MRs in the window with no rating for
-    their current head — newest first, so the scores that matter fill in first."""
+    """Personal (non-release) MRs in the window with no rating for their current
+    head — reviewed by the bot, or merged in a project it does not review —
+    newest first, so the scores that matter fill in first."""
     rated = {(r["mr_id"], r["head_sha"]) for r in conn.execute(
         "SELECT DISTINCT mr_id, head_sha FROM mr_ratings WHERE rubric_version = ? "
         "AND author_id IS NULL", (RUBRIC_VERSION,))}
     out = []
-    for r in conn.execute("SELECT * FROM mrs WHERE reviewed = 1 AND created_at >= ? "
-                          "ORDER BY created_at DESC", (since,)):
+    for r in conn.execute("SELECT * FROM mrs WHERE (reviewed = 1 OR state = 'merged') "
+                          "AND created_at >= ? ORDER BY created_at DESC", (since,)):
         m = dict(r)
         if is_release_mr(m["title"], m["source_branch"], m["target_branch"]):
             continue
@@ -180,21 +181,6 @@ def pending_slices(conn, since: str) -> list[dict]:
         pid = owners.get((r["author_email"] or "").lower())
         if pid is not None and (r["mr_id"], pid) not in done:
             by.setdefault((r["mr_id"], pid), []).append(r["sha"])
-    # a team lead's commits inside someone else's (non-release) MR: taking over or
-    # finishing their work — graded like a slice, counted as 團隊貢獻 (history/contrib.py)
-    leads = {p for p, role in db.person_roles(conn).items() if role == "lead"}
-    others = {}
-    for r in conn.execute("SELECT * FROM mrs WHERE reviewed = 1 AND created_at >= ?", (since,)):
-        m = dict(r)
-        if not is_release_mr(m["title"], m["source_branch"], m["target_branch"]):
-            others[m["mr_id"]] = m
-    for r in conn.execute("SELECT mr_id, sha, author_email FROM mr_commits"):
-        m = others.get(r["mr_id"])
-        pid = owners.get((r["author_email"] or "").lower())
-        if m is None or pid not in leads or m["author_id"] == pid or (r["mr_id"], pid) in done:
-            continue
-        by.setdefault((r["mr_id"], pid), []).append(r["sha"])
-        release.setdefault(r["mr_id"], m)
     return [{**release[mid], "author_id": pid, "shas": shas}
             for (mid, pid), shas in sorted(by.items(), key=lambda kv: release[kv[0][0]]["created_at"] or "",
                                            reverse=True)]
@@ -246,6 +232,73 @@ def rate_slice(conn, config: dict, s: dict) -> bool:
     return True
 
 
+def _week(ts: str) -> str:
+    from datetime import datetime
+    d = datetime.fromisoformat((ts or "1970-01-01T00:00:00Z").replace("Z", "+00:00"))
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def pending_commit_batches(conn, since: str) -> list[dict]:
+    """A person's commits that never went through an MR, batched per project and
+    ISO week — the unit graded in place of an MR. A batch is graded again only
+    when new commits joined it."""
+    owners = score.email_owners(conn)
+    in_mr = {r[0] for r in conn.execute("SELECT sha FROM mr_commits")}
+    graded = {}
+    for r in conn.execute("SELECT batch, shas FROM commit_ratings WHERE rubric_version = ? "
+                          "ORDER BY rated_at, id", (RUBRIC_VERSION,)):
+        graded[r["batch"]] = r["shas"]
+    batches: dict[str, dict] = {}
+    for r in conn.execute("SELECT * FROM project_commits WHERE created_at >= ? ORDER BY created_at",
+                          (since,)):
+        pid = owners.get((r["author_email"] or "").lower())
+        if pid is None or r["sha"] in in_mr:
+            continue
+        week = _week(r["created_at"])
+        key = f"{r['project']}|{pid}|{week}"
+        b = batches.setdefault(key, {"batch": key, "project": r["project"], "author_id": pid,
+                                     "week": week, "shas": [], "titles": [],
+                                     "created_at": r["created_at"], "iid": week})
+        b["shas"].append(r["sha"])
+        b["titles"].append(r["title"] or "")
+    return [b for b in sorted(batches.values(), key=lambda b: b["created_at"], reverse=True)
+            if graded.get(b["batch"]) != json.dumps(sorted(b["shas"]))]
+
+
+def rate_commit_batch(conn, config: dict, b: dict) -> bool:
+    base, token = config["gitlab_url"], config["gitlab_token"]
+    review_cfg = config["review"]
+    changes = []
+    for sha in b["shas"]:
+        changes += gitlab_client.get_commit_diff(base, token, b["project"], sha)
+    name = conn.execute("SELECT name, username FROM people WHERE gitlab_id = ?",
+                        (b["author_id"],)).fetchone()
+    who = (name["name"] or name["username"]) if name else str(b["author_id"])
+    ctx = {"title": f"{b['project'].rsplit('/', 1)[-1]} · {b['week']} — {who} 直接推上去的 commit(沒有 MR)",
+           "description": ("這批 commit 沒有走 MR,所以沒有 MR description 也沒有 review;"
+                           "commit 訊息如下:\n- " + "\n- ".join(b["titles"])),
+           "changes": changes, "stats": {"files": len(changes), "commits": len(b["shas"])}}
+    payload, truncated = build_input(ctx, [])
+    template = (SCRIPT_DIR / "prompts" / "rate.md").read_text()
+    prompt = template.replace("__LANGUAGE__", engines.claude_engine.language_name(
+        review_cfg.get("language", "zh-TW"))) + json.dumps(payload, ensure_ascii=False)
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    ratings = valid_ratings(engines.get_engine(review_cfg["engine"]).run_json(
+        prompt, WORK_DIR, review_cfg), truncated) if changes else None
+    if ratings is None:
+        return False
+    now, shas = db.now_iso(), json.dumps(sorted(b["shas"]))
+    with conn:
+        conn.executemany(
+            "INSERT INTO commit_ratings(batch, project, author_id, week, shas, category, score, "
+            "reason, evidence, engine, rated_at, rubric_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(b["batch"], b["project"], b["author_id"], b["week"], shas, cat, r["score"], r["reason"],
+              json.dumps(r["evidence"], ensure_ascii=False), review_cfg["engine"], now, RUBRIC_VERSION)
+             for cat, r in ratings.items()])
+    return True
+
+
 def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None) -> tuple[int, int]:
     """(rated, failed): whole personal MRs first, then people's slices of release
     MRs. Bounded per run; a failure leaves the item for next time."""
@@ -253,16 +306,20 @@ def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None)
     since = score.window_start(cfg)
     todo = [("mr", m) for m in pending(conn, since)]
     todo += [("slice", s) for s in pending_slices(conn, since)]
+    todo += [("commits", b) for b in pending_commit_batches(conn, since)]
     todo = todo[:limit]
     done = failed = 0
     for i, (kind, item) in enumerate(todo, 1):
         try:
-            ok = rate_one(conn, config, item) if kind == "mr" else rate_slice(conn, config, item)
+            ok = (rate_one(conn, config, item) if kind == "mr" else
+                  rate_slice(conn, config, item) if kind == "slice" else
+                  rate_commit_batch(conn, config, item))
         except Exception:
             log.exception("rating %s!%s failed", item["project"], item["iid"])
             ok = False
         done, failed = done + ok, failed + (not ok)
-        what = "" if kind == "mr" else f"(release 中 #{item['author_id']} 的 commit)"
+        what = ("" if kind == "mr" else f"(release 中 #{item['author_id']} 的 commit)"
+                if kind == "slice" else f"(#{item['author_id']} 直接 commit {len(item['shas'])} 個)")
         progress(f"    評分 {i}/{len(todo)} {item['project'].rsplit('/', 1)[-1]}!{item['iid']}{what}"
                  + ("" if ok else " 失敗"))
     return done, failed

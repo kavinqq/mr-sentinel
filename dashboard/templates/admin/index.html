@@ -37,12 +37,8 @@
 
   {% if leads %}
   <section class="ms-group">
-    <div class="ms-group-head"><h2>Team leader</h2><span class="count">{{ leads|length }}</span>
-      <span class="hint">不排入評分、不計入團隊平均,僅供參考</span></div>
-    <div class="ms-acc-list">
-      {% include "reviews/_acc_head.html" with score_label="參考" %}
-      {% for r in leads %}{% include "reviews/_member_acc.html" %}{% endfor %}
-    </div>
+    <div class="ms-group-head"><h2>Team leader</h2><span class="count">{{ leads|length }}</span></div>
+    {% for r in leads %}{% include "reviews/_lead_card.html" %}{% endfor %}
   </section>
   {% endif %}
 

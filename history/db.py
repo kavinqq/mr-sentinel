@@ -18,8 +18,8 @@ DEFAULT_PATH = SCRIPT_DIR / "sentinel.db"     # see resolve_path() for the overr
 # the db (scoring_configs) so they can be tuned — and every change is a new
 # version. This is version 1, seeded by the first migration.
 DEFAULT_SCORING = {
-    "window_days": 180,
-    "recent_days": 90,               # a level also needs fresh evidence (min_recent_mrs)
+    "window_days": 90,               # the evaluation period: the past three months
+    "recent_days": 45,               # a level also needs fresh evidence (min_recent_mrs)
     "min_reviewed_mrs": 5,           # own, personal MRs; fewer -> no level ("資料不足")
     "followup_days": 30,             # a fix / new finding this soon after a feature ships counts
     # Each MR is graded 1-5 per category by the model (history/rate.py,
@@ -319,6 +319,37 @@ MIGRATIONS = [
     );
     CREATE INDEX review_ratings_mr ON review_ratings(mr_id, author_id, rated_at);
     """,
+    # 13: work outside the bot-reviewed projects and outside MRs (history/discover.py):
+    # every non-merge commit of the window in a project the team commits to, and
+    # grades of a person's direct commits batched per project and ISO week
+    """
+    CREATE TABLE project_commits (
+        sha           TEXT NOT NULL,
+        project       TEXT NOT NULL,
+        author_email  TEXT,
+        author_name   TEXT,
+        title         TEXT,
+        created_at    TEXT,
+        PRIMARY KEY (project, sha)
+    );
+    CREATE INDEX project_commits_author ON project_commits(author_email, created_at);
+    CREATE TABLE commit_ratings (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch           TEXT NOT NULL,            -- project|author_id|ISO week
+        project         TEXT NOT NULL,
+        author_id       INTEGER NOT NULL,
+        week            TEXT NOT NULL,
+        shas            TEXT NOT NULL,            -- JSON list it was graded from
+        category        TEXT NOT NULL,
+        score           INTEGER,
+        reason          TEXT,
+        evidence        TEXT,
+        engine          TEXT,
+        rated_at        TEXT NOT NULL,
+        rubric_version  INTEGER
+    );
+    CREATE INDEX commit_ratings_batch ON commit_ratings(batch, category, rated_at);
+    """,
 ]
 SCALE_CHANGE_NOTE = "評分改成 10 分制(越高越好、每項各自給分)"
 TAXONOMY_CHANGE_NOTE = "評分改成 8 個面向、每項 5 分(滿分 40)"
@@ -446,6 +477,27 @@ def _add_tracks(conn) -> None:
                       "system", now_iso()))
         conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
                      (TRACK_CHANGE_NOTE,))
+
+
+def export(conn, path) -> dict:
+    """A single, consistent file (no -wal / -shm) to carry to another machine:
+    SQLite's online backup, safe while the scheduler or the dashboard writes."""
+    from pathlib import Path
+    target = Path(path)
+    if target.exists():
+        raise FileExistsError(f"{target} already exists — pick a new name")
+    dst = sqlite3.connect(target)
+    try:
+        conn.backup(dst)
+        dst.execute("PRAGMA journal_mode=DELETE")
+        counts = {t: dst.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                  for t in ("mrs", "findings", "mr_ratings", "commit_ratings", "person_evaluations",
+                            "score_events", "email_aliases", "person_roles")}
+        version = dst.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        dst.close()
+    return {"path": str(target), "schema": version, "rows": counts,
+            "bytes": target.stat().st_size}
 
 
 def get_state(conn, key: str, default=None):

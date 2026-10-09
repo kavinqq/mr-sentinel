@@ -170,8 +170,15 @@ def sync_one(conn, base: str, token: str, project: str, mr: dict, me: int) -> in
         raise
 
 
-def projects(config: dict) -> list[str]:
-    return sorted((config.get("review") or {}).get("project_map") or {})
+def projects(config: dict, conn=None) -> list[str]:
+    """The bot-reviewed projects plus every project the team was found
+    committing to (history/discover.py)."""
+    reviewed = set((config.get("review") or {}).get("project_map") or {})
+    found = set()
+    if conn is not None:
+        from history import discover
+        found = set(discover.tracked(conn))
+    return sorted(reviewed | found)
 
 
 def _me(config: dict) -> int:
@@ -228,7 +235,7 @@ def sync_all(conn, config: dict, full: bool = False) -> dict:
     me = _me(config)
     done, failed = {}, {}
     resolve_roster(conn, config)
-    for project in projects(config):
+    for project in projects(config, conn):
         try:
             done[project] = sync_project(conn, config, project, me, full)
         except Exception as exc:                  # one broken project must not stop the rest

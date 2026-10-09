@@ -311,7 +311,7 @@ class TestRatingScore(unittest.TestCase):
         self.assertEqual((few["sample"], few["level"]), ("暫定", "junior"))   # all 3s = 24 < 25.5
 
     def test_a_level_needs_recent_evidence(self):
-        old = [{**m, "created_at": "2026-05-01T00:00:00Z"} for m in self.mrs(20)]
+        old = [{**m, "created_at": "2026-07-20T00:00:00Z"} for m in self.mrs(20)]
         r = score.person_report(old, [], [], CFG, 1, NOW, self.ratings(20, 5))
         self.assertEqual(r["level"], "junior")
         self.assertIn("近期評過分的 MR 0 < 2", r["next_level_misses"])
@@ -612,7 +612,8 @@ class TestScan(DbCase):
                 mock.patch.object(scan.sync, "resolve_roster"),
                 mock.patch.object(scan.sync, "sync_one", return_value=1),
                 mock.patch.object(scan.classify, "classify_pending", return_value=(0, 0)),
-                mock.patch.object(scan.blame, "blame_pending", return_value=(0, 0))]
+                mock.patch.object(scan.blame, "blame_pending", return_value=(0, 0)),
+                mock.patch.object(scan.discover, "discover", return_value={"projects": [], "commits": 0})]
 
     def run_scan(self, list_mrs, **kw):
         from history import scan
@@ -634,9 +635,9 @@ class TestScan(DbCase):
         self.assertTrue(scan.needed(self.conn))
         result = self.run_scan(list_mrs)
         self.assertEqual([c[0] for c in calls], ["g/app", "g/web"])
-        self.assertEqual(result["days"], 180)                         # scoring window
+        self.assertEqual(result["days"], 90)                          # scoring window
         since = datetime.fromisoformat(calls[0][1].replace("Z", "+00:00"))
-        self.assertAlmostEqual((datetime.now(timezone.utc) - since).days, 180, delta=1)
+        self.assertAlmostEqual((datetime.now(timezone.utc) - since).days, 90, delta=1)
         self.assertEqual(result["projects"]["g/app"], {"mrs": 1, "findings": 1})
         self.assertEqual(db.get_state(self.conn, "mrs_updated_at:g/web"), "2026-09-01T00:00:00Z")
         self.assertFalse(scan.needed(self.conn))
@@ -844,43 +845,65 @@ class TestContribution(DbCase):
         self.assertEqual([tuple(r) for r in self.conn.execute("SELECT note_id, author_id FROM mr_notes")],
                          [(12, self.LEAD)])
 
-    def test_merges_reviews_and_the_lift(self):
-        from history import contrib
+    def test_a_lead_gets_facts_not_a_score_log(self):
+        from history import snapshot
         self.seed()
         with self.conn:
-            self.conn.execute("INSERT INTO review_ratings(mr_id, author_id, notes, score, reason, rated_at) "
-                              "VALUES (1, 14, 1, 5, '抓到重複扣款', 'x')")
-        cfg = CFG
-        att = score.attribution(self.conn, cfg, NOW)
-        obs = contrib.observations(self.conn, self.LEAD, att, [], cfg, "2026-07-01T00:00:00Z", {})
-        got = sorted((o["category"], o["mr_id"], o["value"]) for o in obs)
-        # MR 1: finding dealt with -> 4; MR 2: a high still there -> 1; the review: 5
-        self.assertEqual(got, [("merge", 1, 4.0), ("merge", 2, 1.0), ("review", 1, 5.0)])
-        t = contrib.track(obs, cfg)
-        self.assertEqual((t["items"]["merge"]["score"], t["items"]["review"]["score"]), (2.8, 3.5))
-        row = next(r for r in score.team_report(self.conn, 1, cfg, NOW) if r["author_id"] == self.LEAD)
-        self.assertIn("contribution", row["tracks"])
-        self.assertTrue(row["contribution_lifted"])                  # no code of their own: it decides
+            self.conn.execute("INSERT INTO mr_commits(mr_id, sha, author_email) VALUES (2, 'c1', 'lead@x')")
+            self.conn.execute("INSERT INTO email_aliases(email, gitlab_id, actor, created_at) "
+                              "VALUES ('lead@x', 14, 'me', 'x')")
+        row = next(r for r in score.team_report(self.conn, 1, CFG, NOW) if r["author_id"] == self.LEAD)
+        f = row["contribution"]
+        # MR 1: the finding was dealt with first; MR 2: a high still open at merge
+        self.assertEqual(f["merge_tally"], {"cleared": 1, "clean": 0, "escaped": 1})
+        self.assertEqual([(m["mr_id"], m["worst"]) for m in f["merges"] if m["outcome"] == "escaped"],
+                         [(2, "high")])
+        self.assertEqual((f["review_mrs"], f["review_notes"]), (1, 1))
+        self.assertEqual(f["handover"], [{"mr_id": 2, "commits": 1}])
+        snapshot.record(self.conn, "init")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM score_events WHERE gitlab_id = 14").fetchone()[0], 0)
 
-    def test_contribution_only_lifts(self):
-        report = {"score": 30.0, "tracks": {"frontend": {"score": 30.0, "rated_mrs": 10}}}
-        with mock.patch("history.contrib.observations", return_value=[{"category": "merge", "value": 1.0,
-                                                                         "mr_id": 1, "created_at": "x"}] * 10):
-            r = score.with_contribution(None, dict(report, tracks=dict(report["tracks"])), 14, {}, [], CFG, "", {})
-        self.assertEqual((r["score"], r["contribution_lifted"]), (30.0, False))
 
-    def test_pending_reviews_regrade_when_notes_change(self):
-        from history import contrib
-        self.seed()
-        self.assertEqual([(p["mr_id"], p["notes"]) for p in contrib.pending_reviews(self.conn, {self.LEAD}, "2026-07-01")],
-                         [(1, 1)])
-        engine = mock.Mock(); engine.run_json.return_value = {"score": 4, "reason": "ok"}
-        with mock.patch.object(contrib.engines, "get_engine", return_value=engine), \
-             mock.patch.object(contrib, "WORK_DIR", Path(self.tmp.name) / "w"):
-            self.assertTrue(contrib.rate_review(self.conn, {"review": {"engine": "claude"}},
-                                                {"mr_id": 1, "author_id": self.LEAD, "notes": 1}))
-        self.assertIn("重複扣款", engine.run_json.call_args.args[0])
-        self.assertEqual(contrib.pending_reviews(self.conn, {self.LEAD}, "2026-07-01"), [])
+class TestDirectCommits(DbCase):
+    CONFIG = {"review": {"engine": "claude", "language": "zh-TW"}, "gitlab_url": "u", "gitlab_token": "t"}
+
+    def test_commits_outside_mrs_are_batched_per_week_and_count_like_an_mr(self):
+        from history import rate
+        with self.conn:
+            sync.store_mr(self.conn, "g/frontend/web", {**mr(mid=1, iid=1, created="2026-09-20T00:00:00Z"), "sha": "h"},
+                          [], [{"name": "eyes", "user": {"id": ME}}], ME, None,
+                          ([{"id": "a1", "author_email": "dev@x"}], True))      # proves dev@x is DEV
+            self.conn.executemany("INSERT INTO project_commits(sha, project, author_email, title, created_at) "
+                                  "VALUES (?, 'g/py_backend/drip', 'dev@x', ?, ?)",
+                                  [("d1", "feat a", "2026-09-28T10:00:00Z"), ("d2", "fix b", "2026-09-29T10:00:00Z"),
+                                   ("d3", "feat c", "2026-10-06T10:00:00Z"), ("a1", "in an MR", "2026-09-20T00:00:00Z")])
+        batches = rate.pending_commit_batches(self.conn, "2026-07-01T00:00:00Z")
+        self.assertEqual(sorted((b["week"], sorted(b["shas"])) for b in batches),
+                         [("2026-W40", ["d1", "d2"]), ("2026-W41", ["d3"])])     # a1 went through an MR
+        engine = mock.Mock()
+        engine.run_json.return_value = {"ratings": {c: {"score": 2, "reason": "r", "evidence": []} for c in CATEGORIES}}
+        with mock.patch.object(rate.gitlab_client, "get_commit_diff", return_value=[{"new_path": "x.py", "diff": "+1"}]), \
+             mock.patch.object(rate.engines, "get_engine", return_value=engine), \
+             mock.patch.object(rate, "WORK_DIR", Path(self.tmp.name) / "w"):
+            for b in batches:
+                self.assertTrue(rate.rate_commit_batch(self.conn, self.CONFIG, b))
+        self.assertIn("沒有走 MR", engine.run_json.call_args.args[0])
+        self.assertEqual(rate.pending_commit_batches(self.conn, "2026-07-01T00:00:00Z"), [])
+        row = next(r for r in score.team_report(self.conn, 1, CFG, NOW) if r["author_id"] == DEV)
+        self.assertEqual(row["rated_mrs"], 2)                                  # the two batches
+        self.assertEqual(row["tracks"]["backend"]["rated_mrs"], 2)
+
+
+class TestExport(DbCase):
+    def test_export_is_one_complete_file(self):
+        with self.conn:
+            sync.store_mr(self.conn, "g/app", mr(), [], [], ME, None)
+        out = Path(self.tmp.name) / "copy.db"
+        info = db.export(self.conn, out)
+        self.assertEqual((info["rows"]["mrs"], info["schema"]), (1, len(db.MIGRATIONS)))
+        self.assertFalse(Path(str(out) + "-wal").exists())
+        with self.assertRaises(FileExistsError):
+            db.export(self.conn, out)
 
 
 class TestScoreLog(DbCase):
