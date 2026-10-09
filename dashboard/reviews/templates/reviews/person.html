@@ -36,7 +36,7 @@
   <div class="ms-info">近 {{ cfg.window_days }} 天沒有 MR,所以沒有評分;下面是全部的歷史紀錄。</div>
   {% endif %}
 
-  {% if summary and summary.reviewed_mrs and role != "departed" %}
+  {% if summary and summary.reviewed_mrs and role != "departed" and role != "external" %}
   <section class="ms-panel" style="margin-bottom:20px">
     <div class="ms-eval-head"><h3>評價</h3>
       <form method="post" action="{% url 'sync_request' %}">{% csrf_token %}

@@ -358,8 +358,11 @@ TRACK_CHANGE_NOTE = "評分分成前端 / 後端兩條,兩邊都達標另有全�
 SCALE_NOTES = (SCALE_CHANGE_NOTE, TAXONOMY_CHANGE_NOTE, RATING_CHANGE_NOTE)
 TEAM = -1
 
-ROLES = {"member": "成員", "lead": "Team leader", "departed": "已離職"}
-UNRANKED_ROLES = {"lead", "departed"}       # reported, never ranked, not in the team average
+ROLES = {"member": "成員", "lead": "Team leader", "departed": "已離職", "external": "非成員"}
+UNRANKED_ROLES = {"lead", "departed", "external"}   # never ranked, not in the team average
+# not part of the team being evaluated: no grading, no evaluation, no score log
+# (an "external" person is from another team, here only to help)
+NOT_EVALUATED = {"departed", "external"}
 
 
 def confirmed_aliases(conn) -> dict[str, int | None]:

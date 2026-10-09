@@ -299,6 +299,11 @@ def rate_commit_batch(conn, config: dict, b: dict) -> bool:
     return True
 
 
+def _skip_authors(conn) -> set[int]:
+    """People not being evaluated: their work is not graded at all."""
+    return {pid for pid, role in db.person_roles(conn).items() if role == "external"}
+
+
 def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None,
                  workers: int = 1) -> tuple[int, int]:
     """(rated, failed): whole personal MRs first, then people's slices of release
@@ -310,7 +315,8 @@ def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None,
     todo = [("mr", m) for m in pending(conn, since)]
     todo += [("slice", s) for s in pending_slices(conn, since)]
     todo += [("commits", b) for b in pending_commit_batches(conn, since)]
-    todo = todo[:limit]
+    skip = _skip_authors(conn)
+    todo = [(k, i) for k, i in todo if i.get("author_id") not in skip][:limit]
     done = failed = 0
 
     def grade(kind, item, c):

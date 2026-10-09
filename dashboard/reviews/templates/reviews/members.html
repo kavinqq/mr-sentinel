@@ -26,22 +26,65 @@
   </section>
 
   <section class="ms-group">
-    <div class="ms-group-head"><h2>所有人</h2><span class="count">{{ people|length }}</span></div>
-    <div class="ms-list-wrap">
-      <table class="ms-list">
-        <thead><tr><th>開發者</th><th>目前身分</th><th class="ms-num">MR(全部歷史)</th><th>變更身分</th></tr></thead>
-        <tbody>{% for p in people %}
-          <tr>
-            <td><a class="ms-who" href="{% url 'person' p.person.gitlab_id %}">{{ p.person.name|default:p.person.username }} <span class="handle">{{ p.person.username }}</span></a></td>
-            <td><span class="ms-tag {{ p.role|tag:'role' }}">{{ p.role_label }}</span></td>
-            <td class="ms-num">{{ p.mrs }}</td>
-            <td><form method="post" action="{% url 'member_role' p.person.gitlab_id %}" class="ms-row">{% csrf_token %}
-              <select name="role" aria-label="身分">{% for key, label in roles.items %}<option value="{{ key }}" {% if p.role == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
-              <button type="submit">儲存</button></form></td>
-          </tr>
-        {% endfor %}</tbody>
-      </table>
-    </div>
+    <div class="ms-group-head"><h2>所有人</h2><span class="count">{{ people|length }}</span>
+      <span class="hint">改完一次儲存 · 「非成員」是別組支援,不評分也不打分</span></div>
+    <form method="post" id="roles-form">{% csrf_token %}
+      <input type="hidden" name="action" value="roles">
+      <div class="ms-bulk-bar" role="group" aria-label="批次設定">
+        <label class="ms-check"><input type="checkbox" id="pick-all" aria-label="全選"> 全選</label>
+        <span class="ms-dim" id="picked">已選 0 人</span>
+        <label class="sr-only" for="bulk-role">把勾選的人設為</label>
+        <select id="bulk-role">{% for key, label in roles.items %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select>
+        <button type="button" id="bulk-apply" disabled>套用到勾選的人</button>
+        <span class="ms-bulk-spacer"></span>
+        <span class="ms-dim" id="changed">沒有變更</span>
+        <button type="submit" class="primary" id="save-all" disabled>全部儲存</button>
+      </div>
+      <div class="ms-list-wrap">
+        <table class="ms-list">
+          <thead><tr><th class="ms-check-col"></th><th>開發者</th><th>目前身分</th><th class="ms-num">MR(全部歷史)</th><th>改成</th></tr></thead>
+          <tbody>{% for p in people %}
+            <tr data-row>
+              <td class="ms-check-col"><input type="checkbox" class="pick" aria-label="選取 {{ p.person.name|default:p.person.username }}"></td>
+              <td><a class="ms-who" href="{% url 'person' p.person.gitlab_id %}">{{ p.person.name|default:p.person.username }} <span class="handle">{{ p.person.username }}</span></a></td>
+              <td><span class="ms-tag {{ p.role|tag:'role' }}">{{ p.role_label }}</span></td>
+              <td class="ms-num">{{ p.mrs }}</td>
+              <td><label class="sr-only" for="role-{{ p.person.gitlab_id }}">身分</label>
+                <select id="role-{{ p.person.gitlab_id }}" name="role_{{ p.person.gitlab_id }}" data-initial="{{ p.role }}">{% for key, label in roles.items %}<option value="{{ key }}" {% if p.role == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></td>
+            </tr>
+          {% endfor %}</tbody>
+        </table>
+      </div>
+    </form>
   </section>
+  <script>
+  (() => {
+    const form = document.getElementById("roles-form");
+    const picks = [...form.querySelectorAll(".pick")], all = document.getElementById("pick-all");
+    const selects = [...form.querySelectorAll("select[data-initial]")];
+    const apply = document.getElementById("bulk-apply"), save = document.getElementById("save-all");
+    function refresh() {
+      const n = picks.filter(p => p.checked).length;
+      document.getElementById("picked").textContent = `已選 ${n} 人`;
+      apply.disabled = n === 0;
+      all.checked = n === picks.length; all.indeterminate = n > 0 && n < picks.length;
+      const changed = selects.filter(s => s.value !== s.dataset.initial);
+      selects.forEach(s => s.closest("tr").classList.toggle("ms-changed", s.value !== s.dataset.initial));
+      document.getElementById("changed").textContent = changed.length ? `${changed.length} 項變更未儲存` : "沒有變更";
+      save.disabled = changed.length === 0;
+    }
+    all.addEventListener("change", () => { picks.forEach(p => p.checked = all.checked); refresh(); });
+    picks.forEach(p => p.addEventListener("change", refresh));
+    selects.forEach(s => s.addEventListener("change", refresh));
+    apply.addEventListener("click", () => {
+      const role = document.getElementById("bulk-role").value;
+      picks.forEach((p, i) => { if (p.checked) selects[i].value = role; });
+      refresh();
+    });
+    window.addEventListener("beforeunload", e => { if (!save.disabled && !form.dataset.sending) e.preventDefault(); });
+    form.addEventListener("submit", () => { form.dataset.sending = "1"; });
+    refresh();
+  })();
+  </script>
 </div>
 {% endblock %}

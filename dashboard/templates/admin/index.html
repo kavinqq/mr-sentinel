@@ -70,6 +70,18 @@
     {% endif %}
   </div>
 
+  {% if external %}
+  <section class="ms-group">
+    <details class="ms-fold"><summary class="ms-group-head"><h2>非成員</h2><span class="count">{{ external|length }}</span>
+      <span class="hint">別組支援 · 不評分、不打分、不計入團隊平均</span></summary>
+      <ul class="ms-recs" style="margin-top:8px">{% for r in external %}
+        <li class="ms-rec"><div class="ms-rec-main"><p class="ms-rec-title"><a href="{% url 'person' r.author_id %}">{{ r.name|default:r.username }}</a><span>{{ r.username }}</span></p>
+          <ul class="ms-rec-meta"><li>MR {{ r.own_mrs }} · commit {{ r.commits }}</li></ul></div>
+          <span class="ms-tag {{ r.role|tag:'role' }}">非成員</span></li>{% endfor %}</ul>
+    </details>
+  </section>
+  {% endif %}
+
   {% if departed %}
   <section class="ms-group">
     <details class="ms-fold"><summary class="ms-group-head"><h2>已離職</h2><span class="count">{{ departed|length }}</span>

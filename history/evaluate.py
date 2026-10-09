@@ -125,7 +125,7 @@ def profiles(conn) -> dict[int, dict]:
     followups = score.annotated_followups(conn, attributed["findings"] + attributed["unattributed"])
     out = {}
     for row in rows:
-        if not row["reviewed_mrs"] or row["role"] in ("departed", "lead"):
+        if not row["reviewed_mrs"] or row["role"] in db.NOT_EVALUATED | {"lead"}:
             continue
         pid = row["author_id"]
         mine = [f for f in attributed["findings"] if f["owner_author_id"] == pid and f["in_window"]

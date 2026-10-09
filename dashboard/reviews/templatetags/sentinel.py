@@ -46,7 +46,7 @@ TAG_COLORS = {
     "kind:fix_mr": "c-orange", "kind:ai_refind": "c-violet",
     "verdict:confirmed": "c-red", "verdict:unrelated": "c-gray", "verdict:": "c-amber",
     # people
-    "role:lead": "c-indigo", "role:member": "c-blue", "role:departed": "c-gray",
+    "role:lead": "c-indigo", "role:member": "c-blue", "role:departed": "c-gray", "role:external": "c-brown",
     # MR records
     "mr:個人": "c-blue", "mr:release": "c-violet", "mr:他人的 MR": "c-teal", "mr:直接 commit": "c-orange",
     # states
@@ -62,6 +62,12 @@ TAG_COLORS = {
     "level:senior": "c-green", "level:mid+": "c-cyan", "level:mid": "c-indigo",
     "level:junior": "c-orange", "level:": "c-gray",
 }
+
+
+@register.filter
+def role_label(role):
+    from history.db import ROLES
+    return ROLES.get(role, role)
 
 
 @register.filter

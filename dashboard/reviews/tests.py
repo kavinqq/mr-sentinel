@@ -134,6 +134,17 @@ class TestMembersAndLog(DashboardCase):
         self.assertIn("finding #1", event.trigger)
         self.assertContains(self.client.get(reverse("score_log")), "finding #1")
 
+    def test_bulk_roles_store_only_changes_and_log_once(self):
+        before = services.ScoreEvent.objects.count()
+        self.client.post(reverse("members"), {"action": "roles", "role_7": "external"})
+        self.assertEqual(services.PersonRole.objects.get().role, "external")
+        self.client.post(reverse("members"), {"action": "roles", "role_7": "external"})   # no change
+        self.assertEqual(services.PersonRole.objects.count(), 1)
+        self.client.post(reverse("members"), {"action": "roles", "role_7": "boss"})       # refused
+        self.assertEqual(services.PersonRole.objects.count(), 1)
+        row = next(r for r in services.team()[2] if r["author_id"] == 7)
+        self.assertEqual((row["role"], row["ranked"]), ("external", False))
+
     def test_add_member_queues_and_starts_a_sync(self):
         with mock.patch.object(services.subprocess, "Popen") as popen:
             self.client.post(reverse("members"), {"username": "@newbie"})

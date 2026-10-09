@@ -130,11 +130,12 @@ def overview() -> dict:
     ranked = [r for r in rows if r["ranked"]]
     leads = [r for r in rows if r["role"] == "lead"]
     departed = [r for r in rows if r["role"] == "departed"]
+    external = [r for r in rows if r["role"] == "external"]
     levels = {lv["level"]: sum(1 for r in ranked if r["level"] == lv["level"])
               for lv in cfg["levels"]}
     team_items = score.team_items(rows, cfg)
     return {
-        "version": version, "cfg": cfg, "ranked": ranked, "leads": leads, "departed": departed,
+        "version": version, "cfg": cfg, "ranked": ranked, "leads": leads, "departed": departed, "external": external,
         "events": list(ScoreEvent.objects.all()[:12]),
         "unknown_emails": len(attributed["unknown_emails"]),
         "kpi": {"people": len(ranked),
@@ -148,8 +149,8 @@ def overview() -> dict:
         "team_score": score.team_score(rows, cfg), "item_short": ITEM_SHORT,
         "team_items": team_items,
         "team_coverage": sum(1 for v in team_items.values() if v["score"] is not None),
-        "rating": {"rated": sum(r["rated_mrs"] for r in rows if r["role"] != "departed"),
-                   "total": sum(r["own_mrs"] for r in rows if r["role"] != "departed")},
+        "rating": {"rated": sum(r["rated_mrs"] for r in rows if r["role"] not in hdb.NOT_EVALUATED),
+                   "total": sum(r["own_mrs"] for r in rows if r["role"] not in hdb.NOT_EVALUATED)},
         "max_total": score.max_total(cfg), "categories": CATEGORY_LABELS,
         "unattributed": len(attributed["unattributed"]),
         "via_release": sum(1 for f in attributed["findings"] if f["via_release"]),
@@ -369,6 +370,29 @@ def set_role(gitlab_id: int, role: str, actor: str) -> PersonRole:
     return saved
 
 
+def set_roles(changes: dict[int, str], actor: str) -> int:
+    """Several role changes in one go: all validated first, only real changes
+    stored, one rescore and one log line for the lot. Returns how many changed."""
+    if any(role not in ROLES for role in changes.values()):
+        raise ValueError("有不認得的身分")
+    people = {p.gitlab_id: p for p in Person.objects.filter(gitlab_id__in=list(changes))}
+    if set(changes) - set(people):
+        raise ValueError("有不存在的人")
+    current = {}
+    for r in PersonRole.objects.filter(person_id__in=list(changes)).order_by("created_at", "id"):
+        current[r.person_id] = r.role
+    real = {pid: role for pid, role in changes.items() if current.get(pid, "member") != role}
+    if not real:
+        return 0
+    now = hdb.now_iso()
+    with transaction.atomic(using="history"):
+        for pid, role in real.items():
+            PersonRole.objects.create(person_id=pid, role=role, actor=actor, created_at=now)
+    what = "、".join(f"{people[p].name or people[p].username}→{ROLES[r]}" for p, r in real.items())
+    record(f"身分變更:{what}"[:300], actor)
+    return len(real)
+
+
 def members() -> dict:
     """Everyone the history knows, with their current role, plus pending additions."""
     roles = {}
@@ -379,7 +403,7 @@ def members() -> dict:
         role = roles.get(p.gitlab_id, "member")
         people.append({"person": p, "role": role, "role_label": ROLES.get(role, role),
                        "mrs": MergeRequest.objects.filter(author_id=p.gitlab_id).count()})
-    order = {"lead": 0, "member": 1, "departed": 2}
+    order = {"lead": 0, "member": 1, "external": 2, "departed": 3}
     people.sort(key=lambda x: (order.get(x["role"], 1), (x["person"].name or x["person"].username)))
     return {"people": people, "pending": list(RosterAddition.objects.filter(resolved_id__isnull=True)),
             "roles": ROLES}

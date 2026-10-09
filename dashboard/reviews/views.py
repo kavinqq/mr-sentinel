@@ -111,6 +111,7 @@ def set_role(request, author_id: int):
     else:
         messages.success(request, {"lead": "已設為 Team leader,不排入評分",
                                    "departed": "已標記為已離職,不排入評分",
+                                   "external": "已標記為非成員(別組支援),不評分",
                                    "member": "已改為成員,排入評分"}.get(role, "已更新"))
     return redirect("person", author_id=author_id)
 
@@ -157,6 +158,18 @@ def sync_request(request):
 
 
 def members(request):
+    if request.method == "POST" and request.POST.get("action") == "roles":
+        changes = {}
+        for key, role in request.POST.items():
+            if key.startswith("role_") and key[5:].isdigit():
+                changes[int(key[5:])] = role
+        try:
+            n = services.set_roles(changes, request.user.username)
+        except ValueError as exc:
+            messages.error(request, f"沒有存:{exc}")
+        else:
+            messages.success(request, f"已更新 {n} 個人的身分,分數已重新計算" if n else "沒有任何變更")
+        return redirect("members")
     if request.method == "POST":
         try:
             added = services.add_member(request.POST.get("username", ""), request.user.username)
