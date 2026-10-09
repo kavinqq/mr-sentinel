@@ -138,3 +138,27 @@ def resolve_discussion(base: str, token: str, project, iid, discussion_id) -> No
     """Raises (HTTPError) for a thread that is not resolvable, e.g. a plain note."""
     _call(f"{_mr(base, project, iid)}/discussions/{discussion_id}", token,
           method="PUT", form={"resolved": "true"})
+
+
+def list_mrs(base: str, token: str, project, updated_after: str | None = None,
+             created_after: str | None = None, per_page: int = 100, max_pages: int = 50) -> list:
+    """Every MR in any state, oldest update first, all pages (review history sync)."""
+    params = {"state": "all", "order_by": "updated_at", "sort": "asc", "per_page": str(per_page)}
+    if updated_after:
+        params["updated_after"] = updated_after
+    if created_after:
+        params["created_after"] = created_after
+    out: list = []
+    for page in range(1, max_pages + 1):
+        query = urllib.parse.urlencode({**params, "page": str(page)})
+        batch = json.loads(_call(f"{_project(base, project)}/merge_requests?{query}", token))
+        out += batch
+        if len(batch) < per_page:
+            return out
+    raise RuntimeError(f"{project} has more than {per_page * max_pages} MRs in range")
+
+
+def get_mr_files(base: str, token: str, project, iid) -> list[str]:
+    """Paths an MR touched (new and old path of renames), without keeping the diff."""
+    changes = get_mr_changes(base, token, project, iid).get("changes") or []
+    return sorted({p for c in changes for p in (c.get("new_path"), c.get("old_path")) if p})

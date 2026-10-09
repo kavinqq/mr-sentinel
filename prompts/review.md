@@ -14,6 +14,7 @@ You are reviewing a GitLab merge request.
    behavior? is this an existing convention of the codebase?).
 3. Produce CANDIDATE findings. Each finding:
    {"severity": "high"|"medium"|"low",
+    "category": exactly one of: security (authz/IDOR, injection, secrets, PII/data leaks) | correctness (logic bugs, wrong results, crashes, races, data loss) | performance (N+1, unbounded work) | code_quality (error handling, validation, edge cases) | code_smell (duplication, dead code, misleading names, design smells) — pick by the consequence,
     "title": the defect in one line, <= 60 chars — name the consequence, not the file,
     "file": new_path,
     "line": new-file line number inside a changed hunk (null if not locatable),

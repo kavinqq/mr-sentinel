@@ -17,24 +17,10 @@ import json
 import subprocess
 from pathlib import Path
 
+from engines import parse_json_reply  # noqa: F401  (re-exported; tests use it)
 from engines.claude_engine import language_name, render_prompt
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-
-
-def parse_json_reply(text: str) -> dict:
-    """Models sometimes wrap JSON in fences or prose; extract the object."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-        return json.loads(text.strip())
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.index("{"), text.rindex("}") + 1
-        return json.loads(text[start:end])
 
 
 def apply_verdicts(candidates: list[dict], verdicts: list[dict]) -> list[dict]:
@@ -159,3 +145,11 @@ def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
         return 0
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
         return 1
+
+
+def run_json(prompt: str, work_dir: Path, review_cfg: dict) -> dict:
+    """One codex pass whose final message must be JSON (raises on failure)."""
+    codex_cfg = review_cfg["codex"]
+    return parse_json_reply(_exec_pass(prompt, work_dir,
+                                       codex_cfg.get("skeptic_model") or codex_cfg.get("model", ""),
+                                       review_cfg["review_timeout_seconds"]))

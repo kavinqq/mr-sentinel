@@ -16,10 +16,12 @@ You are reviewing a GitLab merge request.
 ## Output
 Reply with JSON ONLY (no prose, no code fences):
 {"findings": [{"severity": "high"|"medium"|"low", "title": "short title",
+               "category": "security"|"correctness"|"performance"|"code_quality"|"code_smell",
                "file": "new_path", "line": <new-file line number in a changed hunk, or null>,
                "body": "explanation + concrete failure scenario + suggested fix"}]}
 
 ## Rules
 - Write every finding title and body in __LANGUAGE__. Keep technical terms in English.
+- "category" is exactly one of: security (authz/IDOR, injection, secrets, PII/data leaks) | correctness (logic bugs, wrong results, crashes, races, data loss) | performance (N+1, unbounded work) | code_quality (error handling, validation, edge cases) | code_smell (duplication, dead code, misleading names, design smells) — pick by the consequence.
 - "line" must be a new-file line number that appears in a changed hunk; otherwise null.
 - Never invent problems just to have output. A clean MR gets {"findings": []}.

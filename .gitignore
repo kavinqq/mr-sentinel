@@ -23,6 +23,7 @@ overrides.json
 overrides.lock
 .lock
 .lock-bot
+.lock-history
 .socket-alive
 reviews/
 *.log

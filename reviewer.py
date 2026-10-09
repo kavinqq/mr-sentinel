@@ -24,6 +24,7 @@ from pathlib import Path
 
 import blocks
 import engines
+from history import sync as history_sync
 import fetch_mr
 import gitlab_client
 import post_comment
@@ -382,6 +383,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             signature=build_signature(engine.label(review_cfg, mode)))
 
         write_review_meta(work, mode, head_sha, len(findings))
+        history_sync.sync_mr(config, project_path, iid)      # best-effort, never raises
 
         # 8. completion message
         buttons = blocks.rerun_buttons(project_path, iid,

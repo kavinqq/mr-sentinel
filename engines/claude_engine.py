@@ -170,3 +170,20 @@ def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
     if proc.returncode != 0 or not output_file.exists():
         return 1
     return 0
+
+
+def run_json(prompt: str, work_dir: Path, review_cfg: dict) -> dict:
+    """One tool-less call on the cheaper skeptic model; the reply must be JSON."""
+    from engines import parse_json_reply, resolve_cli
+    claude_cfg = review_cfg["claude"]
+    cmd = [resolve_cli("claude"), "-p", prompt,
+           "--model", claude_cfg.get("skeptic_model") or claude_cfg["model"],
+           "--output-format", "json"]   # no --allowedTools: nothing to read, scratch cwd
+    proc = subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=review_cfg["review_timeout_seconds"])
+    if proc.returncode != 0:
+        raise RuntimeError(f"claude failed (rc={proc.returncode}): {proc.stderr[-300:]}")
+    outer = json.loads(proc.stdout)
+    if outer.get("is_error"):
+        raise RuntimeError(f"claude error: {str(outer.get('result'))[:300]}")
+    return parse_json_reply(outer.get("result") or "")

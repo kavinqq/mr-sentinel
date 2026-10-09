@@ -49,6 +49,7 @@ import review_common
 import reviewer
 import slack_client
 import socket_mode
+from history import sync as history_sync
 from sentinel_config import (OVERRIDES_PATH, SCRIPT_DIR, SOCKET_HEARTBEAT_PATH, load_config,
                              load_state)
 
@@ -720,8 +721,11 @@ class Bot:
         project, iid, mr_id = resolved
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
 
+        # record the comments about to be deleted, so the history keeps them; if
+        # that failed, deleting would lose them for good — keep them instead
+        recorded = history_sync.sync_mr(self.config, project, iid)
         unclaimed = self.unclaim(base, token, project, iid)
-        deleted = self.clear_previous_comments(base, token, project, iid)
+        deleted = self.clear_previous_comments(base, token, project, iid) if recorded else 0
 
         reviewer.spawn_detached(project, iid, mr_id, mode)
         self.spend_budget()
@@ -731,6 +735,8 @@ class Bot:
             detail.append("本來就沒有認領標記")
         if deleted:
             detail.append(f"清掉 {deleted} 則沒人回覆的舊留言")
+        if not recorded:
+            detail.append("review 歷史寫入失敗,舊留言先保留沒清")
         suffix = f"\n_({', '.join(detail)})_" if detail else ""
         self.say(f":recycle: 重跑中: `{project}` !{iid} (`{mode}`){suffix}", thread_ts)
         return True

@@ -35,5 +35,11 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   across connections, so a second machine silently eats clicks. Button values
   are user-controllable: they only ever name a verb in `slack_bot.BUTTON_VERBS`
   and still pass `commands.authorize`.
+- `sentinel.db` (review history) is per-person data: gitignored, never commit.
+  Its schema changes only by appending to `history/db.py` `MIGRATIONS` — never
+  edit a shipped migration. Raw tables are written only by `history/`, from
+  GitLab; human input goes through the append-only `finding_reviews` /
+  `scoring_configs` / `sync_requests` tables. Tests must never touch the real
+  db (`BotHarness` mocks `history_sync.sync_mr`; use a temp path elsewhere).
 - Changing `slack.channel_id` invalidates `state.json`'s `slack_ts` (timestamps
   are per-channel): clear `slack_ts`, keep `seen`, or old MRs get re-notified.

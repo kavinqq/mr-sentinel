@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for the REVIEW HISTORY job (python3 -m history run):
+  GitLab -> sentinel.db sync, follow-up bug detection, AI category backlog,
+  and any sync requests queued from the dashboard. Runs daily at 03:30; it
+  also catches up on load if the Mac was asleep then.
+
+  sentinel.db is created on first run (gitignored — it holds per-person data).
+  Reviews and reruns already record their own MR immediately, so this job is
+  the safety net and the source of replies / resolves / follow-ups.
+
+  1. Replace /PATH/TO/mr-sentinel (three places) and use the ABSOLUTE path of a
+     Python 3.10+ interpreter (launchd's PATH is minimal).
+  2. First time, fill the db by hand:  python3 -m history run --full
+  3. cp this file to ~/Library/LaunchAgents/com.example.mr-sentinel-history.plist
+  4. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.mr-sentinel-history.plist
+  Stop: launchctl bootout gui/$(id -u)/com.example.mr-sentinel-history
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.mr-sentinel-history</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>history</string>
+        <string>run</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/PATH/TO/mr-sentinel</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardErrorPath</key>
+    <string>/PATH/TO/mr-sentinel/launchd-history.err.log</string>
+</dict>
+</plist>

@@ -5,8 +5,12 @@
     run_appeal(work_dir, context_file, output_file, repo_dir, review_cfg) -> int
     label(review_cfg, mode="deep") -> str   # models note for the signature
 
+    run_json(prompt, work_dir, review_cfg) -> dict          # one tool-less call
+
 run_appeal re-judges findings a developer disputed (appeal_context.json in →
-appeal_verdicts.json out, see prompts/appeal.md).
+appeal_verdicts.json out, see prompts/appeal.md). run_json is for small
+judgment calls with no code access (history/classify.py); it uses the cheaper
+skeptic model and raises on any failure.
 
 `mode` is "lite" (small MR: a single scan pass) or "deep" (large MR: scan +
 adversarial vetting + final adjudication). The reviewer picks it by MR size.
@@ -17,6 +21,7 @@ that can be plugged in here.
 """
 
 
+import json
 import os
 import shutil
 
@@ -47,3 +52,18 @@ def get_engine(name: str):
         from engines import codex_engine
         return codex_engine
     raise SystemExit(f"unknown review engine: {name!r} (available: claude, codex)")
+
+
+def parse_json_reply(text: str) -> dict:
+    """Models sometimes wrap JSON in fences or prose; extract the object."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        return json.loads(text.strip())
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.index("{"), text.rindex("}") + 1
+        return json.loads(text[start:end])

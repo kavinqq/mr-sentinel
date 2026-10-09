@@ -83,6 +83,7 @@ leave the `slack` block empty to disable notifications entirely.
 | `gitlab_url` | Your GitLab base URL (self-hosted or gitlab.com) |
 | `gitlab_token` | PAT with `api` scope (read MRs, post comments, award emoji) |
 | `slack.bot_token` / `channel_id` | Optional; enables new-MR messages, 👀 reactions, completion pings, and the command listener |
+| `history.since` / `history.db_path` | Optional: how far back the review history reads (default `2026-07-01T00:00:00Z`) and where `sentinel.db` lives (default: repo dir) |
 | `slack.app_token` | Optional `xapp-` token; turns on buttons. Its presence is the switch: without it no button is ever posted (a click nobody answers just errors) |
 | `slack.webhook_url` | Simpler Slack alternative (incoming webhook): messages work, reactions don't, commands don't. Bot token wins when both are set |
 | `slack.admin_user_ids` | Who may change settings from Slack. Empty falls back to `mention_user_ids` — set it explicitly, or cc'ing a teammate on notifications silently grants them admin |
@@ -184,6 +185,35 @@ Notes on how this works, because it shapes what is possible:
   reach a token or `gitlab_url`.
 - The listener is a **second** scheduler entry (`slack_bot.py`, ~15s) with its
   own lock, so a Slack outage cannot slow the MR poll loop.
+
+## Review history (per-person stats)
+
+`python3 -m history` keeps every AI finding in a local SQLite file
+(`sentinel.db`, created on first run, gitignored — it is per-person data):
+
+```bash
+python3 -m history run --full   # first time: read every MR since history.since (default 2026-07-01)
+python3 -m history report       # per person: aspects, severities, follow-up bugs, level
+```
+
+- **Source of truth is GitLab**, not local files: findings a rerun deleted,
+  developer replies, appeal verdicts and resolves are all there, so any
+  machine can rebuild the db. A review and a rerun also record their MR
+  immediately; `deploy/launchd/com.example.mr-sentinel-history.plist` runs the
+  full job daily as the safety net.
+- **面向 (category)**: security / correctness / performance / code_quality /
+  code_smell. New reviews tag each comment with an invisible marker; older
+  findings are filed by a cheap batched model call (`history classify`).
+- **Follow-up bugs** (heuristic, labelled as such): a fix-type MR touching the
+  same file within 30 days, or the AI flagging that file again — pinned on the
+  most recent earlier feature MR that touched it.
+- **Level**: `(Σ severity weight × category multiplier + Σ follow-up weight) / reviewed MRs`,
+  lower is better; appeal-accepted and human-excluded findings do not count;
+  under 5 reviewed MRs there is no level. Weights and thresholds are versioned
+  rows in `scoring_configs` (v1 defaults are uncalibrated placeholders).
+- Ownership: `history/` owns the schema (append-only migrations). People act
+  only through the append-only `finding_reviews`, `scoring_configs` and
+  `sync_requests` tables — the planned dashboard writes nothing else.
 
 ## How the engines work
 

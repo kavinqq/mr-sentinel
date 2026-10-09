@@ -56,6 +56,9 @@ class BotHarness:
     """A Bot with every outbound call captured and temp-file-backed state."""
 
     def __enter__(self):
+        # never touch the real sentinel.db (or GitLab) from a test
+        self._history = mock.patch.object(slack_bot.history_sync, "sync_mr")
+        self._history.start()
         self._tmp = tempfile.TemporaryDirectory()
         root = Path(self._tmp.name)
         self.bot = slack_bot.Bot(config(), state(), {"bot_user_id": BOT, "cursor": "1000.0"},
@@ -68,6 +71,7 @@ class BotHarness:
         return self
 
     def __exit__(self, *exc):
+        self._history.stop()
         self._tmp.cleanup()
 
     @property
@@ -316,6 +320,15 @@ class TestRerun(unittest.TestCase):
             unclaim.assert_called_once()
             spawn.assert_called_once_with("g/app", "481", "100", "deep")
             self.assertIn("重跑中", h.last)
+
+    def test_unrecorded_comments_are_not_deleted(self):
+        """History write failed: deleting now would lose those findings for good."""
+        with BotHarness() as h:
+            slack_bot.history_sync.sync_mr.return_value = False
+            _, delete_note, spawn = self.rerun(h, ["g/app!481"])
+            delete_note.assert_not_called()
+            spawn.assert_called_once()                              # the rerun still happens
+            self.assertIn("舊留言先保留", h.last)
 
     def test_default_mode_is_auto(self):
         with BotHarness() as h:

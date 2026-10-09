@@ -2,6 +2,8 @@
 import random
 from collections import Counter
 
+from history.parse import category_marker
+
 NOISE_SUFFIXES = (".lock", "-lock.json", ".min.js", ".min.css", ".map", ".svg", ".png", ".jpg", ".gif")
 NOISE_NAMES = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock", "composer.lock", "Cargo.lock", "go.sum")
 NOISE_DIR_PARTS = ("node_modules", "/dist/", "/build/", "/vendor/", "/.next/", "/coverage/")
@@ -189,6 +191,11 @@ def format_comment_body(finding: dict, signature: str = DEFAULT_SIGNATURE) -> st
                       f"{evidence}\n\n</details>"]
 
     parts += ["", signature]
+    # invisible on GitLab; lets the review-history sync file the finding by 面向
+    # without another model call (history/parse.py reads it back)
+    marker = category_marker(finding.get("category"))
+    if marker:
+        parts.append(marker)
     return "\n".join(parts)
 
 
