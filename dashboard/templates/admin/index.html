@@ -69,7 +69,7 @@
       <div class="ms-panel-head"><h3>團隊各項分數</h3></div>
       <p class="ms-sub">每項滿分 {{ cfg.item_max|floatformat:0 }},越外圈越好 · 不含 team leader / 已離職 · 沒有點的軸是還沒評估</p>
       <div class="ms-radar"><canvas class="chart" data-type="radar" data-value="{{ radar.data }}" data-options="{{ radar.options }}" role="img" aria-label="團隊各項分數的雷達圖"></canvas></div>
-      <ul class="ms-team-items">{% for key, v in team_items.items %}<li><span>{{ v.label }}</span><strong class="{{ v.score|item_cls:cfg.item_max }}">{{ v.score|default_if_none:"—" }}</strong></li>{% endfor %}</ul>
+      <ul class="ms-team-items">{% for key, v in team_items.items %}<li><span>{{ v.label }}</span><strong class="{{ v.score|item_cls:cfg.item_max }}">{% if v.score is None %}—{% else %}{{ v.score|floatformat:1 }}{% endif %}</strong></li>{% endfor %}</ul>
     </section>
     {% endif %}
   </div>
@@ -94,7 +94,7 @@
       <thead><tr><th>種類</th><th>送出</th><th>誰</th><th>狀態</th></tr></thead>
       <tbody>{% for q in status.requests %}
         <tr><td>{{ sync_kinds|get:q.kind|default:q.kind }}</td><td class="ms-dim">{{ q.requested_at|tw }}</td><td class="ms-dim">{{ q.requested_by }}</td>
-            <td>{% if q.finished_at %}<details><summary>完成 {{ q.finished_at|tw:"%H:%M" }}</summary><pre>{{ q.result }}</pre></details>{% else %}<span class="ms-chip accent">執行中</span>{% endif %}</td></tr>
+            <td>{% if q.finished_at %}<details><summary>完成 {{ q.finished_at|tw:"%H:%M" }}</summary><pre>{{ q.result }}</pre></details>{% else %}<span class="ms-tag c-blue">執行中</span>{% endif %}</td></tr>
       {% endfor %}</tbody>
     </table>
     {% else %}<p class="ms-dim" style="margin:0">還沒有從這裡送出過同步</p>{% endif %}

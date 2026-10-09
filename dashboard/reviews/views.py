@@ -134,7 +134,10 @@ def scoring(request):
                 return redirect("scoring")
     elif request.method != "GET":
         return HttpResponseBadRequest()
+    current_cfg = json.loads(current.config)
     return _page(request, "reviews/scoring.html", "評分設定", categories=CATEGORIES,
+                 current_cfg=current_cfg,
+                 max_total=current_cfg.get("item_max", 5) * len(CATEGORIES),
                  current=current, versions=ScoringConfig.objects.all()[:20],
                  draft=draft or json.dumps(json.loads(current.config), ensure_ascii=False, indent=2),
                  defaults=json.dumps(hdb.DEFAULT_SCORING, ensure_ascii=False, indent=2))

@@ -328,3 +328,96 @@ td.path code { word-break: break-all; }
 .ms .ms-method .ms-list-wrap { margin: 18px; }
 .ms .ms-levels td, .ms .ms-levels th { white-space: nowrap; }
 .ms .ms-levels td:last-child { white-space: normal; }
+
+/* ---------- tags: one look for every label (severity, category, state) ---------- */
+.ms .ms-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.ms .ms-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px;
+  font-size: .82rem; font-weight: 600; line-height: 1.4; border: 1px solid transparent; white-space: nowrap; }
+
+/* ---------- record list: one card per finding / follow-up ---------- */
+.ms .ms-recs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--ms-line); border-radius: 8px;
+  background: #fff; }
+.ms .ms-rec { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px 24px; padding: 16px 18px;
+  border-top: 1px solid var(--ms-line); scroll-margin-top: 80px; }
+.ms .ms-rec:first-child { border-top: 0; }
+.ms .ms-rec:target { background: var(--ms-accent-soft); }
+.ms .ms-rec.uncounted .ms-rec-title, .ms .ms-rec.uncounted .ms-rec-title a { color: var(--ms-muted);
+  text-decoration: line-through; }
+.ms .ms-rec-main { min-width: 0; }
+.ms .ms-rec-title { margin: 0 0 6px; font-size: 1.02rem; font-weight: 600; line-height: 1.5;
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.ms .ms-rec-title a { color: var(--ms-text); }
+.ms .ms-rec-title a:hover { color: var(--ms-accent); text-decoration: underline; }
+.ms .ms-rec-title span { font-weight: 500; color: var(--ms-text); }
+.ms .ms-rec-meta { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 18px;
+  font-size: .9rem; color: var(--ms-muted); }
+.ms .ms-rec-meta li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; }
+.ms .ms-rec-meta .material-symbols-outlined { font-size: 17px; color: var(--ms-muted); }
+.ms .ms-rec-meta code { font-size: .86rem; color: var(--ms-text); background: var(--ms-subtle);
+  padding: 1px 6px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 520px; display: inline-block; vertical-align: bottom; }
+.ms .ms-rec-note { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; padding: 8px 12px;
+  border-left: 3px solid #D6D9F5; background: #F8F9FC; border-radius: 0 6px 6px 0; font-size: .92rem;
+  line-height: 1.55; }
+.ms .ms-rec-note .material-symbols-outlined { font-size: 18px; color: var(--ms-accent); margin-top: 1px; }
+.ms .ms-rec-history { margin-top: 8px; }
+.ms .ms-rec-history summary { font-size: .9rem; color: var(--ms-muted); }
+.ms .ms-rec-history ul { margin: 6px 0 0; padding-left: 14px; border-left: 2px solid var(--ms-line);
+  list-style: none; display: grid; gap: 4px; font-size: .9rem; }
+.ms .ms-rec-history .when { color: var(--ms-muted); margin-right: 6px; }
+.ms .ms-rec-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.ms .ms-rec-actions .ms-pop { text-align: right; }
+.ms .ms-empty-block { margin: 0; padding: 28px; text-align: center; color: var(--ms-muted);
+  border: 1px dashed var(--ms-line-strong); border-radius: 8px; }
+@media (max-width: 900px) {
+  .ms .ms-rec { grid-template-columns: 1fr; }
+  .ms .ms-rec-actions { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
+}
+
+/* a <details> that opens a small form reads as a button, like its neighbours */
+.ms .ms-pop > summary { display: inline-flex !important; align-items: center; min-height: 36px; padding: 0 12px;
+  border: 1px solid #D0D5DD; border-radius: 8px; background: #fff; color: var(--ms-text) !important;
+  font-size: .9rem !important; font-weight: 500; cursor: pointer; list-style: none; margin: 0; }
+.ms .ms-pop > summary::-webkit-details-marker { display: none; }
+.ms .ms-pop > summary:hover { background: #FEF3F2; border-color: #FECDCA; color: #B42318 !important; }
+.ms .ms-pop[open] > summary { background: #FEF3F2; border-color: #FECDCA; color: #B42318 !important; }
+.ms .ms-pop > form { margin-top: 8px; }
+.ms .ms-rec-actions select { min-height: 36px; }
+
+/* ---------- 評分設定 ---------- */
+.ms .ms-settings { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; margin-bottom: 28px; }
+.ms .ms-form { display: grid; gap: 8px; }
+.ms .ms-field-label { font-weight: 600; font-size: .92rem; margin-top: 8px; }
+.ms .ms-form textarea { width: 100%; box-sizing: border-box; min-height: 420px; padding: 12px;
+  border: 1px solid #D0D5DD; border-radius: 8px; background: #FCFCFD; }
+.ms .ms-form input[type=text] { width: 100%; box-sizing: border-box; min-height: 40px; }
+.ms .ms-help { margin: 0; color: var(--ms-muted); font-size: .9rem; }
+.ms .ms-fields { margin: 0; display: grid; gap: 0; }
+.ms .ms-fields > div { display: grid; grid-template-columns: minmax(150px, 38%) 1fr; gap: 12px; padding: 10px 0;
+  border-top: 1px solid var(--ms-line); }
+.ms .ms-fields > div:first-child { border-top: 0; padding-top: 0; }
+.ms .ms-fields dt { margin: 0; }
+.ms .ms-fields dt code { color: var(--ms-text); background: var(--ms-subtle); padding: 1px 6px; border-radius: 4px; }
+.ms .ms-fields dd { margin: 0; line-height: 1.6; }
+.ms .ms-fields dd code { font-size: .84em; background: var(--ms-subtle); padding: 0 4px; border-radius: 3px; }
+@media (max-width: 1100px) { .ms .ms-settings { grid-template-columns: 1fr; } }
+
+/* ---------- tag colours ----------
+   Radix Colors (radix-ui.com/colors, MIT): "soft" badge = step 3 background,
+   step 6 border, step 11 text — every tag has a hue, text stays ≥ 4.5:1. */
+.ms .ms-tag { border-width: 1px; }
+.ms .c-red     { background: #FEEBEC; border-color: #F4A9AA; color: #CE2C31; }
+.ms .c-crimson { background: #FEE9F0; border-color: #EFACC6; color: #CB1D63; }
+.ms .c-orange  { background: #FFEFD6; border-color: #F5AE73; color: #CC4E00; }
+.ms .c-amber   { background: #FFF7C2; border-color: #F3D673; color: #AB6400; }
+.ms .c-green   { background: #E6F6EB; border-color: #ADDDC0; color: #218358; }
+.ms .c-teal    { background: #E0F8F3; border-color: #A1DED2; color: #008573; }
+.ms .c-cyan    { background: #DEF7F9; border-color: #9DDDE7; color: #107D98; }
+.ms .c-blue    { background: #E6F4FE; border-color: #ACD8FC; color: #0D74CE; }
+.ms .c-indigo  { background: #EDF2FE; border-color: #C1D0FF; color: #3A5BC7; }
+.ms .c-violet  { background: #F4F0FE; border-color: #D4CAFE; color: #6550B9; }
+.ms .c-plum    { background: #FBEBFB; border-color: #E9C2EC; color: #953EA3; }
+.ms .c-brown   { background: #F6EEE7; border-color: #E8CDB5; color: #815E46; }
+.ms .c-gray    { background: #F0F0F0; border-color: #D9D9D9; color: #646464; }
+.ms .c-solid-red { background: #E5484D; border-color: #E5484D; color: #fff; }
+.ms .ms-tag.lg { font-size: 1rem; padding: 3px 10px; }

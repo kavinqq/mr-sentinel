@@ -11,30 +11,35 @@
   <section class="ms-group">
     <div class="ms-group-head"><h2>還不知道是誰</h2><span class="count">{{ unknown|length }}</span>
       <span class="hint">指定後立即重算分數,並記進評分變動紀錄</span></div>
+    {% if unknown %}
     <div class="ms-list-wrap">
       <table class="ms-list">
         <thead><tr><th>Commit email</th><th>commit 上的名字</th><th class="ms-num">相關 finding</th><th class="ms-num">在 release MR</th><th>這是誰</th></tr></thead>
         <tbody>{% for e in unknown %}
           <tr><td><code>{{ e.email }}</code></td><td>{{ e.name|default:"—" }}</td><td class="ms-num">{{ e.findings }}</td><td class="ms-num">{{ e.release_findings }}</td>
             <td><form method="post" class="ms-row">{% csrf_token %}<input type="hidden" name="email" value="{{ e.email }}">
-              <select name="person" aria-label="對應到誰" required><option value="" disabled selected>選擇…</option>
+              <label class="sr-only" for="who-{{ forloop.counter }}">對應到誰</label>
+              <select id="who-{{ forloop.counter }}" name="person" required><option value="" disabled selected>選擇…</option>
                 {% for p in people %}<option value="{{ p.gitlab_id }}">{{ p.name|default:p.username }}({{ p.username }})</option>{% endfor %}
                 <option value="ignore">不是團隊成員 / 忽略</option></select>
               <button type="submit" class="primary">儲存</button></form></td></tr>
-        {% empty %}<tr><td colspan="5" class="ms-empty">每個 email 都知道是誰了</td></tr>{% endfor %}</tbody>
+        {% endfor %}</tbody>
       </table>
     </div>
+    {% else %}<p class="ms-empty-block">每個 commit email 都知道是誰了</p>{% endif %}
   </section>
 
   <section class="ms-group">
     <div class="ms-group-head"><h2>已知的對應</h2><span class="count">{{ known|length }}</span>
       <span class="hint">自動:這個 email 單獨完成過某人的整個 MR · 其餘為人工指定</span></div>
     <div class="ms-list-wrap"><table class="ms-list">
-      <thead><tr><th>Email</th><th>是誰</th><th>改成</th></tr></thead>
+      <thead><tr><th>Email</th><th>是誰</th><th>來源</th><th>改成</th></tr></thead>
       <tbody>{% for k in known %}
         <tr><td><code>{{ k.email }}</code></td><td>{{ k.person|default:"—" }}</td>
+          <td>{% if k.manual %}<span class="ms-tag c-indigo">人工指定</span>{% else %}<span class="ms-tag c-teal">自動確認</span>{% endif %}</td>
           <td><form method="post" class="ms-row">{% csrf_token %}<input type="hidden" name="email" value="{{ k.email }}">
-            <select name="person" aria-label="改成">{% for p in people %}<option value="{{ p.gitlab_id }}" {% if k.person and k.person.gitlab_id == p.gitlab_id %}selected{% endif %}>{{ p.name|default:p.username }}</option>{% endfor %}
+            <label class="sr-only" for="chg-{{ forloop.counter }}">改成</label>
+            <select id="chg-{{ forloop.counter }}" name="person">{% for p in people %}<option value="{{ p.gitlab_id }}" {% if k.person and k.person.gitlab_id == p.gitlab_id %}selected{% endif %}>{{ p.name|default:p.username }}</option>{% endfor %}
               <option value="ignore">忽略</option></select>
             <button type="submit">儲存</button></form></td></tr>
       {% endfor %}</tbody>
@@ -45,7 +50,7 @@
   <section class="ms-group">
     <div class="ms-group-head"><h2>人工指定紀錄</h2></div>
     <table class="ms-mini"><tbody>{% for h in history %}
-      <tr><td class="ms-dim" style="width:150px">{{ h.created_at|tw }}</td><td><code>{{ h.email }}</code></td><td>→ {{ h.person|default:"忽略" }}</td><td class="ms-dim">{{ h.actor }}</td></tr>
+      <tr><td class="ms-dim" style="width:150px">{{ h.created_at|tw }}</td><td><code>{{ h.email }}</code></td><td><span class="material-symbols-outlined" aria-hidden="true" style="font-size:16px;vertical-align:-3px">arrow_forward</span> {{ h.person|default:"忽略" }}</td><td class="ms-dim">{{ h.actor }}</td></tr>
     {% endfor %}</tbody></table>
   </section>
   {% endif %}

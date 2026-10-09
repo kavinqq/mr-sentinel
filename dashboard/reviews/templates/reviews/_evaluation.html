@@ -33,7 +33,7 @@
   {% endfor %}
 
   <p class="ms-eval-meta">AI 依 review 紀錄撰寫 · {{ evaluation.created_at|tw }} · 公式 v{{ evaluation.formula_version }}
-    {% if stale %}<span class="ms-chip warn">紀錄已變動,下次同步會更新</span>{% endif %}
+    {% if stale %}<span class="ms-tag c-amber">紀錄已變動,下次同步會更新</span>{% endif %}
     {% if compact %}· <a class="ms-link" href="{% url 'person' person_id %}">看建議與依據 →</a>{% endif %}</p>
 </div>
 {% else %}<p class="ms-eval-empty">還沒有評價{% if stale %} — 下次同步會產生,或到個人頁按「重新產生評價」{% endif %}</p>{% endif %}

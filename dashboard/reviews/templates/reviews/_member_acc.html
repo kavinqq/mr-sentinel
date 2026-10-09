@@ -2,10 +2,10 @@
   <summary class="ms-acc-row">
     <span class="chev material-symbols-outlined" aria-hidden="true">chevron_right</span>
     <span><a class="ms-who" href="{% url 'person' r.author_id %}">{{ r.name|default:r.username }} <span class="handle">{{ r.username }}</span></a></span>
-    <span>{% if r.ranked %}<span class="ms-level"><span class="ms-dot {{ r.level|level_dot }}"></span>{{ r.level|default:"資料不足" }}</span>{% else %}<span class="ms-chip">{% if r.role == "departed" %}已離職{% else %}Team leader{% endif %}</span>{% endif %}</span>
+    <span>{% if r.ranked %}<span class="ms-tag {{ r.level|tag:'level' }}">{{ r.level|default:"資料不足" }}</span>{% else %}<span class="ms-tag {{ r.role|tag:'role' }}">{% if r.role == "departed" %}已離職{% else %}Team leader{% endif %}</span>{% endif %}</span>
     <span class="ms-num ms-strong">{{ r.score|default_if_none:"—" }}</span>
     <span class="ms-num" title="已打分 {{ r.rated_mrs }} / 個人 MR {{ r.own_mrs }}">{{ r.rated_mrs }}<span class="ms-of">/{{ r.own_mrs }}</span></span>
-    {% for it in r.item_list %}<span class="ms-num {{ it.score|item_cls:cfg.item_max }}" title="{{ it.label }}:{% if it.score is None %}還沒評估{% else %}{{ it.score }} / {{ cfg.item_max|floatformat:0 }}({{ it.n }} 筆評分,finding {{ it.count }} 則){% endif %}">{{ it.score|default_if_none:"—" }}</span>{% endfor %}
+    {% for it in r.item_list %}<span class="ms-num {{ it.score|item_cls:cfg.item_max }}" title="{{ it.label }}:{% if it.score is None %}還沒評估{% else %}{{ it.score }} / {{ cfg.item_max|floatformat:0 }}({{ it.n }} 筆評分,finding {{ it.count }} 則){% endif %}">{% if it.score is None %}—{% else %}{{ it.score|floatformat:1 }}{% endif %}</span>{% endfor %}
   </summary>
   <div class="ms-acc-body">
     {% if r.reviewed_mrs and r.role != "departed" %}<div style="margin:0 0 16px;padding-bottom:16px;border-bottom:1px solid var(--ms-line)">{% include "reviews/_evaluation.html" with evaluation=r.evaluation stale=r.evaluation_stale compact=True person_id=r.author_id %}</div>{% endif %}
@@ -22,8 +22,8 @@
         <tr>
           <td class="ms-dim" style="width:110px">{{ rec.created_at|tw:"%Y-%m-%d" }}</td>
           <td style="white-space:normal"><a class="ms-link" href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.short }}</a> <span class="ms-dim">{{ rec.title|truncatechars:70 }}</span></td>
-          <td style="width:90px"><span class="ms-chip{% if rec.kind != '個人' %} accent{% endif %}">{{ rec.kind }}</span></td>
-          <td style="width:170px">{% if rec.total %}<span class="ms-sevs">{% if rec.counts.high %}<span><span class="ms-dot high"></span>{{ rec.counts.high }}</span>{% endif %}{% if rec.counts.medium %}<span><span class="ms-dot medium"></span>{{ rec.counts.medium }}</span>{% endif %}{% if rec.counts.low %}<span><span class="ms-dot low"></span>{{ rec.counts.low }}</span>{% endif %}</span>{% elif rec.reviewed %}<span class="ms-dim">乾淨</span>{% else %}<span class="ms-dim">未 review</span>{% endif %}</td>
+          <td style="width:90px"><span class="ms-tag {{ rec.kind|tag:'mr' }}">{{ rec.kind }}</span></td>
+          <td style="width:220px"><span class="ms-tags" style="margin:0">{% if rec.total %}{% if rec.counts.high %}<span class="ms-tag c-solid-red">High {{ rec.counts.high }}</span>{% endif %}{% if rec.counts.medium %}<span class="ms-tag c-amber">Medium {{ rec.counts.medium }}</span>{% endif %}{% if rec.counts.low %}<span class="ms-tag c-blue">Low {{ rec.counts.low }}</span>{% endif %}{% elif rec.reviewed %}<span class="ms-tag c-green">乾淨</span>{% else %}<span class="ms-tag c-gray">未 review</span>{% endif %}</span></td>
           <td class="ms-num ms-dim" style="width:50px">{{ rec.uncounted|default:"" }}</td>
         </tr>
       {% endfor %}</tbody>

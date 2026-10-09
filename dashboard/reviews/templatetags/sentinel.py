@@ -26,6 +26,52 @@ def get(mapping, key):
     return (mapping or {}).get(key)
 
 
+THREAD_LABEL = {"unanswered": "未回應", "appeal": "已回覆 · 待判斷", "rejected": "已回覆 · 仍要修",
+                "accepted": "申訴成立 · 未關閉", "closed": "已解決"}
+
+
+# one hue per kind of label, the same everywhere (dashboard.css .c-*)
+TAG_COLORS = {
+    # severity
+    "sev:high": "c-solid-red", "sev:medium": "c-amber", "sev:low": "c-blue",
+    # the 8 categories
+    "cat:security": "c-crimson", "cat:requirements": "c-violet", "cat:correctness": "c-blue",
+    "cat:compatibility": "c-cyan", "cat:operability": "c-orange", "cat:performance": "c-teal",
+    "cat:verification": "c-plum", "cat:maintainability": "c-brown",
+    "cat:uncategorized": "c-gray", "cat:needs_review": "c-amber",
+    # GitLab thread state of a finding
+    "thread:unanswered": "c-amber", "thread:appeal": "c-blue", "thread:rejected": "c-orange",
+    "thread:accepted": "c-teal", "thread:closed": "c-green",
+    # follow-ups
+    "kind:fix_mr": "c-orange", "kind:ai_refind": "c-violet",
+    "verdict:confirmed": "c-red", "verdict:unrelated": "c-gray", "verdict:": "c-amber",
+    # people
+    "role:lead": "c-indigo", "role:member": "c-blue", "role:departed": "c-gray",
+    # MR records
+    "mr:個人": "c-blue", "mr:release": "c-violet", "mr:他人的 MR": "c-teal",
+    # states
+    "state:escaped": "c-red", "state:excluded": "c-gray", "state:accepted": "c-green",
+    "state:removed": "c-gray", "state:current": "c-green", "state:version": "c-indigo",
+    "state:manual": "c-indigo", "state:auto": "c-teal", "state:pending": "c-amber",
+    "state:level": "c-indigo",
+    # levels
+    "level:senior": "c-green", "level:mid+": "c-cyan", "level:mid": "c-indigo",
+    "level:junior": "c-orange", "level:": "c-gray",
+}
+
+
+@register.filter
+def tag(value, kind):
+    """CSS colour class for a tag: {{ f.category|tag:"cat" }}."""
+    return TAG_COLORS.get(f"{kind}:{value or ''}", "c-gray")
+
+
+@register.filter
+def thread_label(status):
+    """GitLab thread state of a finding, in words a reviewer reads."""
+    return THREAD_LABEL.get(status, status or "—")
+
+
 @register.filter
 def split(value):
     return str(value).split()

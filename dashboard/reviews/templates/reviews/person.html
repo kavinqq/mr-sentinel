@@ -22,7 +22,7 @@
   {% if summary %}
   <div class="ms-stats">
     <div class="ms-stat"><div class="k">等級</div>
-      <div class="v" style="font-size:1.25rem">{% if summary.ranked %}<span class="ms-level"><span class="ms-dot {{ summary.level|level_dot }}"></span>{{ summary.level|default:"資料不足" }}</span>{% else %}{{ role_label }}{% endif %}</div>
+      <div class="v" style="font-size:1.25rem">{% if summary.ranked %}<span class="ms-tag lg {{ summary.level|tag:'level' }}">{{ summary.level|default:"資料不足" }}</span>{% else %}<span class="ms-tag lg {{ role|tag:'role' }}">{{ role_label }}</span>{% endif %}</div>
       <div class="d">{% if not summary.ranked %}不排入評分{% elif summary.next_level %}差 {{ summary.next_level }}:{{ summary.next_level_misses|join:"、" }}{% elif summary.level %}最高等級{% else %}{{ summary.explain }}{% endif %}</div></div>
     <div class="ms-stat"><div class="k">{% if summary.ranked %}總分{% else %}參考分數{% endif %}</div><div class="v">{{ summary.score|default_if_none:"—" }}<span class="ms-dim" style="font-size:1rem"> / {{ max_total|floatformat:0 }}</span></div><div class="d">{{ summary.coverage }}/8 項已評估{% if summary.provisional %} · 暫定{% endif %}</div></div>
     <div class="ms-stat"><div class="k">已打分的 MR</div><div class="v">{{ summary.rated_mrs }}<span class="ms-dim" style="font-size:1rem"> / {{ summary.own_mrs }}</span></div><div class="d">個人 MR · 乾淨 {{ summary.clean_mrs }}{% if summary.clean_rate is not None %}({% widthratio summary.clean_rate 1 100 %}%){% endif %}</div></div>
@@ -58,7 +58,7 @@
         <tbody>{% for it in items %}
           <tr><td>{{ it.label }}</td>
               <td>{% if it.score is not None %}<div class="ms-bar" aria-hidden="true"><span style="width:{% widthratio it.score cfg.item_max 100 %}%"></span></div>{% endif %}</td>
-              <td class="ms-num {{ it.score|item_cls:cfg.item_max }}">{{ it.score|default_if_none:"—" }}</td>
+              <td class="ms-num {{ it.score|item_cls:cfg.item_max }}">{% if it.score is None %}—{% else %}{{ it.score|floatformat:1 }}{% endif %}</td>
               <td class="ms-num">{{ it.n }}{% if it.n %}<span class="ms-of">(AI {{ it.rated }})</span>{% endif %}</td>
               <td class="ms-num">{{ it.count }}{% if it.followups %}<span class="ms-of"> + 後續 {{ it.followups }}</span>{% endif %}</td></tr>
         {% empty %}<tr><td class="ms-dim">沒有被 review 的 MR</td></tr>{% endfor %}</tbody>
@@ -69,7 +69,7 @@
         <thead><tr><th>月份</th><th aria-hidden="true"></th><th class="ms-num">平均</th><th class="ms-num">MR</th><th class="ms-num">finding</th></tr></thead>
         <tbody>{% for t in trend %}
           <tr><td>{{ t.month }}</td><td><div class="ms-bar" aria-hidden="true"><span style="width:{{ t.bar }}%"></span></div></td>
-              <td class="ms-num {{ t.avg|item_cls:cfg.item_max }}">{{ t.avg }}</td><td class="ms-num">{{ t.mrs }}</td><td class="ms-num">{{ t.findings }}</td></tr>
+              <td class="ms-num {{ t.avg|item_cls:cfg.item_max }}">{{ t.avg|floatformat:1 }}</td><td class="ms-num">{{ t.mrs }}</td><td class="ms-num">{{ t.findings }}</td></tr>
         {% empty %}<tr><td colspan="5" class="ms-dim">還沒有評分</td></tr>{% endfor %}</tbody>
       </table>
     </section>
@@ -77,80 +77,101 @@
 
   <section class="ms-group" id="followups">
     <div class="ms-group-head"><h2>後續 bug</h2><span class="count">{{ shown_followups|length }}</span>
-      <span class="hint">推估:上線 {{ cfg.followup_days }} 天內同檔案的 fix MR,或 AI 再次抓到 · 只有「確認」的會扣分</span></div>
-    <div class="ms-list-wrap">
-      <table class="ms-list">
-        <thead><tr><th>原本的功能 MR</th><th>訊號</th><th>來源</th><th>檔案</th><th class="ms-num">隔幾天</th><th>算在</th><th>覆核</th></tr></thead>
-        <tbody>{% for fu in shown_followups %}
-          <tr><td class="wrap"><a class="ms-link" href="{{ fu.feature.web_url }}" target="_blank" rel="noopener">{{ fu.feature|short_mr }}</a> <span class="ms-dim">{{ fu.feature.title|truncatechars:40 }}</span></td>
-              <td><span class="ms-chip">{% if fu.kind == "fix_mr" %}fix MR{% else %}AI 再次抓到{% endif %}</span></td>
-              <td class="wrap">{% if fu.fix %}<a class="ms-link" href="{{ fu.fix.web_url }}" target="_blank" rel="noopener">{{ fu.fix|short_mr }}</a> <span class="ms-dim">{{ fu.fix.title|truncatechars:32 }}</span>{% else %}<a class="ms-link" href="#f{{ fu.source_ref }}">finding #{{ fu.source_ref }}</a>{% endif %}</td>
-              <td class="wrap path"><code>{{ fu.file }}</code></td><td class="ms-num">{{ fu.days_after }}</td>
-              <td style="white-space:nowrap">{{ fu.counts_under }}{% if fu.increment %} <span class="ms-chip warn">−{{ fu.increment }}</span>{% endif %}</td>
-              <td class="ms-actions-cell">{% if fu.verdict %}<span class="ms-chip{% if fu.verdict == 'confirmed' %} accent{% endif %}">{{ followup_verdicts|get:fu.verdict }}</span>{% endif %}
-                <form method="post" action="{% url 'review_followup' person.gitlab_id %}" class="ms-row" style="margin-top:4px">{% csrf_token %}
-                  <input type="hidden" name="feature_mr_id" value="{{ fu.feature_mr_id }}"><input type="hidden" name="kind" value="{{ fu.kind }}"><input type="hidden" name="source_ref" value="{{ fu.source_ref }}">
-                  {% if fu.verdict != "confirmed" %}<button type="submit" name="verdict" value="confirmed">確認</button>{% endif %}
-                  {% if fu.verdict != "unrelated" %}<button type="submit" name="verdict" value="unrelated" class="ghost">不是同一個問題</button>{% endif %}
-                </form></td></tr>
-        {% empty %}<tr><td colspan="7" class="ms-empty">這個範圍內沒有偵測到後續 bug</td></tr>{% endfor %}</tbody>
-      </table>
-    </div>
+      <span class="hint">上線 {{ cfg.followup_days }} 天內同檔案的 fix MR,或 AI 再次抓到 · 只有「確認」的會扣分</span></div>
+    {% if shown_followups %}
+    <ol class="ms-recs">
+      {% for fu in shown_followups %}
+      <li class="ms-rec">
+        <div class="ms-rec-main">
+          <div class="ms-tags">
+            <span class="ms-tag {{ fu.kind|tag:'kind' }}">{% if fu.kind == "fix_mr" %}fix MR{% else %}AI 再次抓到{% endif %}</span>
+            <span class="ms-tag {{ fu.category|default:'correctness'|tag:'cat' }}">{{ fu.counts_under }}</span>
+            <span class="ms-tag {{ fu.verdict|tag:'verdict' }}">{% if fu.verdict == "confirmed" %}已確認 · −{{ fu.increment }}{% elif fu.verdict == "unrelated" %}不是同一個問題{% else %}待確認 · 不扣分{% endif %}</span>
+          </div>
+          <p class="ms-rec-title"><a href="{{ fu.feature.web_url }}" target="_blank" rel="noopener">{{ fu.feature|short_mr }}</a><span>{{ fu.feature.title }}</span></p>
+          <ul class="ms-rec-meta">
+            <li><span class="material-symbols-outlined" aria-hidden="true">{% if fu.kind == "fix_mr" %}build{% else %}manage_search{% endif %}</span>
+              {% if fu.fix %}<a class="ms-link" href="{{ fu.fix.web_url }}" target="_blank" rel="noopener">{{ fu.fix|short_mr }}</a> {{ fu.fix.title|truncatechars:48 }}{% else %}<a class="ms-link" href="#f{{ fu.source_ref }}">finding #{{ fu.source_ref }}</a>{% endif %}</li>
+            {% if fu.file %}<li><span class="material-symbols-outlined" aria-hidden="true">description</span><code title="{{ fu.file }}">{{ fu.file }}</code></li>{% endif %}
+            {% if fu.days_after is not None %}<li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>上線後 {{ fu.days_after|floatformat:0 }} 天</li>{% endif %}
+          </ul>
+        </div>
+        <form method="post" action="{% url 'review_followup' person.gitlab_id %}" class="ms-rec-actions">{% csrf_token %}
+          <input type="hidden" name="feature_mr_id" value="{{ fu.feature_mr_id }}"><input type="hidden" name="kind" value="{{ fu.kind }}"><input type="hidden" name="source_ref" value="{{ fu.source_ref }}">
+          {% if fu.verdict != "confirmed" %}<button type="submit" name="verdict" value="confirmed">確認是後續 bug</button>{% endif %}
+          {% if fu.verdict != "unrelated" %}<button type="submit" name="verdict" value="unrelated" class="ghost">不是同一個問題</button>{% endif %}
+        </form>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}<p class="ms-empty-block">這個範圍內沒有偵測到後續 bug</p>{% endif %}
   </section>
 
-  <section class="ms-group">
+  <section class="ms-group" id="findings">
     <div class="ms-group-head"><h2>Findings</h2><span class="count">{{ shown|length }}</span>
       <span class="hint">改面向、標記誤判都會留下覆核紀錄,原始資料不會被改</span></div>
     <form method="get" class="ms-toolbar">
-      <select name="show" aria-label="範圍"><option value="window" {% if show == "window" %}selected{% endif %}>近 {{ cfg.window_days }} 天(計分範圍)</option>
+      <label class="sr-only" for="f-show">範圍</label>
+      <select id="f-show" name="show"><option value="window" {% if show == "window" %}selected{% endif %}>近 {{ cfg.window_days }} 天(計分範圍)</option>
         <option value="all" {% if show == "all" %}selected{% endif %}>全部歷史</option></select>
-      <select name="category" aria-label="面向"><option value="">所有面向</option>
+      <label class="sr-only" for="f-cat">面向</label>
+      <select id="f-cat" name="category"><option value="">所有面向</option>
         {% for key, label in categories.items %}<option value="{{ key }}" {% if category == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
       <button type="submit">篩選</button>
     </form>
-    <div class="ms-list-wrap">
-      <table class="ms-list">
-        <thead><tr><th>Finding</th><th>面向</th><th>狀態</th><th>覆核</th></tr></thead>
-        <tbody>
-        {% for f in shown %}
-          <tr id="f{{ f.note_id }}" class="ms-finding{% if not f.counted %} uncounted{% endif %}">
-            <td class="wrap" style="min-width:340px">
-              <span class="ms-level" style="font-size:0.9rem;color:var(--ms-muted)"><span class="ms-dot {{ f.severity|sev_dot }}"></span>{{ f.severity|sev_label }}</span>
-              &nbsp;{% if f.gitlab_url %}<a class="title" href="{{ f.gitlab_url }}" target="_blank" rel="noopener">{{ f.title }}</a>{% else %}<span class="title">{{ f.title }}</span>{% endif %}
-              <div class="meta">{{ f.mr|short_mr }} · {{ f.created_at|tw }}{% if f.file %} · <code>{{ f.file }}{% if f.line %}:{{ f.line }}{% endif %}</code>{% endif %}</div>
-              {% if f.via_release %}<div class="meta">在 release MR 中發現,依檔案歷史歸屬自 <a class="ms-link" href="{{ f.owner_mr.web_url }}" target="_blank" rel="noopener">{{ f.owner_mr|short_mr }}</a></div>{% endif %}
-              {% if f.history %}<details><summary>覆核紀錄 {{ f.history|length }}</summary><div class="log">
-                {% for h in f.history %}<div>{{ h.created_at|tw }} · {{ h.actor }}:{% if h.category %}面向改為 {{ categories|get:h.category }}{% endif %}{% if h.excluded == 1 %}標記誤判{% elif h.excluded == 0 %}恢復計分{% endif %}{% if h.reason %} —「{{ h.reason }}」{% endif %}</div>{% endfor %}
-              </div></details>{% endif %}
-            </td>
-            <td>{{ f.category_label }}<div class="ms-dim" style="font-size:0.9rem">{% if f.category_provisional %}暫用舊分類,等 AI 重新分類{% elif f.category_source == "classifier" %}AI 分類{% elif f.category_source == "review" %}review 標記{% elif f.category == "uncategorized" or f.category == "needs_review" %}不計分,請指定{% endif %}</div></td>
-            <td>{% if f.excluded %}<span class="ms-chip">誤判 · 不計分</span>{% elif f.appeal_accepted %}<span class="ms-chip accent">申訴成立</span>{% else %}<span class="ms-dim">{{ f.status }}</span>{% endif %}
-              {% if not f.present %}<div class="ms-dim" style="font-size:0.9rem">已從 GitLab 移除</div>{% endif %}
-              {% if f.escaped and f.counted %}<div style="margin-top:4px"><span class="ms-chip warn">merge 時沒修</span></div>{% endif %}</td>
-            <td class="ms-actions-cell">
-              <form method="post" action="{% url 'review_finding' f.note_id %}" class="ms-row">{% csrf_token %}
-                <input type="hidden" name="action" value="category"><input type="hidden" name="next" value="{{ request.get_full_path }}">
-                <select name="category" aria-label="改面向">{% for key, label in settable_categories.items %}<option value="{{ key }}" {% if f.category == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
-                <button type="submit">改</button>
-              </form>
-              {% if f.excluded %}
-              <form method="post" action="{% url 'review_finding' f.note_id %}" class="ms-row" style="margin-top:6px">{% csrf_token %}
-                <input type="hidden" name="next" value="{{ request.get_full_path }}"><input type="hidden" name="action" value="include">
-                <button type="submit" class="ghost">恢復計分</button></form>
-              {% else %}
-              <details class="ms-pop"><summary>標記誤判</summary>
-                <form method="post" action="{% url 'review_finding' f.note_id %}" class="ms-row">{% csrf_token %}
-                  <input type="hidden" name="next" value="{{ request.get_full_path }}"><input type="hidden" name="action" value="exclude">
-                  <input type="text" name="reason" placeholder="為什麼是誤判(必填)" aria-label="誤判原因" required size="16">
-                  <button type="submit" class="danger">確定</button></form>
-              </details>
-              {% endif %}
-            </td>
-          </tr>
-        {% empty %}<tr><td colspan="4" class="ms-empty">沒有符合條件的 finding</td></tr>{% endfor %}
-        </tbody>
-      </table>
-    </div>
+    {% if shown %}
+    <ol class="ms-recs">
+      {% for f in shown %}
+      <li id="f{{ f.note_id }}" class="ms-rec{% if not f.counted %} uncounted{% endif %}">
+        <div class="ms-rec-main">
+          <div class="ms-tags">
+            <span class="ms-tag {{ f.severity|tag:'sev' }}">{{ f.severity|sev_label }}</span>
+            <span class="ms-tag {{ f.category|tag:'cat' }}" title="{% if f.category_provisional %}暫用舊分類,等 AI 重新分類{% elif f.category_source == 'classifier' %}AI 分類{% elif f.category_source == 'review' %}review 標記{% endif %}">{{ f.category_label }}{% if f.category_provisional %} · 暫定{% endif %}</span>
+            {% if f.excluded %}<span class="ms-tag c-gray">誤判 · 不計分</span>
+            {% elif f.appeal_accepted %}<span class="ms-tag c-green">申訴成立 · 不計分</span>
+            {% else %}<span class="ms-tag {{ f.status|tag:'thread' }}">{{ f.status|thread_label }}</span>{% endif %}
+            {% if f.escaped and f.counted %}<span class="ms-tag c-red">merge 時沒修</span>{% endif %}
+            {% if not f.present %}<span class="ms-tag c-gray">已從 GitLab 移除</span>{% endif %}
+          </div>
+          <p class="ms-rec-title">{% if f.gitlab_url %}<a href="{{ f.gitlab_url }}" target="_blank" rel="noopener">{{ f.title }}</a>{% else %}{{ f.title }}{% endif %}</p>
+          <ul class="ms-rec-meta">
+            <li><span class="material-symbols-outlined" aria-hidden="true">commit</span><a class="ms-link" href="{{ f.mr.web_url }}" target="_blank" rel="noopener">{{ f.mr|short_mr }}</a></li>
+            <li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ f.created_at|tw }}</li>
+            {% if f.file %}<li class="path"><span class="material-symbols-outlined" aria-hidden="true">description</span><code title="{{ f.file }}{% if f.line %}:{{ f.line }}{% endif %}">{{ f.file }}{% if f.line %}:{{ f.line }}{% endif %}</code></li>{% endif %}
+          </ul>
+          {% if f.via_release %}
+          <div class="ms-rec-note"><span class="material-symbols-outlined" aria-hidden="true">call_split</span>
+            <div>在 release MR 中發現 · {% if f.owner_mr and f.owner_mr.mr_id != f.mr.mr_id %}git blame 歸屬自 <a class="ms-link" href="{{ f.owner_mr.web_url }}" target="_blank" rel="noopener">{{ f.owner_mr|short_mr }}</a>{% else %}git blame 確認這段程式是這位成員寫的{% endif %}</div></div>
+          {% endif %}
+          {% if f.history %}<details class="ms-rec-history"><summary>覆核紀錄 {{ f.history|length }}</summary><ul>
+            {% for h in f.history %}<li><span class="when">{{ h.created_at|tw }} · {{ h.actor }}</span>{% if h.category %}面向改為 {{ categories|get:h.category }}{% endif %}{% if h.excluded == 1 %}標記誤判{% elif h.excluded == 0 %}恢復計分{% endif %}{% if h.reason %} —「{{ h.reason }}」{% endif %}</li>{% endfor %}
+          </ul></details>{% endif %}
+        </div>
+        <div class="ms-rec-actions">
+          <form method="post" action="{% url 'review_finding' f.note_id %}" class="ms-row">{% csrf_token %}
+            <input type="hidden" name="action" value="category"><input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <label class="sr-only" for="cat-{{ f.note_id }}">改面向</label>
+            <select id="cat-{{ f.note_id }}" name="category">{% for key, label in settable_categories.items %}<option value="{{ key }}" {% if f.category == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+            <button type="submit">改面向</button>
+          </form>
+          {% if f.excluded %}
+          <form method="post" action="{% url 'review_finding' f.note_id %}">{% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}"><input type="hidden" name="action" value="include">
+            <button type="submit" class="ghost">恢復計分</button></form>
+          {% else %}
+          <details class="ms-pop"><summary>標記誤判</summary>
+            <form method="post" action="{% url 'review_finding' f.note_id %}" class="ms-row">{% csrf_token %}
+              <input type="hidden" name="next" value="{{ request.get_full_path }}"><input type="hidden" name="action" value="exclude">
+              <label class="sr-only" for="why-{{ f.note_id }}">誤判原因</label>
+              <input id="why-{{ f.note_id }}" type="text" name="reason" placeholder="為什麼是誤判(必填)" required size="18">
+              <button type="submit" class="danger">確定</button></form>
+          </details>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}<p class="ms-empty-block">沒有符合條件的 finding</p>{% endif %}
   </section>
 </div>
 {% endblock %}

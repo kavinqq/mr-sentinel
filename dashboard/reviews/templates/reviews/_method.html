@@ -37,7 +37,7 @@
       <caption class="sr-only">等級門檻</caption>
       <thead><tr><th>等級</th><th class="ms-num">總分 ≥</th><th class="ms-num">最弱一項 ≥</th><th class="ms-num">已評估面向 ≥</th><th class="ms-num">評過分的 MR ≥</th><th>其他條件</th></tr></thead>
       <tbody>{% for lv in cfg.levels %}
-        <tr><td><span class="ms-level"><span class="ms-dot {{ lv.level|level_dot }}"></span><strong>{{ lv.level }}</strong></span></td>
+        <tr><td><span class="ms-tag {{ lv.level|tag:'level' }}">{{ lv.level }}</span></td>
           {% if lv.min_score is None %}<td colspan="5" class="ms-dim">未達以上任一級</td>{% else %}
           <td class="ms-num">{{ lv.min_score }}</td><td class="ms-num">{{ lv.min_item|default_if_none:"—" }}</td>
           <td class="ms-num">{{ lv.min_coverage|default_if_none:"—" }}</td><td class="ms-num">{{ lv.min_mrs|default_if_none:"—" }}</td>

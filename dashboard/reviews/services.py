@@ -356,7 +356,9 @@ def email_page() -> dict:
     version, cfg, rows, attributed = team_full()
     people = {p.gitlab_id: p for p in Person.objects.all()}
     owners = attributed["owners"]
-    known = [{"email": e, "person": people.get(pid)} for e, pid in sorted(owners.items())]
+    manual = set(EmailAlias.objects.values_list("email", flat=True))
+    known = [{"email": e, "person": people.get(pid), "manual": e in manual}
+             for e, pid in sorted(owners.items())]
     return {"unknown": attributed["unknown_emails"], "known": known,
             "people": sorted(people.values(), key=lambda p: p.name or p.username),
             "history": list(EmailAlias.objects.select_related("person")[:30])}

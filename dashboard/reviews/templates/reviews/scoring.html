@@ -7,55 +7,57 @@
   <div class="ms-head">
     <div>
       <h1>評分設定</h1>
-      <p class="ms-sub">目前生效:v{{ current.version }}({{ current.created_at|tw }},{{ current.actor }})。每次儲存都是新版本、立即生效,舊版本永遠保留。</p>
+      <p class="ms-sub">目前生效:v{{ current.version }}({{ current.created_at|tw }} · {{ current.actor }})。每次儲存都是新版本、立即生效並重算所有人,舊版本永遠保留。</p>
     </div>
   </div>
 
-  <div class="ms-cols">
-    <form method="post" class="ms-card">{% csrf_token %}
-      <label class="ms-label" for="cfg">設定內容(JSON)</label>
-      <textarea id="cfg" name="config" spellcheck="false">{{ draft }}</textarea>
-      <label class="ms-label" for="note" style="margin-top:16px">這次改了什麼、為什麼</label>
-      <input id="note" type="text" name="note" style="width:100%" placeholder="例如:依 10 月實際分布校準 mid 門檻">
-      <p class="ms-help">儲存前會檢查結構與數值;有錯會告訴你哪裡錯,不會建立版本。</p>
-      <div class="ms-actions" style="margin-top:12px"><button type="submit" class="ms-primary">建立新版本</button></div>
-    </form>
+  {% include "reviews/_method.html" with cfg=current_cfg version=current.version %}
 
-    <div>
-      <section class="ms-card">
-        <h2 style="font-size:1.1rem;font-weight:700;margin:0 0 12px">欄位說明</h2>
-        <table class="ms-table"><tbody>
-          <tr><td><code>window_days</code></td><td>評分看最近幾天的 MR</td></tr>
-          <tr><td><code>min_reviewed_mrs</code></td><td>個人 MR 少於這個數就不給等級</td></tr>
-          <tr><td><code>followup_days</code></td><td>上線後幾天內的 fix / 新 finding 算後續 bug</td></tr>
-          <tr><td><code>finding_cap</code></td><td>MR 上留下的 finding 讓該面向最多幾分(high / medium / low)</td></tr>
-          <tr><td><code>escape_increment</code></td><td>merge 時還沒修,該面向再扣幾分(依嚴重度)</td></tr>
-          <tr><td><code>followup_increment</code></td><td>確認的後續 bug 再扣幾分(fix_mr / ai_refind);未確認的不扣</td></tr>
-          <tr><td><code>prior_strength</code> / <code>prior_score</code></td><td>每項向 prior_score 收縮的強度,等於幾個「prior_score 分」的虛擬 MR(越大越難拿高分)</td></tr>
-          <tr><td><code>item_max</code></td><td>每項滿分(總分 = 8 × 已評估各項平均)</td></tr>
-          <tr><td><code>required_items</code></td><td>這些面向沒評估到就是「資料不足」,不給等級。可用:{% for k, v in categories.items %}<code>{{ k }}</code>({{ v }}){% if not forloop.last %}、{% endif %}{% endfor %}</td></tr>
-          <tr><td><code>levels</code></td><td>由好到差;每一級的條件<strong>全部</strong>都要符合才算。最後一級 <code>min_score</code> 為 <code>null</code></td></tr>
-          <tr><td><code>　min_score</code> / <code>min_item</code></td><td>總分下限 / 最弱一項下限</td></tr>
-          <tr><td><code>　min_coverage</code> / <code>min_mrs</code></td><td>至少幾個面向已評估 / 至少幾個 MR 已打分</td></tr>
-          <tr><td><code>　max_high</code> / <code>max_escaped</code> / <code>max_confirmed_followups</code></td><td>窗口內 high finding / merge 時沒修 / 確認的後續 bug 最多幾個(可省略)</td></tr>
-          <tr><td><code>　min_clean_rate</code></td><td>沒有任何計分 finding 的 MR 比例下限,0.9 = 90%(可省略)</td></tr>
-        </tbody></table>
-        <details style="margin-top:12px"><summary>程式內建預設值(新資料庫的 v1)</summary><pre>{{ defaults }}</pre></details>
-      </section>
+  <div class="ms-settings">
+    <section class="ms-panel">
+      <div class="ms-panel-head"><h3>編輯設定</h3></div>
+      <form method="post" class="ms-form">{% csrf_token %}
+        <label class="ms-field-label" for="cfg">設定內容(JSON)</label>
+        <textarea id="cfg" name="config" spellcheck="false" rows="22">{{ draft }}</textarea>
+        <label class="ms-field-label" for="note">這次改了什麼、為什麼</label>
+        <input id="note" type="text" name="note" placeholder="例如:依 10 月實際分布校準 mid 門檻">
+        <p class="ms-help">儲存前會檢查結構與數值;有錯會告訴你哪裡錯,不會建立版本。</p>
+        <div><button type="submit" class="primary">建立新版本</button></div>
+      </form>
+      <details class="ms-rec-history" style="margin-top:16px"><summary>程式內建預設值(新資料庫的 v1)</summary><pre>{{ defaults }}</pre></details>
+    </section>
 
-      <section class="ms-section">
-        <h2>版本紀錄</h2>
-        <div class="ms-table-wrap">
-          <table class="ms-table">
-            <thead><tr><th>版本</th><th>時間</th><th>誰</th><th>說明</th></tr></thead>
-            <tbody>{% for v in versions %}
-              <tr><td><strong>v{{ v.version }}</strong>{% if v.version == current.version %} <span class="ms-pill ms-lv-mid">生效中</span>{% endif %}</td>
-                  <td>{{ v.created_at|tw }}</td><td>{{ v.actor }}</td><td>{{ v.note|default:"—" }}</td></tr>
-            {% endfor %}</tbody>
-          </table>
+    <section class="ms-panel">
+      <div class="ms-panel-head"><h3>欄位說明</h3></div>
+      <dl class="ms-fields">
+        <div><dt><code>window_days</code></dt><dd>評分看最近幾天的 MR</dd></div>
+        <div><dt><code>min_reviewed_mrs</code></dt><dd>打過分的個人 MR 少於這個數就不給等級</dd></div>
+        <div><dt><code>followup_days</code></dt><dd>上線後幾天內的 fix / 新 finding 算後續 bug</dd></div>
+        <div><dt><code>finding_cap</code></dt><dd>MR 上留下的 finding 讓該面向最多幾分(high / medium / low)</dd></div>
+        <div><dt><code>escape_increment</code></dt><dd>merge 時還沒修,該面向再扣幾分(依嚴重度)</dd></div>
+        <div><dt><code>followup_increment</code></dt><dd>確認的後續 bug 再扣幾分(fix_mr / ai_refind);未確認的不扣</dd></div>
+        <div><dt><code>prior_strength</code> · <code>prior_score</code></dt><dd>每項向 prior_score 收縮,強度等於幾個虛擬 MR;越大越難拿高分</dd></div>
+        <div><dt><code>item_max</code></dt><dd>每項滿分;總分 = 8 × 已評估各項平均</dd></div>
+        <div><dt><code>required_items</code></dt><dd>這些面向沒評估到就是「資料不足」。可用:{% for k, v in categories.items %}<code>{{ k }}</code> {{ v }}{% if not forloop.last %}、{% endif %}{% endfor %}</dd></div>
+        <div><dt><code>levels</code></dt><dd>由好到差,每一級條件<strong>全部</strong>符合才算;最後一級 <code>min_score</code> 為 <code>null</code>。條件:<code>min_score</code> 總分、<code>min_item</code> 最弱一項、<code>min_coverage</code> 已評估面向、<code>min_mrs</code> 打過分的 MR、<code>max_high</code>、<code>max_escaped</code>、<code>max_confirmed_followups</code>、<code>min_clean_rate</code>(0.9 = 90%)</dd></div>
+      </dl>
+    </section>
+  </div>
+
+  <section class="ms-group">
+    <div class="ms-group-head"><h2>版本紀錄</h2><span class="count">{{ versions|length }}</span></div>
+    <ol class="ms-recs">
+      {% for v in versions %}
+      <li class="ms-rec">
+        <div class="ms-rec-main">
+          <div class="ms-tags"><span class="ms-tag c-indigo">v{{ v.version }}</span>{% if v.version == current.version %}<span class="ms-tag c-green">生效中</span>{% endif %}</div>
+          <p class="ms-rec-title">{{ v.note|default:"(沒有說明)" }}</p>
+          <ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ v.created_at|tw }}</li>
+            <li><span class="material-symbols-outlined" aria-hidden="true">person</span>{{ v.actor }}</li></ul>
         </div>
-      </section>
-    </div>
-  </div>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
 </div>
 {% endblock %}
