@@ -593,7 +593,7 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
             t["commits"] = c["tracks"].get(key, {}).get("total", 0)
             t["direct_commits"] = c["tracks"].get(key, {}).get("direct", 0)
         # which MRs the score stood on (own + credited releases), for the drill-down
-        report["mr_ids"] = [m["mr_id"] for m in person["mrs"] + person.get("release_mrs", [])]
+        report["mr_ids"] = [m["mr_id"] for m in all_mrs_p]
         role = roles.get(person["author_id"], "member")
         if role in db.UNRANKED_ROLES:
             report.update(level=None, next_level=None, next_level_misses=[])  # never ranked

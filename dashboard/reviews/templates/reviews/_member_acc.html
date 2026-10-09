@@ -33,9 +33,9 @@
       <tbody>{% for rec in r.records %}
         <tr>
           <td class="ms-dim" style="width:110px">{{ rec.created_at|tw:"%Y-%m-%d" }}</td>
-          <td style="white-space:normal"><a class="ms-link" href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.short }}</a> <span class="ms-dim">{{ rec.title|truncatechars:70 }}</span></td>
+          <td style="white-space:normal">{% if rec.url %}<a class="ms-link" href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.short }}</a>{% else %}<strong>{{ rec.short }}</strong>{% endif %} <span class="ms-dim">{{ rec.title|truncatechars:70 }}</span></td>
           <td style="width:90px"><span class="ms-tag {{ rec.kind|tag:'mr' }}">{{ rec.kind }}</span></td>
-          <td style="width:220px"><span class="ms-tags" style="margin:0">{% if rec.total %}{% if rec.counts.high %}<span class="ms-tag c-solid-red">High {{ rec.counts.high }}</span>{% endif %}{% if rec.counts.medium %}<span class="ms-tag c-amber">Medium {{ rec.counts.medium }}</span>{% endif %}{% if rec.counts.low %}<span class="ms-tag c-blue">Low {{ rec.counts.low }}</span>{% endif %}{% elif rec.reviewed %}<span class="ms-tag c-green">乾淨</span>{% else %}<span class="ms-tag c-gray">未 review</span>{% endif %}</span></td>
+          <td style="width:220px"><span class="ms-tags" style="margin:0">{% if rec.total %}{% if rec.counts.high %}<span class="ms-tag c-solid-red">High {{ rec.counts.high }}</span>{% endif %}{% if rec.counts.medium %}<span class="ms-tag c-amber">Medium {{ rec.counts.medium }}</span>{% endif %}{% if rec.counts.low %}<span class="ms-tag c-blue">Low {{ rec.counts.low }}</span>{% endif %}{% elif rec.graded_only %}<span class="ms-tag c-gray">已打分 · 沒有 review</span>{% elif rec.reviewed %}<span class="ms-tag c-green">乾淨</span>{% else %}<span class="ms-tag c-gray">未 review</span>{% endif %}</span></td>
           <td class="ms-num ms-dim" style="width:50px">{{ rec.uncounted|default:"" }}</td>
         </tr>
       {% endfor %}</tbody>

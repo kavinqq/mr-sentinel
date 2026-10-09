@@ -48,7 +48,7 @@ TAG_COLORS = {
     # people
     "role:lead": "c-indigo", "role:member": "c-blue", "role:departed": "c-gray",
     # MR records
-    "mr:個人": "c-blue", "mr:release": "c-violet", "mr:他人的 MR": "c-teal",
+    "mr:個人": "c-blue", "mr:release": "c-violet", "mr:他人的 MR": "c-teal", "mr:直接 commit": "c-orange",
     # states
     "state:escaped": "c-red", "state:excluded": "c-gray", "state:accepted": "c-green",
     "state:removed": "c-gray", "state:current": "c-green", "state:version": "c-indigo",

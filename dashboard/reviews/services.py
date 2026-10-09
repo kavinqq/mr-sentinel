@@ -80,6 +80,15 @@ def mr_records(row: dict, attributed: dict) -> list[dict]:
     out = []
     for mr_id in ids:
         m = mrs.get(mr_id)
+        if not m and str(mr_id).startswith("commits:"):
+            # a batch of direct commits (no MR): project|author|ISO week
+            project, _, week = str(mr_id)[len("commits:"):].split("|")
+            out.append({"mr_id": mr_id, "short": f"{project.rsplit('/', 1)[-1]} · {week}",
+                        "title": "直接推上去的 commit(沒有 MR)", "url": None,
+                        "created_at": score.week_start(week), "state": "pushed", "kind": "直接 commit",
+                        "reviewed": True, "counts": {s: 0 for s in SEVERITY_ORDER},
+                        "uncounted": 0, "total": 0, "graded_only": True})
+            continue
         if not m:
             continue
         here = [f for f in mine if f["mr_id"] == mr_id]
