@@ -299,9 +299,12 @@ def rate_commit_batch(conn, config: dict, b: dict) -> bool:
     return True
 
 
-def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None) -> tuple[int, int]:
+def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None,
+                 workers: int = 1) -> tuple[int, int]:
     """(rated, failed): whole personal MRs first, then people's slices of release
-    MRs. Bounded per run; a failure leaves the item for next time."""
+    MRs, then batches of direct commits. Bounded per run; a failure leaves the
+    item for next time. `workers` > 1 grades in parallel, each on its own
+    connection (every item is graded once; writes are short transactions)."""
     version, cfg = db.scoring_config(conn)
     since = score.window_start(cfg)
     todo = [("mr", m) for m in pending(conn, since)]
@@ -309,14 +312,33 @@ def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None)
     todo += [("commits", b) for b in pending_commit_batches(conn, since)]
     todo = todo[:limit]
     done = failed = 0
-    for i, (kind, item) in enumerate(todo, 1):
+
+    def grade(kind, item, c):
         try:
-            ok = (rate_one(conn, config, item) if kind == "mr" else
-                  rate_slice(conn, config, item) if kind == "slice" else
-                  rate_commit_batch(conn, config, item))
+            return (rate_one(c, config, item) if kind == "mr" else
+                    rate_slice(c, config, item) if kind == "slice" else
+                    rate_commit_batch(c, config, item))
         except Exception:
             log.exception("rating %s!%s failed", item["project"], item["iid"])
-            ok = False
+            return False
+
+    if workers > 1:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        local, path = threading.local(), conn.execute("PRAGMA database_list").fetchone()[2]
+
+        def run(job):
+            if not hasattr(local, "conn"):
+                local.conn = db.connect(path)
+            return job, grade(*job, local.conn)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for i, ((kind, item), ok) in enumerate(pool.map(run, todo), 1):
+                done, failed = done + ok, failed + (not ok)
+                progress(f"    評分 {i}/{len(todo)} {item['project'].rsplit('/', 1)[-1]}!{item['iid']}"
+                         + ("" if ok else " 失敗"))
+        return done, failed
+    for i, (kind, item) in enumerate(todo, 1):
+        ok = grade(kind, item, conn)
         done, failed = done + ok, failed + (not ok)
         what = ("" if kind == "mr" else f"(release 中 #{item['author_id']} 的 commit)"
                 if kind == "slice" else f"(#{item['author_id']} 直接 commit {len(item['shas'])} 個)")

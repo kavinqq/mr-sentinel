@@ -737,6 +737,24 @@ class TestRate(DbCase):
         rs.update(over)
         return {"ratings": rs}
 
+    def test_parallel_grading_grades_each_item_once(self):
+        from history import rate
+        with self.conn:
+            for i in range(4):
+                sync.store_mr(self.conn, "g/app", {**mr(mid=i + 1, iid=i + 1, created="2026-09-20T00:00:00Z"), "sha": f"h{i}"},
+                              [], [{"name": "eyes", "user": {"id": ME}}], ME, None)
+        seen = []
+        def fake(c, config, item, **kw):
+            seen.append(item["mr_id"])
+            rate.store(c, item["mr_id"], {k: {"score": 3, "reason": "", "evidence": []} for k in CATEGORIES},
+                       item["head_sha"], "t", "x")
+            return True
+        with mock.patch.object(rate, "rate_one", side_effect=fake), \
+             mock.patch.object(rate, "pending_commit_batches", return_value=[]):
+            self.assertEqual(rate.rate_pending(self.conn, self.CONFIG, workers=3), (4, 0))
+        self.assertEqual(sorted(seen), [1, 2, 3, 4])
+        self.assertEqual(rate.pending(self.conn, "2026-07-01T00:00:00Z"), [])
+
     def test_grades_are_lowered_to_what_the_evidence_carries(self):
         from history import rate
         out = rate.valid_ratings(self.reply(5, security={"score": 5, "reason": "r",

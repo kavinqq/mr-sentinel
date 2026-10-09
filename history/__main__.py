@@ -136,6 +136,7 @@ def main(argv=None) -> int:
     p.add_argument("path")
     p = sub.add_parser("rate", help="AI grades reviewed MRs per category (back-fill)")
     p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--workers", type=int, default=1, help="grade this many in parallel")
     p = sub.add_parser("evaluate", help="AI-written strengths / weaknesses per person")
     p.add_argument("--force", action="store_true", help="redo everyone, not just changed records")
     p.add_argument("--person", type=int, action="append", help="only this GitLab user id")
@@ -175,7 +176,8 @@ def main(argv=None) -> int:
             result = run(conn, config, full=args.full)
         elif args.cmd == "rate":
             done, bad = rate.rate_pending(conn, config, limit=args.limit,
-                                          progress=lambda m: print(m, flush=True))
+                                          progress=lambda m: print(m, flush=True),
+                                          workers=args.workers)
             snapshot.record(conn, f"MR 評分補齊({done} 個)")
             result = {"rated": done, "failed": {"rate": f"{bad} MR(s)"} if bad else {}}
         elif args.cmd == "evaluate":
