@@ -34,6 +34,14 @@ DEFAULT_SCORING = {
     "item_max": 5,
     # without these assessed there is no level, only "資料不足"
     "required_items": ["requirements", "correctness", "verification", "maintainability"],
+    # frontend and backend are scored as two tracks (by project path; a project
+    # matching no list falls into the track with an empty list). The total is the
+    # tracks weighted by graded MRs, plus fullstack_bonus when both tracks have
+    # min_reviewed_mrs graded MRs and the weaker one still reaches fullstack_min_score.
+    "tracks": {"frontend": {"label": "前端", "match": ["/frontend/"]},
+               "backend": {"label": "後端", "match": []}},
+    "fullstack_bonus": 2.0,
+    "fullstack_min_score": 29.0,
     # total = 8 × mean(assessed items), out of 40. Best level first; every gate must hold.
     "levels": [{"level": "senior", "min_score": 36.0, "min_item": 4.25, "min_coverage": 8,
                 "min_mrs": 30, "max_high": 0, "max_escaped": 0, "max_confirmed_followups": 0},
@@ -277,10 +285,14 @@ MIGRATIONS = [
     # 10: which rubric a rating used (a new rubric re-rates); scoring from ratings
     # instead of "5 minus findings" (see migrate())
     "ALTER TABLE mr_ratings ADD COLUMN rubric_version INTEGER;",
+    # 11: a rating of one person's own commits inside a release MR (NULL = the
+    # whole MR); front-end / back-end tracks in the config (see migrate())
+    "ALTER TABLE mr_ratings ADD COLUMN author_id INTEGER;",
 ]
 SCALE_CHANGE_NOTE = "評分改成 10 分制(越高越好、每項各自給分)"
 TAXONOMY_CHANGE_NOTE = "評分改成 8 個面向、每項 5 分(滿分 40)"
 RATING_CHANGE_NOTE = "評分改成每個 MR 逐項打分(5 分要掙來,沒評過的顯示未評估)"
+TRACK_CHANGE_NOTE = "評分分成前端 / 後端兩條,兩邊都達標另有全端加分;release 依 commit 作者打分"
 SCALE_NOTES = (SCALE_CHANGE_NOTE, TAXONOMY_CHANGE_NOTE, RATING_CHANGE_NOTE)
 TEAM = -1
 
@@ -360,6 +372,8 @@ def migrate(conn: sqlite3.Connection) -> int:
             _to_eight_items(conn)
         if number == 10:
             _to_ratings(conn)
+        if number == 11:
+            _add_tracks(conn)
     return len(MIGRATIONS)
 
 
@@ -386,6 +400,21 @@ def _to_ratings(conn) -> None:
                       "system", now_iso()))
         conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
                      (RATING_CHANGE_NOTE,))
+
+
+def _add_tracks(conn) -> None:
+    """Same formula plus the two tracks; everything a human tuned is kept."""
+    version, cfg = scoring_config(conn)
+    if "tracks" in cfg:
+        return
+    new = {**cfg, **{k: DEFAULT_SCORING[k] for k in ("tracks", "fullstack_bonus",
+                                                      "fullstack_min_score")}}
+    with conn:
+        conn.execute("INSERT INTO scoring_configs VALUES (?, ?, ?, ?, ?)",
+                     (version + 1, json.dumps(new, ensure_ascii=False), TRACK_CHANGE_NOTE,
+                      "system", now_iso()))
+        conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('score_note', ?)",
+                     (TRACK_CHANGE_NOTE,))
 
 
 def get_state(conn, key: str, default=None):

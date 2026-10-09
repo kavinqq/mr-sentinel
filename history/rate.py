@@ -19,6 +19,7 @@ import logging
 import engines
 import engines.claude_engine
 import fetch_mr
+import gitlab_client
 from history import db, score
 from history.parse import CATEGORIES, is_release_mr
 from sentinel_config import SCRIPT_DIR
@@ -83,20 +84,22 @@ def build_input(ctx: dict, findings: list[dict]) -> tuple[dict, bool]:
             "diff": "\n".join(diff)}, truncated
 
 
-def store(conn, mr_id: int, ratings: dict, head_sha: str | None, source: str, engine: str) -> None:
+def store(conn, mr_id: int, ratings: dict, head_sha: str | None, source: str, engine: str,
+          author_id: int | None = None) -> None:
     now = db.now_iso()
     with conn:
         conn.executemany(
             "INSERT INTO mr_ratings(mr_id, category, score, reason, evidence, head_sha, source, "
-            "engine, rated_at, rubric_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "engine, rated_at, rubric_version, author_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(mr_id, cat, r["score"], r["reason"], json.dumps(r["evidence"], ensure_ascii=False),
-              head_sha, source, engine, now, RUBRIC_VERSION) for cat, r in ratings.items()])
+              head_sha, source, engine, now, RUBRIC_VERSION, author_id)
+             for cat, r in ratings.items()])
 
 
 def latest(conn) -> dict[int, dict[str, dict]]:
     """mr_id -> category -> the newest rating (any head; a newer review wins)."""
     out: dict[int, dict] = {}
-    for r in conn.execute("SELECT * FROM mr_ratings ORDER BY rated_at, id"):
+    for r in conn.execute("SELECT * FROM mr_ratings WHERE author_id IS NULL ORDER BY rated_at, id"):
         out.setdefault(r["mr_id"], {})[r["category"]] = dict(r)
     return out
 
@@ -136,8 +139,8 @@ def pending(conn, since: str) -> list[dict]:
     """Reviewed, personal (non-release) MRs in the window with no rating for
     their current head — newest first, so the scores that matter fill in first."""
     rated = {(r["mr_id"], r["head_sha"]) for r in conn.execute(
-        "SELECT DISTINCT mr_id, head_sha FROM mr_ratings WHERE rubric_version = ?",
-        (RUBRIC_VERSION,))}
+        "SELECT DISTINCT mr_id, head_sha FROM mr_ratings WHERE rubric_version = ? "
+        "AND author_id IS NULL", (RUBRIC_VERSION,))}
     out = []
     for r in conn.execute("SELECT * FROM mrs WHERE reviewed = 1 AND created_at >= ? "
                           "ORDER BY created_at DESC", (since,)):
@@ -149,19 +152,103 @@ def pending(conn, since: str) -> list[dict]:
     return out
 
 
+NO_OWN_COMMITS = "這個 release MR 裡沒有他自己的非 merge commit(都已在他的個人 MR 評過)"
+
+
+def pending_slices(conn, since: str) -> list[dict]:
+    """(release MR, person, their shas) still to grade: commits of theirs in a
+    reviewed release MR of the window that no personal MR already carried — so
+    the same code is never graded twice."""
+    owners = score.email_owners(conn)
+    in_personal = set()
+    release = {}
+    for r in conn.execute("SELECT * FROM mrs WHERE reviewed = 1"):
+        m = dict(r)
+        if is_release_mr(m["title"], m["source_branch"], m["target_branch"]):
+            if (m["created_at"] or "") >= since:
+                release[m["mr_id"]] = m
+    for r in conn.execute("SELECT c.mr_id, c.sha FROM mr_commits c"):
+        if r["mr_id"] not in release:
+            in_personal.add(r["sha"])
+    done = {(r["mr_id"], r["author_id"]) for r in conn.execute(
+        "SELECT DISTINCT mr_id, author_id FROM mr_ratings WHERE author_id IS NOT NULL "
+        "AND rubric_version = ?", (RUBRIC_VERSION,))}
+    by: dict[tuple, list] = {}
+    for r in conn.execute("SELECT mr_id, sha, author_email FROM mr_commits"):
+        if r["mr_id"] not in release or r["sha"] in in_personal:
+            continue
+        pid = owners.get((r["author_email"] or "").lower())
+        if pid is not None and (r["mr_id"], pid) not in done:
+            by.setdefault((r["mr_id"], pid), []).append(r["sha"])
+    return [{**release[mid], "author_id": pid, "shas": shas}
+            for (mid, pid), shas in sorted(by.items(), key=lambda kv: release[kv[0][0]]["created_at"] or "",
+                                           reverse=True)]
+
+
+def _slice_findings(conn, mr_id: int, pid: int) -> list[dict]:
+    """Findings on the release MR that git blame put on this person."""
+    owners = score.email_owners(conn)
+    blamed = {r["note_id"] for r in conn.execute(
+        "SELECT note_id, author_email FROM finding_blame WHERE error IS NULL")
+        if owners.get((r["author_email"] or "").lower()) == pid}
+    return [f for f in _findings_of(conn, mr_id) if f["note_id"] in blamed]
+
+
+def rate_slice(conn, config: dict, s: dict) -> bool:
+    """Grade one person's own (non-merge) commits inside a release MR."""
+    base, token = config["gitlab_url"], config["gitlab_token"]
+    review_cfg = config["review"]
+    titles, changes = [], []
+    for sha in s["shas"]:
+        commit = gitlab_client.get_commit(base, token, s["project"], sha)
+        if len(commit.get("parent_ids") or []) > 1:
+            continue                                   # a merge carries other work
+        titles.append(commit.get("title") or "")
+        changes += gitlab_client.get_commit_diff(base, token, s["project"], sha)
+    if not changes:
+        store(conn, s["mr_id"], {c: {"score": None, "reason": NO_OWN_COMMITS, "evidence": []}
+                                 for c in CATEGORIES}, s.get("head_sha"), "backfill",
+              review_cfg["engine"], s["author_id"])
+        return True
+    name = (conn.execute("SELECT name, username FROM people WHERE gitlab_id = ?",
+                         (s["author_id"],)).fetchone() or {"name": "", "username": ""})
+    ctx = {"title": f"{s['title']} — {name['name'] or name['username']} 自己的 commit",
+           "description": ("這是 release MR 裡屬於這位成員的 commit(個人 MR 已評過的不在內);"
+                           "沒有獨立的 MR description,commit 訊息如下:\n- " + "\n- ".join(titles)),
+           "source_branch": s["source_branch"], "target_branch": s["target_branch"],
+           "changes": changes, "stats": {"files": len(changes), "commits": len(titles)}}
+    payload, truncated = build_input(ctx, _slice_findings(conn, s["mr_id"], s["author_id"]))
+    template = (SCRIPT_DIR / "prompts" / "rate.md").read_text()
+    prompt = template.replace("__LANGUAGE__", engines.claude_engine.language_name(
+        review_cfg.get("language", "zh-TW"))) + json.dumps(payload, ensure_ascii=False)
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    ratings = valid_ratings(engines.get_engine(review_cfg["engine"]).run_json(
+        prompt, WORK_DIR, review_cfg), truncated)
+    if ratings is None:
+        return False
+    store(conn, s["mr_id"], ratings, s.get("head_sha"), "backfill", review_cfg["engine"],
+          s["author_id"])
+    return True
+
+
 def rate_pending(conn, config: dict, limit: int = 40, progress=lambda msg: None) -> tuple[int, int]:
-    """(rated, failed). Bounded per run; a failure leaves the MR for next time."""
+    """(rated, failed): whole personal MRs first, then people's slices of release
+    MRs. Bounded per run; a failure leaves the item for next time."""
     version, cfg = db.scoring_config(conn)
-    todo = pending(conn, score.window_start(cfg))[:limit]
+    since = score.window_start(cfg)
+    todo = [("mr", m) for m in pending(conn, since)]
+    todo += [("slice", s) for s in pending_slices(conn, since)]
+    todo = todo[:limit]
     done = failed = 0
-    for i, mr in enumerate(todo, 1):
+    for i, (kind, item) in enumerate(todo, 1):
         try:
-            ok = rate_one(conn, config, mr)
+            ok = rate_one(conn, config, item) if kind == "mr" else rate_slice(conn, config, item)
         except Exception:
-            log.exception("rating %s!%s failed", mr["project"], mr["iid"])
+            log.exception("rating %s!%s failed", item["project"], item["iid"])
             ok = False
         done, failed = done + ok, failed + (not ok)
-        progress(f"    評分 {i}/{len(todo)} {mr['project'].rsplit('/', 1)[-1]}!{mr['iid']}"
+        what = "" if kind == "mr" else f"(release 中 #{item['author_id']} 的 commit)"
+        progress(f"    評分 {i}/{len(todo)} {item['project'].rsplit('/', 1)[-1]}!{item['iid']}{what}"
                  + ("" if ok else " 失敗"))
     return done, failed
 

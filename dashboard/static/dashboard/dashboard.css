@@ -423,3 +423,10 @@ td.path code { word-break: break-all; }
 .ms .ms-tag.lg { font-size: 1rem; padding: 3px 10px; }
 .ms .ms-level-change { display: inline-flex; align-items: center; gap: 4px; }
 .ms .ms-level-change .material-symbols-outlined { font-size: 16px; color: var(--ms-muted); }
+
+/* a member = one summary line + one line per track (前端 / 後端), same columns */
+.ms .ms-acc > summary.ms-acc-row { row-gap: 6px; }
+.ms .ms-track-row { display: contents; }
+.ms .ms-track-row > span { font-size: .92rem; }
+.ms .ms-track-label { padding-left: 4px; }
+.ms .ms-bonus { margin-left: 6px; font-size: .78rem; padding: 1px 6px; vertical-align: 1px; }

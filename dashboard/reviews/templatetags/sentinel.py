@@ -54,6 +54,8 @@ TAG_COLORS = {
     "state:removed": "c-gray", "state:current": "c-green", "state:version": "c-indigo",
     "state:manual": "c-indigo", "state:auto": "c-teal", "state:pending": "c-amber",
     "state:level": "c-indigo",
+    # tracks
+    "track:frontend": "c-cyan", "track:backend": "c-violet",
     # levels
     "level:senior": "c-green", "level:mid+": "c-cyan", "level:mid": "c-indigo",
     "level:junior": "c-orange", "level:": "c-gray",

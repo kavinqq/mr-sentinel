@@ -178,6 +178,31 @@ def get_mr_commits(base: str, token: str, project, iid, per_page: int = 100,
     return out, False
 
 
+def _sha(sha: str) -> str:
+    sha = str(sha or "")
+    if not (7 <= len(sha) <= 64 and all(ch in "0123456789abcdef" for ch in sha.lower())):
+        raise ValueError(f"not a commit sha: {sha!r}")
+    return sha
+
+
+def get_commit(base: str, token: str, project, sha: str) -> dict:
+    """One commit (title, message, parent_ids, author …)."""
+    return json.loads(_call(f"{_project(base, project)}/repository/commits/{_sha(sha)}", token))
+
+
+def get_commit_diff(base: str, token: str, project, sha: str, per_page: int = 100,
+                    max_pages: int = 10) -> list:
+    """A commit's file diffs ({old_path, new_path, diff}) against its first parent."""
+    out: list = []
+    for page in range(1, max_pages + 1):
+        batch = json.loads(_call(f"{_project(base, project)}/repository/commits/{_sha(sha)}/diff"
+                                 f"?per_page={per_page}&page={page}", token))
+        out += batch
+        if len(batch) < per_page:
+            break
+    return out
+
+
 def find_user(base: str, token: str, username: str) -> dict | None:
     """Exact username lookup (works without admin rights)."""
     users = json.loads(_call(f"{base}/api/v4/users?username={urllib.parse.quote(username)}", token))

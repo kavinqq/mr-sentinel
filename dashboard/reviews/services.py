@@ -111,6 +111,9 @@ def overview() -> dict:
     evals, stale = evaluations()
     for r in rows:
         r["item_list"] = [{"key": k, **v} for k, v in r["items"].items()]
+        # one line per track this person actually worked on
+        r["track_list"] = [{"key": k, **t, "item_list": [{"key": c, **v} for c, v in t["items"].items()]}
+                           for k, t in (r.get("tracks") or {}).items() if t["own_mrs"]]
         r["evaluation"] = evals.get(r["author_id"])
         r["evaluation_stale"] = r["author_id"] in stale
         r["records"] = mr_records(r, attributed)
@@ -239,10 +242,21 @@ def person_detail(author_id: int) -> dict | None:
             "radar": radar, "role": role, "role_label": ROLES.get(role, role),
             "findings": findings, "followups": followups,
             "trend": _trend(summary, cfg),
-            "items": [{"key": k, **v} for k, v in summary["items"].items()] if summary else [],
+            "items": _items_with_tracks(summary),
+            "track_cols": [{"key": k, **t} for k, t in (summary or {}).get("tracks", {}).items()
+                           if t["own_mrs"]],
             "window_start": window_start, "max_total": score.max_total(cfg),
             "evaluation": evals.get(author_id), "evaluation_stale": author_id in stale,
             "followup_verdicts": FOLLOWUP_VERDICTS}
+
+
+def _items_with_tracks(summary: dict | None) -> list[dict]:
+    """Rows of the items table: the combined item plus each worked-on track's."""
+    if not summary:
+        return []
+    tracks = [t for t in (summary.get("tracks") or {}).values() if t["own_mrs"]]
+    return [{"key": k, **v, "per_track": [t["items"][k]["score"] for t in tracks]}
+            for k, v in summary["items"].items()]
 
 
 def _followups(by_id: dict, uncounted_notes: set[str], window_start: str,
@@ -449,6 +463,19 @@ def validate_scoring(cfg) -> list[str]:
         if key in cfg and (not isinstance(values, dict) or set(values) != names
                            or not all(number(v, 0, top) for v in values.values())):
             errors.append(f"{key} 必須剛好是 {' / '.join(sorted(names))} → 0~{top:g} 的數字")
+    tracks = cfg.get("tracks")
+    if "tracks" in cfg:
+        if not isinstance(tracks, dict) or not tracks or not all(
+                isinstance(t, dict) and isinstance(t.get("label"), str)
+                and isinstance(t.get("match"), list) and all(isinstance(m, str) for m in t["match"])
+                for t in tracks.values()):
+            errors.append('tracks 必須是 {key: {"label": "前端", "match": ["/frontend/"]}}')
+        elif sum(1 for t in tracks.values() if not t["match"]) != 1:
+            errors.append("tracks 要剛好一條 match 是空的(對不到任何規則的專案歸到那條)")
+    if "fullstack_bonus" in cfg and not number(cfg["fullstack_bonus"], 0, 10):
+        errors.append("fullstack_bonus 必須在 0 到 10 之間")
+    if "fullstack_min_score" in cfg and not number(cfg["fullstack_min_score"], 0, top * len(score.ITEMS)):
+        errors.append("fullstack_min_score 必須在 0 到總分上限之間")
     req = cfg.get("required_items")
     if "required_items" in cfg and (not isinstance(req, list) or set(req) - set(CATEGORIES)):
         errors.append(f"required_items 只能列: {', '.join(CATEGORIES)}")

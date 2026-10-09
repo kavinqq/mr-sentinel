@@ -337,10 +337,39 @@ class TestRatingScore(unittest.TestCase):
         mrs = [{"mr_id": 1, "reviewed": 1}, {"mr_id": 2, "reviewed": 1, "release": True}]
         fs = score.effective_findings([{"note_id": 9, "mr_id": 2, "severity": "medium",
                                         "category": "security", "owner_mr_id": None}], [])
-        r = score.person_report(mrs, fs, [], CFG, 1, NOW, self.ratings(3, 4))
-        self.assertEqual(r["own_mrs"], 1)
+        r = score.person_report(mrs, fs, [], CFG, 1, NOW, {1: self.ratings(2, 4)[1]})
+        self.assertEqual(r["own_mrs"], 1)           # the release MR has no slice of theirs
         sec = [o for o in r["observations"] if o["category"] == "security"]
         self.assertEqual(sorted(o["value"] for o in sec), [3.0, 4.0])   # own MR 4, release cap 3
+
+    def test_release_slice_counts_as_their_own_mr(self):
+        mrs = [{"mr_id": 2, "reviewed": 1, "release": True}]
+        r = score.person_report(mrs, [], [], CFG, 1, NOW, {2: self.ratings(3, 4)[2]})
+        self.assertEqual((r["own_mrs"], r["rated_mrs"]), (1, 1))
+
+    def test_tracks_and_the_fullstack_bonus(self):
+        cfg = {**CFG, "required_items": []}
+        def mrs(n, start, project):
+            return [{"mr_id": i, "reviewed": 1, "project": project} for i in range(start, start + n)]
+        fe, be = mrs(5, 0, "g/frontend/web"), mrs(5, 10, "g/py_backend/api")
+        rat = {**self.ratings(5, 4), **{i: {c: {"score": 4} for c in CATEGORIES} for i in range(10, 15)}}
+        project_of = {m["mr_id"]: m["project"] for m in fe + be}
+        base = score.person_report(fe + be, [], [], cfg, 1, NOW, rat)
+        r = score.with_tracks(dict(base), fe + be, [], [], cfg, 1, rat, project_of)
+        self.assertEqual(set(r["tracks"]), {"frontend", "backend"})
+        # each track (30 + 5×4)/15 = 3.33 -> 26.7; weaker track < 29: no bonus
+        self.assertEqual((r["tracks"]["frontend"]["score"], r["fullstack_bonus"], r["score"]),
+                         (26.7, 0.0, 26.7))
+        rich = {**cfg, "fullstack_min_score": 26}
+        r = score.with_tracks(dict(base), fe + be, [], [], rich, 1, rat, project_of)
+        self.assertEqual((r["fullstack_bonus"], r["score"]), (2.0, 28.7))
+        only_fe = score.with_tracks(score.person_report(fe, [], [], rich, 1, NOW, rat), fe, [], [],
+                                    rich, 1, rat, project_of)
+        self.assertEqual((only_fe["fullstack_bonus"], only_fe["tracks"]["backend"]["score"]), (0.0, None))
+
+    def test_track_of(self):
+        self.assertEqual(score.track_of("developer/frontend/pocketexplorer", CFG), "frontend")
+        self.assertEqual(score.track_of("developer/py_backend/pocketsso", CFG), "backend")
 
     def test_required_items_missing_means_no_level(self):
         rat = self.ratings(10, 4, verification=None)
@@ -726,6 +755,47 @@ class TestRate(DbCase):
         self.assertEqual(rate.pending(self.conn, since), [])          # same head: done
         (row,) = score.team_report(self.conn, 1, CFG, NOW)
         self.assertEqual((row["rated_mrs"], row["items"]["security"]["score"]), (1, 3.09))
+
+
+class TestReleaseSlices(DbCase):
+    CONFIG = {"review": {"engine": "claude", "language": "zh-TW"}, "gitlab_url": "u", "gitlab_token": "t"}
+
+    def seed(self):
+        with self.conn:
+            # a personal MR of DEV carrying sha a1 (proves DEV's email), then a
+            # release MR with a1 (already graded there), b2 (DEV's own) and m3 (a merge)
+            sync.store_mr(self.conn, "g/frontend/web", {**mr(mid=1, iid=1, created="2026-09-20T00:00:00Z"), "sha": "aa11"},
+                          [], [{"name": "eyes", "user": {"id": ME}}], ME, None,
+                          ([{"id": "a1", "author_email": "dev@x"}], True))
+            sync.store_mr(self.conn, "g/frontend/web",
+                          {**mr(mid=2, iid=2, created="2026-09-25T00:00:00Z", branch="dev", author=99), "sha": "bb22"},
+                          [], [{"name": "eyes", "user": {"id": ME}}], ME, None,
+                          ([{"id": "a1", "author_email": "dev@x"}, {"id": "b2", "author_email": "dev@x"},
+                            {"id": "m3", "author_email": "dev@x"}], True))
+
+    def test_only_commits_no_personal_mr_carried_are_pending(self):
+        from history import rate
+        self.seed()
+        (sl,) = rate.pending_slices(self.conn, "2026-07-01T00:00:00Z")
+        self.assertEqual((sl["mr_id"], sl["author_id"], sorted(sl["shas"])), (2, DEV, ["b2", "m3"]))
+
+    def test_merges_are_skipped_and_the_slice_is_graded_as_theirs(self):
+        from history import rate
+        self.seed()
+        (sl,) = rate.pending_slices(self.conn, "2026-07-01T00:00:00Z")
+        commits = {"b2": {"title": "feat x", "parent_ids": ["p"]}, "m3": {"title": "Merge", "parent_ids": ["p", "q"]}}
+        engine = mock.Mock()
+        engine.run_json.return_value = {"ratings": {c: {"score": 3, "reason": "r", "evidence": []} for c in CATEGORIES}}
+        with mock.patch.object(rate.gitlab_client, "get_commit", side_effect=lambda b, t, p, sha: commits[sha]), \
+             mock.patch.object(rate.gitlab_client, "get_commit_diff", return_value=[{"new_path": "a.ts", "diff": "+y"}]) as diff, \
+             mock.patch.object(rate.engines, "get_engine", return_value=engine), \
+             mock.patch.object(rate, "WORK_DIR", Path(self.tmp.name) / "w"):
+            self.assertTrue(rate.rate_slice(self.conn, self.CONFIG, sl))
+        self.assertEqual([c.args[3] for c in diff.call_args_list], ["b2"])        # not the merge
+        self.assertIn("feat x", engine.run_json.call_args.args[0])
+        self.assertEqual(rate.pending_slices(self.conn, "2026-07-01T00:00:00Z"), [])
+        row = next(r for r in score.team_report(self.conn, 1, CFG, NOW) if r["author_id"] == DEV)
+        self.assertEqual((row["own_mrs"], row["rated_mrs"]), (2, 1))         # personal + the slice
 
 
 class TestScoreLog(DbCase):

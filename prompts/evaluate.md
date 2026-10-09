@@ -28,6 +28,10 @@ after shipping, and their findings (title, category, severity, MR, whether it
 escaped, its thread status: `appeal` = they replied / argued, `closed` =
 resolved, `unanswered` = ignored).
 
+Front-end and back-end are scored as separate `tracks`; say which side a point
+is about when it differs between them. A `fullstack_bonus` means they kept a
+mid-level standard on both sides — only then is breadth a strength.
+
 ## Output — JSON only, no prose, no code fences
 {"summary": "one sentence: where this person stands and the single most important thing to change",
  "strengths": [{"point": "<the strength, one line>", "evidence": "<the numbers / findings that show it>"}],

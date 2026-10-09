@@ -208,7 +208,9 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
     """One author's MRs (in window), their effective findings and their followups."""
     ratings = ratings or {}
     reviewed = [m for m in mrs if m["reviewed"]]
-    own = [m for m in reviewed if not m.get("release")]          # release ratings are nobody's
+    # personal MRs, plus release MRs where this person's own commits were graded
+    # (history/rate.py slices); a release MR as a whole is nobody's
+    own = [m for m in reviewed if not m.get("release") or m["mr_id"] in ratings]
     counted = [f for f in findings if not f["excluded"] and not f["appeal_accepted"]]
     scored = [f for f in counted if f["category"] in CATEGORIES]
     live = [fu for fu in followups if fu.get("verdict") != "unrelated"]
@@ -236,13 +238,6 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
              "min_item": round(min(assessed), 2) if assessed else 0.0,
              "coverage": len(assessed), "mrs": rated_mrs}
     missing = [ITEMS[c] for c in cfg.get("required_items", []) if items[c]["score"] is None]
-    level = None
-    # a level needs enough *graded* MRs, not just enough MRs
-    if rated_mrs >= cfg["min_reviewed_mrs"] and not missing and score is not None:
-        level = level_for(score, cfg["levels"], stats)
-    names = [lv["level"] for lv in cfg["levels"]]
-    above = names.index(level) - 1 if level in names else -1
-    next_level = cfg["levels"][above] if above >= 0 else None
     top = max_total(cfg)
     if not own:
         explain = "沒有被 review 過的個人 MR"
@@ -272,14 +267,74 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
         "missing_items": missing,
         "items": items,
         "observations": obs,
-        "level": level,
         "clean_mrs": clean,
         "clean_rate": round(clean / n, 2) if n else None,
-        "next_level": next_level and next_level["level"],
-        "next_level_misses": level_misses(stats, next_level) if next_level else [],
+        "stats": stats,
         "formula_version": version,
         "explain": explain,
+        **decide_level(score, stats, missing, rated_mrs, cfg),
     }
+
+
+def decide_level(score, stats: dict, missing: list, rated_mrs: int, cfg: dict) -> dict:
+    """{level, next_level, next_level_misses}. A level needs enough *graded* MRs
+    and every required item assessed — otherwise none ("資料不足")."""
+    stats = {**stats, "score": score or 0.0}
+    level = None
+    if rated_mrs >= cfg["min_reviewed_mrs"] and not missing and score is not None:
+        level = level_for(score, cfg["levels"], stats)
+    names = [lv["level"] for lv in cfg["levels"]]
+    above = names.index(level) - 1 if level in names else -1
+    nxt = cfg["levels"][above] if above >= 0 else None
+    return {"level": level, "next_level": nxt and nxt["level"],
+            "next_level_misses": level_misses(stats, nxt) if nxt else []}
+
+
+def track_of(project: str | None, cfg: dict) -> str:
+    """Which track (前端 / 後端 …) a project belongs to, by path fragment."""
+    tracks = cfg.get("tracks") or {}
+    fallback = next((k for k, t in tracks.items() if not t.get("match")), None)
+    for key, t in tracks.items():
+        if any(frag in (project or "") for frag in t.get("match", [])):
+            return key
+    return fallback or "all"
+
+
+def with_tracks(report: dict, mrs: list[dict], findings: list[dict], followups: list[dict],
+                cfg: dict, version: int, ratings: dict, project_of: dict) -> dict:
+    """Score each track on its own, then the person's total: the tracks weighted
+    by graded MRs, plus fullstack_bonus when both carry enough graded MRs and the
+    weaker one still reaches fullstack_min_score. Level gates use the whole
+    record (a high finding counts wherever it was)."""
+    tracks = cfg.get("tracks") or {}
+    if len(tracks) < 2:
+        report["tracks"] = {}
+        return report
+    out = {}
+    for key, t in tracks.items():
+        t_mrs = [m for m in mrs if track_of(m.get("project"), cfg) == key]
+        t_find = [f for f in findings if track_of(project_of.get(f["mr_id"]), cfg) == key]
+        t_fus = [fu for fu in followups if track_of(project_of.get(fu["feature_mr_id"]), cfg) == key]
+        r = person_report(t_mrs, t_find, t_fus, cfg, version, None, ratings)
+        out[key] = {"label": t["label"], "score": r["score"], "items": r["items"],
+                    "own_mrs": r["own_mrs"], "rated_mrs": r["rated_mrs"],
+                    "coverage": r["coverage"], "findings": r["findings"]}
+    scored = [t for t in out.values() if t["score"] is not None and t["rated_mrs"]]
+    total = report["score"]
+    bonus = 0.0
+    if scored:
+        weight = sum(t["rated_mrs"] for t in scored)
+        total = sum(t["score"] * t["rated_mrs"] for t in scored) / weight
+        enough = [t for t in out.values() if t["rated_mrs"] >= cfg["min_reviewed_mrs"]
+                  and t["score"] is not None]
+        if len(enough) == len(out) and min(t["score"] for t in enough) >= cfg.get(
+                "fullstack_min_score", max_total(cfg)):
+            bonus = cfg.get("fullstack_bonus", 0.0)
+        total = round(min(max_total(cfg), total + bonus), 1)
+    report.update(tracks=out, fullstack_bonus=bonus, score=total,
+                  **decide_level(total, report["stats"], report["missing_items"],
+                                 report["rated_mrs"], cfg))
+    return report
 
 
 def escaped(f: dict, mr: dict) -> bool:
@@ -424,6 +479,8 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
     excluded_notes = attributed["uncounted_notes"]
     followups = annotated_followups(conn, attributed["findings"] + attributed["unattributed"])
     ratings = latest_ratings(conn)
+    slices = slice_ratings(conn)
+    project_of = {i: m["project"] for i, m in all_mrs.items()}
 
     people: dict[int, dict] = {}
     # people added by hand appear even before their first MR
@@ -458,8 +515,13 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
                and not (fu["kind"] == "ai_refind" and (
                    fu["source_ref"] in excluded_notes
                    or finding_owner.get(fu["source_ref"]) == person["author_id"]))]
-        report = person_report(person["mrs"] + person.get("release_mrs", []), mine, fus, cfg,
-                               version, now, ratings)
+        mine_ratings = dict(ratings)
+        for (mr_id, author), cats in slices.items():
+            if author == person["author_id"]:
+                mine_ratings[mr_id] = cats
+        all_mrs_p = person["mrs"] + person.get("release_mrs", [])
+        report = person_report(all_mrs_p, mine, fus, cfg, version, now, mine_ratings)
+        report = with_tracks(report, all_mrs_p, mine, fus, cfg, version, mine_ratings, project_of)
         report["release_mrs"] = len(person.get("release_mrs", []))
         # which MRs the score stood on (own + credited releases), for the drill-down
         report["mr_ids"] = [m["mr_id"] for m in person["mrs"] + person.get("release_mrs", [])]
@@ -496,8 +558,18 @@ def per_mr_profile(row: dict) -> dict:
 
 
 def latest_ratings(conn) -> dict[int, dict[str, dict]]:
-    """mr_id -> category -> the newest rating (history/rate.py writes them)."""
+    """mr_id -> category -> the newest whole-MR rating (history/rate.py)."""
     out: dict[int, dict] = {}
-    for r in conn.execute("SELECT * FROM mr_ratings ORDER BY rated_at, id"):
+    for r in conn.execute("SELECT * FROM mr_ratings WHERE author_id IS NULL ORDER BY rated_at, id"):
         out.setdefault(r["mr_id"], {})[r["category"]] = dict(r)
+    return out
+
+
+def slice_ratings(conn) -> dict[tuple, dict[str, dict]]:
+    """(release mr_id, author) -> category -> the newest rating of that person's
+    own commits inside the release MR."""
+    out: dict[tuple, dict] = {}
+    for r in conn.execute("SELECT * FROM mr_ratings WHERE author_id IS NOT NULL "
+                          "ORDER BY rated_at, id"):
+        out.setdefault((r["mr_id"], r["author_id"]), {})[r["category"]] = dict(r)
     return out

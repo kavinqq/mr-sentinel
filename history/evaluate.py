@@ -59,6 +59,11 @@ def profile(row: dict, findings: list[dict], followups: list[dict], team: dict,
         "severities": row["severities"],
         "escaped": row["escaped"],
         "coverage": row["coverage"], "rated_mrs": row["rated_mrs"], "own_mrs": row["own_mrs"],
+        "tracks": {k: {"label": t["label"], "score": t["score"], "rated_mrs": t["rated_mrs"],
+                       "weakest": min(((v["score"], v["label"]) for v in t["items"].values()
+                                       if v["score"] is not None), default=None)}
+                   for k, t in (row.get("tracks") or {}).items()},
+        "fullstack_bonus": row.get("fullstack_bonus", 0),
         "items": {k: {"label": v["label"], "score": v["score"], "team_avg": team.get(k),
                       "grades": v["n"], "findings": v["count"], "followups": v["followups"]}
                   for k, v in row["items"].items()},
