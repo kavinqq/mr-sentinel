@@ -301,6 +301,26 @@ def decide_level(score, stats: dict, missing: list, rated_mrs: int, cfg: dict) -
             "next_level_misses": level_misses(stats, nxt) if nxt else []}
 
 
+def with_contribution(conn, report: dict, pid: int, attributed: dict, followups: list[dict],
+                      cfg: dict, since: str, slices: dict) -> dict:
+    """A lead's third track (history/contrib.py). It can only lift the total:
+    total = max(front/back-end total, all tracks weighted by their evidence)."""
+    from history import contrib
+    obs = contrib.observations(conn, pid, attributed, followups, cfg, since, slices)
+    if not obs:
+        return report
+    t = contrib.track(obs, cfg)
+    report.setdefault("tracks", {})["contribution"] = t
+    parts = [(x["score"], x["rated_mrs"]) for x in report["tracks"].values()
+             if x["score"] is not None and x["rated_mrs"]]
+    weighted = round(sum(s * w for s, w in parts) / sum(w for _, w in parts), 1)
+    code = report["score"]
+    report["score_code_only"] = code
+    report["score"] = weighted if code is None else max(code, weighted)
+    report["contribution_lifted"] = code is None or weighted > code
+    return report
+
+
 def track_of(project: str | None, cfg: dict) -> str:
     """Which track (前端 / 後端 …) a project belongs to, by path fragment."""
     tracks = cfg.get("tracks") or {}
@@ -520,6 +540,14 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
                                  "name": row["name"], "mrs": []}
         people[person_id]["release_mrs"] = credited
     roles = db.person_roles(conn)
+    # a team lead shows up even with no MR of their own: their work is reviewing,
+    # merging and taking over (history/contrib.py)
+    for pid, role in roles.items():
+        if role == "lead" and pid not in people:
+            row = conn.execute("SELECT username, name FROM people WHERE gitlab_id = ?", (pid,)).fetchone()
+            if row is not None:
+                people[pid] = {"author_id": pid, "username": row["username"], "name": row["name"],
+                               "mrs": []}
     out = []
     finding_owner = {str(f["note_id"]): f["owner_author_id"] for f in attributed["findings"]}
     for person in people.values():
@@ -537,6 +565,9 @@ def team_report(conn, version: int, cfg: dict, now: datetime | None = None,
         all_mrs_p = person["mrs"] + person.get("release_mrs", [])
         report = person_report(all_mrs_p, mine, fus, cfg, version, now, mine_ratings)
         report = with_tracks(report, all_mrs_p, mine, fus, cfg, version, mine_ratings, project_of)
+        if roles.get(person["author_id"]) == "lead":
+            report = with_contribution(conn, report, person["author_id"], attributed, followups,
+                                       cfg, since, slices)
         report["release_mrs"] = len(person.get("release_mrs", []))
         # which MRs the score stood on (own + credited releases), for the drill-down
         report["mr_ids"] = [m["mr_id"] for m in person["mrs"] + person.get("release_mrs", [])]

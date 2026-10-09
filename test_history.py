@@ -818,6 +818,71 @@ class TestReleaseSlices(DbCase):
         self.assertEqual((row["own_mrs"], row["rated_mrs"]), (2, 1))         # personal + the slice
 
 
+class TestContribution(DbCase):
+    LEAD = 14
+
+    def seed(self):
+        with self.conn:
+            lead = {"id": self.LEAD, "username": "pk060", "name": "Lead"}
+            # DEV's MR 1: a finding fixed before the lead merged it; a human note by the lead
+            sync.store_mr(self.conn, "g/frontend/web",
+                          {**mr(mid=1, iid=1, created="2026-09-20T00:00:00Z"), "merged_by": lead, "sha": "h"},
+                          [{"id": "d1", "notes": [note(11, ME, ai_body("medium", "x", "correctness"))]},
+                           {"id": "d2", "notes": [{"id": 12, "author": lead, "body": "這裡會重複扣款,要加鎖",
+                                                   "created_at": "2026-09-21T00:00:00Z"}]}], [], ME, None)
+            self.conn.execute("UPDATE findings SET status = 'closed', head_sha = 'old'")
+            # DEV's MR 2: merged by the lead with a finding still open
+            sync.store_mr(self.conn, "g/frontend/web",
+                          {**mr(mid=2, iid=2, created="2026-09-22T00:00:00Z"), "merged_by": lead, "sha": "h2"},
+                          [{"id": "d3", "notes": [note(13, ME, ai_body("high", "y", "security"))]}], [], ME, None)
+            self.conn.execute("INSERT INTO person_roles(gitlab_id, role, actor, created_at) "
+                              "VALUES (14, 'lead', 'me', 'x')")
+
+    def test_sync_keeps_merged_by_and_human_notes_only(self):
+        self.seed()
+        self.assertEqual(self.conn.execute("SELECT merged_by FROM mrs WHERE mr_id = 1").fetchone()[0], self.LEAD)
+        self.assertEqual([tuple(r) for r in self.conn.execute("SELECT note_id, author_id FROM mr_notes")],
+                         [(12, self.LEAD)])
+
+    def test_merges_reviews_and_the_lift(self):
+        from history import contrib
+        self.seed()
+        with self.conn:
+            self.conn.execute("INSERT INTO review_ratings(mr_id, author_id, notes, score, reason, rated_at) "
+                              "VALUES (1, 14, 1, 5, '抓到重複扣款', 'x')")
+        cfg = CFG
+        att = score.attribution(self.conn, cfg, NOW)
+        obs = contrib.observations(self.conn, self.LEAD, att, [], cfg, "2026-07-01T00:00:00Z", {})
+        got = sorted((o["category"], o["mr_id"], o["value"]) for o in obs)
+        # MR 1: finding dealt with -> 4; MR 2: a high still there -> 1; the review: 5
+        self.assertEqual(got, [("merge", 1, 4.0), ("merge", 2, 1.0), ("review", 1, 5.0)])
+        t = contrib.track(obs, cfg)
+        self.assertEqual((t["items"]["merge"]["score"], t["items"]["review"]["score"]), (2.8, 3.5))
+        row = next(r for r in score.team_report(self.conn, 1, cfg, NOW) if r["author_id"] == self.LEAD)
+        self.assertIn("contribution", row["tracks"])
+        self.assertTrue(row["contribution_lifted"])                  # no code of their own: it decides
+
+    def test_contribution_only_lifts(self):
+        report = {"score": 30.0, "tracks": {"frontend": {"score": 30.0, "rated_mrs": 10}}}
+        with mock.patch("history.contrib.observations", return_value=[{"category": "merge", "value": 1.0,
+                                                                         "mr_id": 1, "created_at": "x"}] * 10):
+            r = score.with_contribution(None, dict(report, tracks=dict(report["tracks"])), 14, {}, [], CFG, "", {})
+        self.assertEqual((r["score"], r["contribution_lifted"]), (30.0, False))
+
+    def test_pending_reviews_regrade_when_notes_change(self):
+        from history import contrib
+        self.seed()
+        self.assertEqual([(p["mr_id"], p["notes"]) for p in contrib.pending_reviews(self.conn, {self.LEAD}, "2026-07-01")],
+                         [(1, 1)])
+        engine = mock.Mock(); engine.run_json.return_value = {"score": 4, "reason": "ok"}
+        with mock.patch.object(contrib.engines, "get_engine", return_value=engine), \
+             mock.patch.object(contrib, "WORK_DIR", Path(self.tmp.name) / "w"):
+            self.assertTrue(contrib.rate_review(self.conn, {"review": {"engine": "claude"}},
+                                                {"mr_id": 1, "author_id": self.LEAD, "notes": 1}))
+        self.assertIn("重複扣款", engine.run_json.call_args.args[0])
+        self.assertEqual(contrib.pending_reviews(self.conn, {self.LEAD}, "2026-07-01"), [])
+
+
 class TestScoreLog(DbCase):
     def seed(self, n=5, sev="high"):
         with self.conn:

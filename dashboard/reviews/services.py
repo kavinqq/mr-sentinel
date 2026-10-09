@@ -114,6 +114,7 @@ def overview() -> dict:
         # one line per track this person actually worked on
         r["track_list"] = [{"key": k, **t, "item_list": [{"key": c, **v} for c, v in t["items"].items()]}
                            for k, t in (r.get("tracks") or {}).items() if t["own_mrs"]]
+        r["lifted"] = r.get("contribution_lifted")
         r["evaluation"] = evals.get(r["author_id"])
         r["evaluation_stale"] = r["author_id"] in stale
         r["records"] = mr_records(r, attributed)
@@ -243,18 +244,35 @@ def person_detail(author_id: int) -> dict | None:
             "findings": findings, "followups": followups,
             "trend": _trend(summary, cfg),
             "items": _items_with_tracks(summary),
-            "track_cols": [{"key": k, **t} for k, t in (summary or {}).get("tracks", {}).items()
-                           if t["own_mrs"]],
+            "track_cols": [{"key": k, **t} for k, t in _code_tracks(summary)],
+            "contribution": _contribution(summary),
             "window_start": window_start, "max_total": score.max_total(cfg),
             "evaluation": evals.get(author_id), "evaluation_stale": author_id in stale,
             "followup_verdicts": FOLLOWUP_VERDICTS}
+
+
+def _code_tracks(summary: dict | None) -> list[tuple]:
+    return [(k, t) for k, t in ((summary or {}).get("tracks") or {}).items()
+            if t["own_mrs"] and t.get("kind") != "contribution"]
+
+
+def _contribution(summary: dict | None) -> dict | None:
+    """The lead's 團隊貢獻 track with each piece of evidence resolved to its MR."""
+    t = ((summary or {}).get("tracks") or {}).get("contribution")
+    if not t:
+        return None
+    mrs = {m.mr_id: m for m in MergeRequest.objects.filter(
+        mr_id__in={o["mr_id"] for o in t["observations"]})}
+    rows = [{**o, "mr": mrs.get(o["mr_id"]), "label": t["items"][o["category"]]["label"]}
+            for o in sorted(t["observations"], key=lambda o: o.get("created_at") or "", reverse=True)]
+    return {**t, "rows": rows, "item_list": [{"key": k, **v} for k, v in t["items"].items()]}
 
 
 def _items_with_tracks(summary: dict | None) -> list[dict]:
     """Rows of the items table: the combined item plus each worked-on track's."""
     if not summary:
         return []
-    tracks = [t for t in (summary.get("tracks") or {}).values() if t["own_mrs"]]
+    tracks = [t for _, t in _code_tracks(summary)]
     return [{"key": k, **v, "per_track": [t["items"][k]["score"] for t in tracks]}
             for k, v in summary["items"].items()]
 

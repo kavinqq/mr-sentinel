@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
-from history import blame, classify, db, evaluate, followups, rate, scan, score, snapshot, sync
+from history import blame, classify, contrib, db, evaluate, followups, rate, scan, score, snapshot, sync
 from history.parse import CATEGORIES
 from sentinel_config import SCRIPT_DIR, load_config
 
@@ -71,6 +71,9 @@ def run(conn, config: dict, full: bool = False) -> dict:
         result["rated"], bad = rate.rate_pending(conn, config)
         if bad:
             result["failed"]["rate"] = f"{bad} MR(s) not rated"
+        result["reviews_rated"], bad = contrib.rate_pending(conn, config)
+        if bad:
+            result["failed"]["contrib"] = f"{bad} review(s) not graded"
         result["score_changes"] = len(snapshot.record(
             conn, "dashboard 同步請求" if request_ids else "排程同步"))
         _evaluate(conn, config, result, force="evaluate" in kinds)
@@ -164,6 +167,9 @@ def main(argv=None) -> int:
         elif args.cmd == "rate":
             done, bad = rate.rate_pending(conn, config, limit=args.limit,
                                           progress=lambda m: print(m, flush=True))
+            more, bad2 = contrib.rate_pending(conn, config, limit=args.limit,
+                                              progress=lambda m: print(m, flush=True))
+            done, bad = done + more, bad + bad2
             snapshot.record(conn, f"MR 評分補齊({done} 個)")
             result = {"rated": done, "failed": {"rate": f"{bad} MR(s)"} if bad else {}}
         elif args.cmd == "evaluate":

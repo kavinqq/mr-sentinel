@@ -59,12 +59,22 @@ def store_mr(conn, project: str, mr: dict, discussions: list, awards: list, me: 
         found.append((first["id"], str(discussion.get("id")), parsed, position, first, status,
                       appeal_verdict(discussion, me)))
 
+    # every human note on the MR (not ours, not GitLab's system notes) — a lead's
+    # review comments on someone else's MR are team contribution (history/contrib.py)
+    human = []
+    for discussion in discussions:
+        for n in discussion.get("notes") or []:
+            writer = (n.get("author") or {}).get("id")
+            if n.get("system") or writer in (None, me) or not (n.get("body") or "").strip():
+                continue
+            human.append((n["id"], writer, db.utc(n.get("created_at")), (n.get("body") or "")[:4000]))
+
     reviewed = int(bool(found) or review_common.has_own_award_emoji(awards, me))
     conn.execute("""
         INSERT INTO mrs(mr_id, project, iid, author_id, title, state, source_branch, target_branch,
                         web_url, created_at, merged_at, updated_at, is_fix, reviewed, synced_at,
-                        head_sha)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        head_sha, merged_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(mr_id) DO UPDATE SET
             author_id = excluded.author_id, title = excluded.title, state = excluded.state,
             source_branch = excluded.source_branch, target_branch = excluded.target_branch,
@@ -72,11 +82,18 @@ def store_mr(conn, project: str, mr: dict, discussions: list, awards: list, me: 
             updated_at = excluded.updated_at, is_fix = excluded.is_fix,
             -- once reviewed, always reviewed: a rerun briefly removes our :eyes:
             reviewed = MAX(mrs.reviewed, excluded.reviewed), synced_at = excluded.synced_at,
-            head_sha = COALESCE(excluded.head_sha, mrs.head_sha)
+            head_sha = COALESCE(excluded.head_sha, mrs.head_sha),
+            merged_by = COALESCE(excluded.merged_by, mrs.merged_by)
     """, (mr["id"], project, mr["iid"], author, mr.get("title"), mr.get("state"),
           mr.get("source_branch"), mr.get("target_branch"), mr.get("web_url"),
           db.utc(mr.get("created_at")), db.utc(mr.get("merged_at")), db.utc(mr.get("updated_at")),
-          int(is_fix_mr(mr.get("title"), mr.get("source_branch"))), reviewed, now, mr.get("sha")))
+          int(is_fix_mr(mr.get("title"), mr.get("source_branch"))), reviewed, now, mr.get("sha"),
+          (mr.get("merged_by") or {}).get("id")))
+    if (mr.get("merged_by") or {}).get("id"):
+        _upsert_person(conn, mr["merged_by"])
+    conn.executemany("INSERT INTO mr_notes(note_id, mr_id, author_id, created_at, body) "
+                     "VALUES (?, ?, ?, ?, ?) ON CONFLICT(note_id) DO UPDATE SET body = excluded.body",
+                     [(nid, mr["id"], a, at, body) for nid, a, at, body in human])
 
     for note_id, discussion_id, parsed, position, first, status, verdict in found:
         conn.execute("""

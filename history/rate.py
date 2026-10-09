@@ -180,6 +180,21 @@ def pending_slices(conn, since: str) -> list[dict]:
         pid = owners.get((r["author_email"] or "").lower())
         if pid is not None and (r["mr_id"], pid) not in done:
             by.setdefault((r["mr_id"], pid), []).append(r["sha"])
+    # a team lead's commits inside someone else's (non-release) MR: taking over or
+    # finishing their work — graded like a slice, counted as 團隊貢獻 (history/contrib.py)
+    leads = {p for p, role in db.person_roles(conn).items() if role == "lead"}
+    others = {}
+    for r in conn.execute("SELECT * FROM mrs WHERE reviewed = 1 AND created_at >= ?", (since,)):
+        m = dict(r)
+        if not is_release_mr(m["title"], m["source_branch"], m["target_branch"]):
+            others[m["mr_id"]] = m
+    for r in conn.execute("SELECT mr_id, sha, author_email FROM mr_commits"):
+        m = others.get(r["mr_id"])
+        pid = owners.get((r["author_email"] or "").lower())
+        if m is None or pid not in leads or m["author_id"] == pid or (r["mr_id"], pid) in done:
+            continue
+        by.setdefault((r["mr_id"], pid), []).append(r["sha"])
+        release.setdefault(r["mr_id"], m)
     return [{**release[mid], "author_id": pid, "shas": shas}
             for (mid, pid), shas in sorted(by.items(), key=lambda kv: release[kv[0][0]]["created_at"] or "",
                                            reverse=True)]

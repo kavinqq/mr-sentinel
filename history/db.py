@@ -294,6 +294,31 @@ MIGRATIONS = [
     # 11: a rating of one person's own commits inside a release MR (NULL = the
     # whole MR); front-end / back-end tracks in the config (see migrate())
     "ALTER TABLE mr_ratings ADD COLUMN author_id INTEGER;",
+    # 12: what a team lead contributes besides their own MRs (history/contrib.py):
+    # who merged an MR, the human notes on it, and AI grades of a person's review
+    # comments on someone else's MR
+    """
+    ALTER TABLE mrs ADD COLUMN merged_by INTEGER;
+    CREATE TABLE mr_notes (
+        note_id     INTEGER PRIMARY KEY,
+        mr_id       INTEGER NOT NULL REFERENCES mrs(mr_id),
+        author_id   INTEGER,
+        created_at  TEXT,
+        body        TEXT
+    );
+    CREATE INDEX mr_notes_author ON mr_notes(author_id, mr_id);
+    CREATE TABLE review_ratings (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        mr_id      INTEGER NOT NULL REFERENCES mrs(mr_id),
+        author_id  INTEGER NOT NULL,              -- the reviewer
+        notes      INTEGER NOT NULL,              -- how many of their notes it read
+        score      INTEGER,                       -- 1..5; NULL = nothing to judge
+        reason     TEXT,
+        engine     TEXT,
+        rated_at   TEXT NOT NULL
+    );
+    CREATE INDEX review_ratings_mr ON review_ratings(mr_id, author_id, rated_at);
+    """,
 ]
 SCALE_CHANGE_NOTE = "評分改成 10 分制(越高越好、每項各自給分)"
 TAXONOMY_CHANGE_NOTE = "評分改成 8 個面向、每項 5 分(滿分 40)"

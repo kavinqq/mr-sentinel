@@ -430,3 +430,11 @@ td.path code { word-break: break-all; }
 .ms .ms-track-row > span { font-size: .92rem; }
 .ms .ms-track-label { padding-left: 4px; }
 .ms .ms-bonus { margin-left: 6px; font-size: .78rem; padding: 1px 6px; vertical-align: 1px; }
+
+/* 團隊貢獻 line: its 4 items sit across the 8 item columns */
+.ms .ms-contrib { grid-column: span 8; display: flex; flex-wrap: wrap; gap: 6px 22px; justify-content: flex-end; }
+.ms .ms-contrib-item { display: inline-flex; align-items: baseline; gap: 6px; font-size: .92rem; }
+.ms .ms-contrib-item > span:first-child { color: var(--ms-muted); }
+.ms .ms-contrib-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0;
+  border: 1px solid var(--ms-line); border-radius: 8px; overflow: hidden; }
+.ms .ms-contrib-cards .ms-stat { border-right: 1px solid var(--ms-line); }

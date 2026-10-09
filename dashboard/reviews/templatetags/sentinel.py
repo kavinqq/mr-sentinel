@@ -57,7 +57,7 @@ TAG_COLORS = {
     # how far a score can be trusted
     "sample:樣本少": "c-amber", "sample:暫定": "c-gray",
     # tracks
-    "track:frontend": "c-cyan", "track:backend": "c-violet",
+    "track:frontend": "c-cyan", "track:backend": "c-violet", "track:contribution": "c-teal",
     # levels
     "level:senior": "c-green", "level:mid+": "c-cyan", "level:mid": "c-indigo",
     "level:junior": "c-orange", "level:": "c-gray",
