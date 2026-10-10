@@ -30,6 +30,7 @@ measure how work is split, not speed. "Merge" is not "deployed": nothing here
 knows when code reached production.
 """
 import hashlib
+from fractions import Fraction
 import json
 import math
 import random
@@ -368,10 +369,11 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     ch = cycle_change(rv, bv, METRICS["cycle_time"]["threshold"], (pid, "cyc", rv, bv)) \
         if len(rc) >= 2 and len(bc) >= 2 else None
 
-    def self_share(ms):
+    def self_share(ms):           # exact (a Fraction): the gate's edges must not move with float error
         known = [m["self_merge"] for m in ms if m["self_merge"] is not None]
-        return round(sum(known) / len(known), 2) if known else None
-    sr, sb = self_share(rc), self_share(bc)
+        return Fraction(sum(known), len(known)) if known else None
+    sr_x, sb_x = self_share(rc), self_share(bc)
+    sr, sb = (round(float(x), 2) if x is not None else None for x in (sr_x, sb_x))   # display only
     row = add("cycle_time", ch, len(rc), len(bc), MIN["cycle"],
               _obs("R", (f"{m['mr_id']}={m['cycle_hours']:.2f}" for m in rc)) +
               _obs("B", (f"{m['mr_id']}={m['cycle_hours']:.2f}" for m in bc)),
@@ -382,8 +384,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
               {"self_recent": sr, "self_base": sb,
                "raw_recent": round(statistics.median(rv), 1) if rv else None,
                "raw_base": round(statistics.median(bv), 1) if bv else None})
-    if row["state"] != "insufficient" and sr is not None and sb is not None and \
-            (max(sr, sb) > SELF_MERGE_MAX or abs(sr - sb) >= 0.2):
+    if row["state"] != "insufficient" and sr_x is not None and sb_x is not None and \
+            (max(sr_x, sb_x) > Fraction(SELF_MERGE_MAX).limit_denominator() or abs(sr_x - sb_x) >= Fraction(1, 5)):
         row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"],
                    eligible={"watch": False, "improve": False}, blocked=f"self-merge 比例 {sb:.0%} → {sr:.0%}")
 

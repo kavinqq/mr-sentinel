@@ -1152,6 +1152,24 @@ class TestTrajectory(DbCase):
         r = self.step(16, self.m(recent_ids=(1, 2, 3, 4, 5, 6)))
         self.assertEqual((r["judged"], r["opened"]), (0, 0))
 
+    def test_the_self_merge_gate_uses_exact_shares(self):
+        from history import trajectory as tj
+        def mk(i, hours, days_ago, self_merge):
+            return {"mr_id": i, "project": "g/py_backend/x", "merged_at": NOW - timedelta(days=days_ago),
+                    "reviewed": True, "cycle_hours": hours, "self_merge": self_merge,
+                    "grades": {c: None for c in CATEGORIES}, "reasons": {c: None for c in CATEGORIES},
+                    "escaped": False, "confirmed_bugs": 0, "bug_sources": [], "pending_bugs": 0,
+                    "is_fix": False, "files": 3, "track": "backend", "slice": False}
+        cyc = lambda ms: next(x for x in tj.analyze_person(ms, [], NOW, 7)["metrics"] if x["key"] == "cycle_time")
+        base = [mk(100 + i, 10.0, 40 + i, i < 1) for i in range(10)]           # 10 %
+        recent = [mk(i, 20.0, 2 + i, i < 3) for i in range(10)]                 # 30 %: exactly 20 pp
+        row = cyc(base + recent)
+        self.assertEqual(row["state"], "not_comparable")
+        self.assertFalse(row["eligible"]["watch"])
+        base = [mk(100 + i, 10.0, 30 + i % 50, i < 81) for i in range(101)]    # 81/101 > 80 %
+        recent = [mk(i, 10.0, 2 + i % 20, i < 81) for i in range(101)]
+        self.assertEqual(cyc(base + recent)["state"], "not_comparable")
+
     def test_switching_the_comparison_basis_starts_a_new_streak(self):
         def on(basis, ids):
             m = self.m(recent_ids=ids)
