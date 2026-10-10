@@ -32,7 +32,7 @@
 {% with r=current %}
   <section class="ms-person" id="p{{ r.pid }}" aria-labelledby="h{{ r.pid }}">
     <header class="ms-person-head">
-      <h2 id="h{{ r.pid }}">{{ r.name }}</h2>
+      <h2 id="h{{ r.pid }}">{% person_tag r.pid r.name "xl" %}</h2>
       {% include "reviews/_traj_flag.html" with flag=r.flag %}
       <a class="ms-link ms-person-more" href="{% url 'person' r.pid %}">評分與 review 紀錄 →</a>
     </header>
@@ -237,7 +237,7 @@
     {% for r in rows %}
     <li class="ms-pcard f-{{ r.flag }}">
       <div class="ms-pcard-head">
-        <h2><a class="ms-pcard-link" href="?person={{ r.pid }}">{{ r.name }}</a></h2>
+        <h2><a class="ms-pcard-link" href="?person={{ r.pid }}">{% person_tag r.pid r.name "lg" %}</a></h2>
         {% include "reviews/_traj_flag.html" with flag=r.flag %}
       </div>
       {% if r.alerts or r.a.cases %}

@@ -20,7 +20,7 @@
         </div>
         <p class="ms-rec-title">{% if m.mr %}<a href="{{ m.mr.web_url }}" target="_blank" rel="noopener">{{ m.mr|short_mr }}</a><span>{{ m.mr.title }}</span>{% endif %}</p>
         {% if m.mr %}<ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ m.mr.merged_at|tw }}</li>
-          <li><span class="material-symbols-outlined" aria-hidden="true">person</span>{{ m.mr.author.name|default:m.mr.author.username }}</li></ul>{% endif %}
+          <li><span class="material-symbols-outlined" aria-hidden="true">person</span>{% person_tag m.mr.author.gitlab_id m.mr.author.name|default:m.mr.author.username %}</li></ul>{% endif %}
       </div>
     </li>
     {% endfor %}
@@ -51,7 +51,7 @@
     <li class="ms-rec"><div class="ms-rec-main">
       <div class="ms-tags"><span class="ms-tag c-teal">{{ h.commits }} 個 commit</span></div>
       <p class="ms-rec-title">{% if h.mr %}<a href="{{ h.mr.web_url }}" target="_blank" rel="noopener">{{ h.mr|short_mr }}</a><span>{{ h.mr.title }}</span>{% endif %}</p>
-      {% if h.mr %}<ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">person</span>{{ h.mr.author.name|default:h.mr.author.username }} 的 MR</li></ul>{% endif %}
+      {% if h.mr %}<ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">person</span>{% person_tag h.mr.author.gitlab_id h.mr.author.name|default:h.mr.author.username %} 的 MR</li></ul>{% endif %}
     </div></li>
     {% endfor %}
   </ol>

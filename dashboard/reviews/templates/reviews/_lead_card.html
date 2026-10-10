@@ -1,7 +1,7 @@
 {% load sentinel %}{% with f=r.contribution %}
 <article class="ms-lead">
   <header class="ms-lead-head">
-    <a class="ms-lead-name" href="{% url 'person' r.author_id %}">{{ r.name|default:r.username }} <span class="handle">{{ r.username }}</span></a>
+    <a class="ms-lead-name" href="{% url 'person' r.author_id %}">{% person_tag r.author_id r.name|default:r.username "lg" %} <span class="handle">{{ r.username }}</span></a>
     <span class="ms-tag {{ r.role|tag:'role' }}">Team leader</span>
     <span class="hint">近 {{ cfg.window_days }} 天的團隊貢獻 · 不評分、不和成員比較</span>
     {% if not on_person_page %}<a class="ms-link" href="{% url 'person' r.author_id %}#contribution">看明細 →</a>{% endif %}

@@ -46,7 +46,7 @@
           <tbody>{% for p in people %}
             <tr data-row>
               <td class="ms-check-col"><input type="checkbox" class="pick" aria-label="選取 {{ p.person.name|default:p.person.username }}"></td>
-              <td><a class="ms-who" href="{% url 'person' p.person.gitlab_id %}">{{ p.person.name|default:p.person.username }} <span class="handle">{{ p.person.username }}</span></a></td>
+              <td><a class="ms-who" href="{% url 'person' p.person.gitlab_id %}">{% person_tag p.person.gitlab_id p.person.name|default:p.person.username %} <span class="handle">{{ p.person.username }}</span></a></td>
               <td><span class="ms-tag {{ p.role|tag:'role' }}">{{ p.role_label }}</span></td>
               <td class="ms-num">{{ p.mrs }}</td>
               <td><label class="sr-only" for="role-{{ p.person.gitlab_id }}">身分</label>

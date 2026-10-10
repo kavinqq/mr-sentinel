@@ -8,7 +8,7 @@
   <div class="ms-head">
     <div class="ms-who" style="gap:14px">
       <div>
-        <h1>{{ person.name|default:person.username }}</h1>
+        <h1>{% person_tag person.gitlab_id person.name|default:person.username "xl" %}</h1>
         <p class="ms-sub">{{ person.username }} · {{ role_label }}{% if summary and not lead %} · 近 {{ cfg.window_days }} 天 · 公式 v{{ version }}{% endif %}</p>
       </div>
     </div>

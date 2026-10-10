@@ -320,3 +320,13 @@ def shift_bar(pair, kind="share", shifted=False):
     out.append(f'</svg><span class="v">{show(b)} → <strong>{show(r)}</strong></span></span>')
     return mark_safe("".join(out))
 
+
+
+@register.simple_tag
+def person_tag(pid, name, size=""):
+    """A person's name as a tag in their own colour (the same colour on every page)."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+    from ..services import person_color
+    return mark_safe(f'<span class="ms-ptag pc{person_color(pid)}{" is-" + size if size else ""}">'
+                     f'<i aria-hidden="true"></i>{escape(name)}</span>')

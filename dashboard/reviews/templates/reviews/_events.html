@@ -3,7 +3,7 @@
   {% for e in events %}
   <li class="ms-feed-item">
     <div class="ms-feed-who">
-      {% if e.gitlab_id == -1 %}<strong>團隊</strong>{% else %}<a class="ms-feed-name" href="{% url 'person' e.gitlab_id %}">{{ e.name }}</a>{% endif %}
+      {% if e.gitlab_id == -1 %}<strong>團隊</strong>{% else %}<a class="ms-feed-name" href="{% url 'person' e.gitlab_id %}">{% person_tag e.gitlab_id e.name %}</a>{% endif %}
       {% if e.old_level != e.new_level and e.old_score is not None %}
         <span class="ms-level-change">
           <span class="ms-tag {{ e.old_level|tag:'level' }}">{{ e.old_level|default:"-" }}</span>

@@ -686,6 +686,29 @@ def _fmt_interval(m):
     return f"{iv[0]:+.2f} ~ {iv[1]:+.2f}"
 
 
+# Each person keeps one colour everywhere their name shows (a tag, the sidebar dot).
+# The current team (lead / member) goes first, by GitLab id, so they get the most
+# distinct colours and a newcomer (a larger id) never shifts anyone else's.
+PERSON_COLORS = 10
+_PERSON_RANK: dict = {}
+
+
+def person_color(pid) -> int:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return 0
+    if pid not in _PERSON_RANK:
+        _PERSON_RANK.clear()
+        roles = {}
+        for r in PersonRole.objects.order_by("created_at", "id"):
+            roles[r.person_id] = r.role
+        ids = sorted(Person.objects.values_list("gitlab_id", flat=True),
+                     key=lambda g: (roles.get(g, "member") not in ("lead", "member"), g))
+        _PERSON_RANK.update({g: i % PERSON_COLORS for i, g in enumerate(ids)})
+    return _PERSON_RANK.get(pid, pid % PERSON_COLORS)
+
+
 TONE = {"strong_worse": "watch", "observe_worse": "watch-soft", "worse": "down",
         "strong_better": "improve", "observe_better": "improve-soft", "better": "up",
         "uncertain": "flat", "insufficient": "none", "not_comparable": "none", "activity": "flat"}

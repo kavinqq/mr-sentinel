@@ -479,7 +479,7 @@ td.path code { word-break: break-all; }
   border: 1px solid #D0D5DD; border-radius: 8px; background: #fff; cursor: pointer; list-style: none; font-weight: 500; }
 .ms .ms-method-pop > summary::-webkit-details-marker { display: none; }
 .ms .ms-method-pop > summary .material-symbols-outlined { font-size: 18px; color: var(--ms-accent); }
-.ms .ms-method-pop-body { position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: min(460px, 86vw);
+.ms .ms-method-pop-body { position: absolute; left: 0; top: calc(100% + 8px); z-index: 30; width: min(520px, calc(100vw - 48px));
   padding: 16px 18px; background: #fff; border: 1px solid var(--ms-line); border-radius: 10px;
   box-shadow: 0 12px 32px rgba(16, 24, 40, .12); line-height: 1.65; }
 .ms .ms-method-pop-body ul { margin: 8px 0; padding-left: 1.1em; display: grid; gap: 4px; }
@@ -797,3 +797,25 @@ td.path code { word-break: break-all; }
 .ms .ms-mtable td[data-label="基線 → 最近"] .ms-mnote { display: block; }
 .ms .ms-spark { max-width: 160px; height: 36px; }
 @media (max-width: 760px) { .ms .ms-mtable td[data-label="估計變化"] .ms-gauge { max-width: 100%; } }
+
+/* ---------- person tag: one colour per person, everywhere ---------- */
+.ms-ptag { display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px 1px 7px; border-radius: 999px;
+           font-weight: 600; font-size: .95rem; line-height: 1.6; white-space: nowrap; vertical-align: middle;
+           background: var(--pb); color: var(--pt); box-shadow: inset 0 0 0 1px var(--pl); }
+.ms-ptag i { width: 8px; height: 8px; border-radius: 50%; background: var(--pd); flex: none; }
+.ms-ptag.is-lg { font-size: 1.05rem; padding: 2px 11px 2px 9px; }
+.ms-ptag.is-xl { font-size: 1.4rem; padding: 3px 14px 3px 11px; gap: 8px; }
+.ms-ptag.is-xl i { width: 11px; height: 11px; }
+a:hover .ms-ptag { box-shadow: inset 0 0 0 1.5px var(--pd); }
+.pc0 { --pb: #EDF2FE; --pt: #3451B2; --pl: #D2DEFF; --pd: #3E63DD; }   /* indigo */
+.pc1 { --pb: #FEEEF8; --pt: #A8237A; --pl: #F6D4EA; --pd: #D6409F; }   /* pink */
+.pc2 { --pb: #E7F9FB; --pt: #0D6B80; --pl: #C4EAEF; --pd: #00A2C7; }   /* cyan */
+.pc3 { --pb: #F6EEE7; --pt: #6E4F39; --pl: #E8D9CB; --pd: #AD7F58; }   /* brown */
+.pc4 { --pb: #F4F0FE; --pt: #5B47A8; --pl: #E1D9FF; --pd: #6E56CF; }   /* violet */
+.pc5 { --pb: #E6F4FE; --pt: #0B5FAD; --pl: #CCE6FC; --pd: #0090FF; }   /* blue */
+.pc6 { --pb: #FBEBFB; --pt: #82368F; --pl: #F0D5F2; --pd: #AB4ABA; }   /* plum */
+.pc7 { --pb: #F0F0F3; --pt: #44474F; --pl: #DDDDE3; --pd: #60646C; }   /* slate */
+.pc8 { --pb: #F0F1FE; --pt: #4B48B2; --pl: #DADCFC; --pd: #5B5BD6; }   /* iris */
+.pc9 { --pb: #F6EDEA; --pt: #6E4D41; --pl: #E8D7D0; --pd: #A18072; }   /* bronze */
+.ms-nav-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--pd);
+              margin-right: 6px; vertical-align: 1px; flex: none; }

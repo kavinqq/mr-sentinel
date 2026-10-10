@@ -134,6 +134,8 @@ UNFOLD = {
     # ?v=<mtime>: a changed stylesheet is never served from the browser's cache
     "STYLES": [lambda request: static("dashboard/dashboard.css")
                + f"?v={int((BASE_DIR / 'static/dashboard/dashboard.css').stat().st_mtime)}"],
+    "SCRIPTS": [lambda request: static("dashboard/light.js")
+                + f"?v={int((BASE_DIR / 'static/dashboard/light.js').stat().st_mtime)}"],
     "DASHBOARD_CALLBACK": "reviews.views.dashboard_callback",
     "COLORS": {                     # Linear-like: neutral base + one indigo accent
         "primary": {

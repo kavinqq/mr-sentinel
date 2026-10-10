@@ -27,7 +27,8 @@ def _person_title(person) -> str:
     icon = services.FLAG_ICON[flag]
     mark = (f'<span class="ms-nav-flag f-{flag} material-symbols-outlined" role="img" '
             f'aria-label="{services.FLAG_TEXT[flag]}" title="{services.FLAG_TEXT[flag]}">{icon}</span>') if icon else ""
-    return f'<span class="ms-nav-person">{escape(person["name"])}</span>{mark}'
+    dot = f'<i class="ms-nav-dot pc{services.person_color(person["pid"])}" aria-hidden="true"></i>'
+    return f'{dot}<span class="ms-nav-person">{escape(person["name"])}</span>{mark}'
 
 
 def trajectory_items():
