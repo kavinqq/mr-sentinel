@@ -439,7 +439,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
             "windows": {"base": (b0, r0), "recent": (r0, end), "bug": bug_bounds}}
 
 
-def analyze(conn, cfg: dict, now: datetime | None = None, only: int | None = None) -> dict:
+def analyze(conn, cfg: dict, now: datetime | None = None, only: int | None = None,
+            members_out: list | None = None) -> dict:
     """{person_id: analysis} for every member being evaluated (or just `only`;
     the team prior still comes from everyone else)."""
     now = now or datetime.now(timezone.utc)
@@ -447,6 +448,8 @@ def analyze(conn, cfg: dict, now: datetime | None = None, only: int | None = Non
     roles = db.person_roles(conn)
     members = [pid for pid in set(data["by_person"]) | {p for p in data["cases"] if p is not None}
                if roles.get(pid, "member") == "member"]
+    if members_out is not None:
+        members_out.extend(members)
     out = {}
     for pid in members if only is None else [p for p in members if p == only]:
         team = [m for other in members if other != pid for m in data["by_person"].get(other, [])]
@@ -469,7 +472,10 @@ def _fingerprint(m: dict) -> str:
     observations (identity *and* value), plus the eligibility rules applied.
     Same inputs → same seeded posterior, so a re-sync is never a new judgment;
     the lifecycle reads the *current* exact probabilities, never a rounded copy."""
-    return hashlib.sha1(json.dumps([MODEL_VERSION, m["state"], _bits(m["eligible"]), m["obs"]])
+    # which side of the close line (half threshold) it is on: the team prior can move
+    # it with this person's data unchanged, and a crossing must stay on record
+    half = [(m.get(k) is not None and m[k] >= 0.70) for k in ("p_worse_half", "p_better_half")]
+    return hashlib.sha1(json.dumps([MODEL_VERSION, m["state"], _bits(m["eligible"]), m["obs"], half])
                         .encode()).hexdigest()
 
 

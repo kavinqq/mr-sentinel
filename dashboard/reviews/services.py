@@ -700,13 +700,13 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
     try:
         conn.execute("BEGIN")                          # one consistent snapshot for every read below
         _, cfg = hdb.scoring_config(conn)
-        analyses = tj.analyze(conn, cfg, analysis_as_of, only=person)
+        members = []
+        analyses = tj.analyze(conn, cfg, analysis_as_of, only=person, members_out=members)
         open_ = tj.open_alerts(conn)
         as_of = hdb.get_state(conn, "trajectory_as_of")
         closed = [dict(r) for r in conn.execute(
             "SELECT * FROM trajectory_alerts WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 50")]
         last_sync = hdb.get_state(conn, "last_sync_at")
-        members = [pid for pid, role in hdb.person_roles(conn).items() if role == "member"]
         conn.rollback()
     finally:
         conn.close()

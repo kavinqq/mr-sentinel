@@ -1121,6 +1121,18 @@ class TestTrajectory(DbCase):
         r = self.step(17, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), **calm))
         self.assertEqual(r["closed"], 1)
 
+    def test_a_crossing_of_the_close_line_with_the_same_mrs_stays_on_record(self):
+        self.open_one()
+        calm = dict(p_worse=0.1, p_worse_half=0.63, state="uncertain")
+        self.step(3, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), **calm))
+        # day 4: same MRs, the team prior moved the posterior over the close line
+        r = self.step(4, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), p_worse=0.3, p_worse_half=0.75,
+                                state="uncertain"))
+        self.assertEqual(r["judged"], 1)
+        r = self.step(16, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), p_worse=0.1, p_worse_half=0.58,
+                                 state="uncertain"))
+        self.assertEqual(r["closed"], 0)                      # calm, not-calm, calm ≠ twice in a row
+
     def test_switching_the_comparison_basis_starts_a_new_streak(self):
         def on(basis, ids):
             m = self.m(recent_ids=ids)
