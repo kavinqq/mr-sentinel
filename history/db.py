@@ -350,6 +350,51 @@ MIGRATIONS = [
     );
     CREATE INDEX commit_ratings_batch ON commit_ratings(batch, category, rated_at);
     """,
+    # 14: 個人軌跡 (history/trajectory.py): every judgment of a metric's change, keyed
+    # by the evidence it saw (a re-sync of the same data is not a second judgment),
+    # and the alerts those judgments opened / closed
+    """
+    CREATE TABLE trajectory_judgments (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_id   INTEGER NOT NULL,
+        metric      TEXT NOT NULL,
+        as_of       TEXT NOT NULL,
+        evidence    TEXT NOT NULL,              -- hash of the samples it was computed from
+        n_recent    INTEGER, n_base INTEGER,
+        recent      REAL, base REAL,
+        p_better    REAL, p_worse REAL,
+        state       TEXT NOT NULL               -- insufficient|stable|up|down|observe_*|strong_*
+    );
+    CREATE INDEX trajectory_judgments_key ON trajectory_judgments(person_id, metric, as_of);
+    CREATE TABLE trajectory_alerts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_id   INTEGER NOT NULL,
+        metric      TEXT NOT NULL,
+        kind        TEXT NOT NULL,              -- 'watch' (要關注) | 'improve' (進步很多)
+        opened_at   TEXT NOT NULL,
+        closed_at   TEXT,
+        closed_by   TEXT,                       -- 'data' | a dashboard user (已檢視)
+        summary     TEXT
+    );
+    CREATE INDEX trajectory_alerts_person ON trajectory_alerts(person_id, metric, opened_at);
+    """,
+    # 15: (Codex review of 個人軌跡) a judgment keeps the observations it saw, so
+    # "new evidence" is a set difference, not a count; half-threshold probabilities
+    # for the close rule; 已檢視 is separate from 結束追蹤; one active alert per metric
+    """
+    ALTER TABLE trajectory_judgments ADD COLUMN obs TEXT;
+    ALTER TABLE trajectory_judgments ADD COLUMN p_better_half REAL;
+    ALTER TABLE trajectory_judgments ADD COLUMN p_worse_half REAL;
+    ALTER TABLE trajectory_judgments ADD COLUMN eligible INTEGER;
+    ALTER TABLE trajectory_alerts ADD COLUMN acknowledged_at TEXT;
+    ALTER TABLE trajectory_alerts ADD COLUMN acknowledged_by TEXT;
+    ALTER TABLE trajectory_alerts ADD COLUMN note TEXT;
+    ALTER TABLE trajectory_alerts ADD COLUMN close_reason TEXT;
+    ALTER TABLE trajectory_alerts ADD COLUMN snapshot TEXT;
+    ALTER TABLE trajectory_alerts ADD COLUMN stale INTEGER DEFAULT 0;
+    CREATE UNIQUE INDEX trajectory_alerts_active ON trajectory_alerts(person_id, metric)
+        WHERE closed_at IS NULL;
+    """,
 ]
 SCALE_CHANGE_NOTE = "評分改成 10 分制(越高越好、每項各自給分)"
 TAXONOMY_CHANGE_NOTE = "評分改成 8 個面向、每項 5 分(滿分 40)"

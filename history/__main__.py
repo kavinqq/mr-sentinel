@@ -22,7 +22,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
-from history import blame, classify, db, discover, evaluate, followups, rate, scan, score, snapshot, sync
+from history import blame, classify, db, discover, evaluate, trajectory, followups, rate, scan, score, snapshot, sync
 from history.parse import CATEGORIES
 from sentinel_config import SCRIPT_DIR, load_config
 
@@ -80,6 +80,7 @@ def run(conn, config: dict, full: bool = False) -> dict:
             result["failed"]["rate"] = f"{bad} MR(s) not rated"
         result["score_changes"] = len(snapshot.record(
             conn, "dashboard 同步請求" if request_ids else "排程同步"))
+        result["trajectory"] = trajectory.update(conn, cfg)
         _evaluate(conn, config, result, force="evaluate" in kinds)
     except Exception as exc:
         result["failed"]["run"] = f"{type(exc).__name__}: {exc}"

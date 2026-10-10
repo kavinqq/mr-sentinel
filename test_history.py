@@ -4,7 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -922,6 +922,134 @@ class TestExport(DbCase):
         self.assertFalse(Path(str(out) + "-wal").exists())
         with self.assertRaises(FileExistsError):
             db.export(self.conn, out)
+
+
+class TestTrajectory(DbCase):
+    """The 個人軌跡 rules, including the edges the Codex review listed."""
+
+    def m(self, state="strong_worse", recent_ids=(1, 2, 3, 4, 5), p_worse=0.97, p_worse_half=0.99,
+          eligible=True, key="escape_rate"):
+        from history import trajectory as tj
+        obs = [f"R:{i}=1" for i in recent_ids] + [f"B:{i}=0" for i in range(100, 110)]
+        return {"key": key, **tj.METRICS[key], "n_recent": len(recent_ids), "n_base": 10, "recent": 0.5,
+                "base": 0.1, "p_better": 0.0, "p_worse": p_worse, "p_better_half": 0.0,
+                "p_worse_half": p_worse_half, "state": state, "obs": sorted(obs), "eligible": eligible}
+
+    def step(self, when, metric):
+        from history import trajectory as tj
+        return tj.update(self.conn, CFG, NOW + timedelta(days=when), {7: {"metrics": [metric]}})
+
+    def alerts(self):
+        from history import trajectory as tj
+        return tj.open_alerts(self.conn).get(7, [])
+
+    def test_a_clear_drop_is_strong_and_noise_is_not(self):
+        from history import trajectory as tj
+        team = [3] * 40
+        drop = tj.rating_change([2, 2, 2, 1, 2, 2], [4, 4, 3, 4, 4, 4, 4, 3, 4], team, 0.5, "a")
+        self.assertEqual(tj.state_of(drop), "strong_worse")
+        noise = tj.rating_change([3, 3, 4, 3, 3], [3, 3, 3, 4, 3, 3, 3, 3], team, 0.5, "b")
+        self.assertIn(tj.state_of(noise), ("uncertain", "better"))
+        up = tj.rate_change([False] * 9, [True] * 6 + [False] * 4, [False] * 30, 0.15, "c")
+        self.assertEqual(tj.state_of(up), "strong_better")          # fewer escapes is better
+
+    def test_cycle_threshold_is_25_percent_both_ways(self):
+        from history import trajectory as tj
+        slower = tj.cycle_change([13.0] * 8, [10.0] * 10, 0.25, "s")    # +30 %: worse past 25 %
+        self.assertGreater(slower["p_worse"], 0.95)
+        tiny = tj.cycle_change([0.4] * 8, [0.2] * 10, 0.25, "t")        # doubled, but 12 minutes
+        self.assertEqual(tiny["p_worse"], 0.0)
+
+    def test_same_observations_are_one_judgment_and_two_strong_with_new_ones_open(self):
+        self.step(0, self.m())
+        self.step(0.1, self.m())                                          # a re-sync
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM trajectory_judgments").fetchone()[0], 1)
+        self.assertEqual(self.alerts(), [])
+        self.assertEqual(self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))["opened"], 1)
+        self.assertEqual(self.alerts()[0]["kind"], "watch")
+
+    def test_swapping_mrs_at_the_same_count_is_new_evidence(self):
+        self.step(0, self.m(recent_ids=(1, 2, 3, 4, 5)))
+        self.step(2, self.m(recent_ids=(3, 4, 5, 6, 7)))                  # 2 out, 2 in: n unchanged
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_one_new_mr_a_day_still_opens_after_two_weeks(self):
+        self.step(0, self.m(recent_ids=(1, 2, 3, 4, 5)))
+        self.step(1, self.m(recent_ids=(1, 2, 3, 4, 5, 6)))               # 1 new: not yet
+        self.assertEqual(self.alerts(), [])
+        self.step(16, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))           # 1 new, 15 days apart
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_not_enough_data_breaks_the_streak(self):
+        self.step(0, self.m())
+        self.step(1, self.m(state="insufficient", recent_ids=(1, 2)))
+        self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8)))
+        self.assertEqual(self.alerts(), [])                              # strong, gap, strong ≠ twice
+
+    def test_ineligible_judgments_never_open(self):
+        self.step(0, self.m(eligible=False))
+        self.step(2, self.m(eligible=False, recent_ids=(1, 2, 3, 4, 5, 6, 7)))
+        self.assertEqual(self.alerts(), [])
+
+    def test_hold_then_close_on_the_half_threshold_without_new_data(self):
+        self.step(0, self.m())
+        self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))
+        calm = dict(p_worse=0.1, p_worse_half=0.3, state="uncertain")
+        self.step(3, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), **calm))
+        still_worse = dict(p_worse=0.6, p_worse_half=0.9, state="worse")
+        self.step(4, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), **still_worse))
+        self.step(20, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), **still_worse))   # same data, hold over
+        self.assertEqual(len(self.alerts()), 1)                          # half threshold still crossed
+        self.step(21, self.m(recent_ids=(10, 11, 12, 13, 14), **calm))
+        self.step(22, self.m(recent_ids=(10, 11, 12, 13, 14, 15), **calm))
+        self.assertEqual(self.alerts(), [])
+
+    def test_acknowledge_keeps_tracking_and_end_needs_a_reason(self):
+        from history import trajectory as tj
+        self.step(0, self.m())
+        self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))
+        (a,) = self.alerts()
+        tj.acknowledge(self.conn, a["id"], "lead", "下週一對一聊")
+        (a,) = self.alerts()
+        self.assertEqual((a["acknowledged_by"], a["note"]), ("lead", "下週一對一聊"))
+        with self.assertRaises(ValueError):
+            tj.end_tracking(self.conn, a["id"], "lead", " ")
+        tj.end_tracking(self.conn, a["id"], "lead", "接手難的專案,已討論")
+        self.assertEqual(self.alerts(), [])
+
+    def test_cooldown_then_a_new_episode_needs_new_judgments(self):
+        from history import trajectory as tj
+        self.step(0, self.m())
+        self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))
+        tj.end_tracking(self.conn, self.alerts()[0]["id"], "lead", "ok", NOW + timedelta(days=2, hours=1))
+        self.step(31, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8)))      # after cool-down: one new judgment
+        self.assertEqual(self.alerts(), [])                              # the old one does not count
+        self.step(33, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)))
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_people_no_longer_evaluated_have_their_alerts_ended(self):
+        from history import trajectory as tj
+        self.step(0, self.m())
+        self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))
+        tj.update(self.conn, CFG, NOW + timedelta(days=3), {})
+        row = self.conn.execute("SELECT close_reason FROM trajectory_alerts").fetchone()
+        self.assertEqual(row[0], "不再評估此人")
+
+    def test_bug_cohort_excludes_slices_from_the_team_prior_and_gates_on_two(self):
+        from history import trajectory as tj
+        base = NOW - timedelta(days=80)
+        def mr(i, bugs=0, sl=False):
+            return {"mr_id": i, "project": "g/py_backend/x", "merged_at": base + timedelta(hours=i),
+                    "reviewed": True, "cycle_hours": 1.0, "self_merge": False,
+                    "grades": {c: None for c in CATEGORIES}, "reasons": {c: None for c in CATEGORIES},
+                    "escaped": False, "confirmed_bugs": bugs, "pending_bugs": 0, "is_fix": None if sl else False,
+                    "files": 3, "track": "backend", "slice": sl}
+        me = [mr(i, bugs=1 if i < 1 else 0) for i in range(30)]
+        team = [mr(100 + i, sl=True) for i in range(50)]                 # slices: never a bug cohort
+        a = tj.analyze_person(me, team, NOW, 7)
+        bug = next(x for x in a["metrics"] if x["key"] == "bug_rate")
+        self.assertFalse(bug["eligible"])
+        self.assertIn("不到 2", bug["blocked"])
 
 
 class TestScoreLog(DbCase):
