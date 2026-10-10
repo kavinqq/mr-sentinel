@@ -90,6 +90,24 @@ def _rng(*parts) -> random.Random:
     return random.Random(int(hashlib.sha1(json.dumps(parts, default=str).encode()).hexdigest()[:12], 16))
 
 
+_MEMO: dict = {}
+
+
+def _memo(kind, fn):
+    """Same inputs → same seeded posterior, so a computed one is reused (the page
+    and the scheduler re-analyse mostly unchanged data). Bounded; values are copied."""
+    def wrapped(*args):
+        key = (kind, json.dumps(args, default=str, sort_keys=True))
+        if key not in _MEMO:
+            if len(_MEMO) > 20000:
+                _MEMO.clear()
+            _MEMO[key] = fn(*args)
+        return {k: list(v) if isinstance(v, list) else v for k, v in _MEMO[key].items()}
+    wrapped.__wrapped__ = fn
+    wrapped.__doc__ = fn.__doc__
+    return wrapped
+
+
 def _dirichlet(rng, alpha):
     g = [rng.gammavariate(a, 1.0) if a > 0 else 0.0 for a in alpha]
     total = sum(g) or 1.0
@@ -164,13 +182,18 @@ def _summary(diffs, rs, bs, threshold, higher_is_better: bool) -> dict:
     diffs.sort()
     n = len(diffs)
     sign = 1 if higher_is_better else -1
-    return {"recent": round(statistics.mean(rs), 3), "base": round(statistics.mean(bs), 3),
+    return {"recent": round(math.fsum(rs) / len(rs), 3), "base": round(math.fsum(bs) / len(bs), 3),
             "diff": round(statistics.median(diffs), 3),
             "interval": [round(diffs[int(n * .05)], 3), round(diffs[int(n * .95)], 3)],
             "p_better": sum(sign * d >= threshold for d in diffs) / n,
             "p_worse": sum(sign * d <= -threshold for d in diffs) / n,
             "p_better_half": sum(sign * d >= threshold / 2 for d in diffs) / n,
             "p_worse_half": sum(sign * d <= -threshold / 2 for d in diffs) / n}
+
+
+rating_change = _memo("rating", rating_change)
+rate_change = _memo("rate", rate_change)
+cycle_change = _memo("cycle", cycle_change)
 
 
 def state_of(c: dict) -> str:

@@ -36,6 +36,7 @@ class DashboardCase(TransactionTestCase):
     databases = {"default", "history"}
 
     def setUp(self):
+        services._ANALYSIS_CACHE.clear()               # never reuse another test's analysis
         conn = services.history_conn()               # creates + migrates the test file
         with conn:
             for table in TABLES:
@@ -357,6 +358,21 @@ class TestTrajectoryPage(DashboardCase):
         self.open_alert(stale=0)
         resp = self.client.get(reverse("trajectory"), {"view": "closed"})
         self.assertEqual(resp.context["counts"]["todo"], 1)
+
+    def test_clicks_reuse_the_analysis_until_the_data_changes(self):
+        from history import trajectory as tj
+        real = tj.analyze
+        with mock.patch.object(tj, "analyze", side_effect=lambda *a, **k: real(*a, **k)) as spy:
+            for view in ("todo", "all", "closed", "positive"):
+                self.client.get(reverse("trajectory"), {"view": view})
+            self.client.get(reverse("trajectory"), {"view": "all", "person": 7})   # filtered from the cache
+            self.assertEqual(spy.call_count, 1)
+            conn = services.history_conn()
+            with conn:
+                conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('last_sync_at', 'later')")
+            conn.close()
+            self.client.get(reverse("trajectory"), {"view": "todo"})
+            self.assertEqual(spy.call_count, 2)                                    # a sync invalidates
 
     def test_one_person_analyses_only_that_person(self):
         from history import trajectory as tj

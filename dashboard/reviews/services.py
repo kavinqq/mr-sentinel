@@ -691,17 +691,68 @@ TONE = {"strong_worse": "watch", "observe_worse": "watch-soft", "worse": "down",
         "uncertain": "flat", "insufficient": "none", "not_comparable": "none", "activity": "flat"}
 
 
+# The analysis is a seeded Monte-Carlo over everyone (~2 s): same inputs and same
+# analysis time give the same result, so it is computed once per data change / hour
+# and every click on the page (tabs, filter, 已檢視) reuses it.
+_ANALYSIS_CACHE: dict = {}
+_APPEND_ONLY = ("mr_files", "followups", "finding_reviews", "followup_reviews", "mr_commits", "finding_blame",
+                "mr_ratings", "mr_notes", "review_ratings", "project_commits", "commit_ratings", "scoring_configs")
+_SMALL_MUTABLE = ("sync_state", "person_roles", "email_aliases", "roster_additions", "people")
+
+
+def _analysis_inputs(conn) -> str:
+    """A cheap signature of everything history.trajectory.analyze reads: append-only
+    tables by count / last rowid; mrs and findings change only through a sync, which
+    stamps sync_state; the small mutable tables by content."""
+    import hashlib
+    h = hashlib.sha1()
+    for t in _APPEND_ONLY + ("mrs", "findings"):
+        h.update(repr(tuple(conn.execute(f"SELECT COUNT(*), MAX(rowid) FROM {t}").fetchone())).encode())
+    for t in _SMALL_MUTABLE:
+        for row in conn.execute(f"SELECT * FROM {t} ORDER BY rowid"):
+            h.update(repr(tuple(row)).encode())
+    return h.hexdigest()
+
+
+def _cached_analysis(conn, cfg, person):
+    """(analyses, members, analysis time): the time is the start of the hour, so it
+    is honest about what the page shows."""
+    from history import trajectory as tj
+    at = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    key = (_analysis_inputs(conn), at)
+    hit = _ANALYSIS_CACHE.get((key, None)) or (_ANALYSIS_CACHE.get((key, person)) if person else None)
+    if hit is None:
+        members = []
+        analyses = tj.analyze(conn, cfg, at, only=person, members_out=members)
+        hit = (analyses, members)
+        if len(_ANALYSIS_CACHE) > 8:
+            _ANALYSIS_CACHE.clear()
+        _ANALYSIS_CACHE[(key, person)] = hit
+    analyses, members = hit
+    if person:
+        analyses = {pid: a for pid, a in analyses.items() if pid == person}
+    return analyses, list(members), at
+
+
+def warm_trajectory() -> None:
+    """Compute and cache the current analysis (server start-up)."""
+    conn = history_conn()
+    try:
+        _, cfg = hdb.scoring_config(conn)
+        _cached_analysis(conn, cfg, None)
+    finally:
+        conn.close()
+
+
 def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
     """Everything the 個人軌跡 page shows, formatted; the numbers come from
     history.trajectory, the alert states from its tables."""
     from history import trajectory as tj
     conn = history_conn()
-    analysis_as_of = datetime.now(timezone.utc)
     try:
         conn.execute("BEGIN")                          # one consistent snapshot for every read below
         _, cfg = hdb.scoring_config(conn)
-        members = []
-        analyses = tj.analyze(conn, cfg, analysis_as_of, only=person, members_out=members)
+        analyses, members, analysis_as_of = _cached_analysis(conn, cfg, person)
         open_ = tj.open_alerts(conn)
         as_of = hdb.get_state(conn, "trajectory_as_of")
         closed = [dict(r) for r in conn.execute(
