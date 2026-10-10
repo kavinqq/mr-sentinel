@@ -66,7 +66,7 @@ def compute(features: list[dict], fixes: list[dict], findings: list[dict], days:
         key = (feature_mr_id, kind, str(ref))
         if key not in out:
             out[key] = {"feature_mr_id": feature_mr_id, "kind": kind, "source_ref": str(ref),
-                        "file": path, "days_after": round((when - shipped).total_seconds() / 86400, 1)}
+                        "file": path, "days_after": (when - shipped).total_seconds() / 86400}   # unrounded: the 30-day line is exact
 
     for fix in fixes:
         when = _ts(fix["merged_at"])

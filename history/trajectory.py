@@ -131,28 +131,33 @@ def rate_change(recent: list[bool], base: list[bool], team: list[bool], threshol
 def cycle_change(recent: list[float], base: list[float], threshold: float, seed) -> dict:
     """Bootstrap of median(R) / median(B); better = lower (faster), ±threshold both
     ways (0.75 / 1.25), and the medians must also differ by CYCLE_MIN_HOURS."""
-    rng = _rng("cycle", seed)
-    ratios, gaps = [], []
+    # canonical and exact: whole seconds, sorted (the order never matters), and the
+    # edges (±threshold, CYCLE_MIN_HOURS) compared as fractions, not floats
+    rs, bs = canonical_seconds(recent), canonical_seconds(base)
+    rng = _rng("cycle", (seed, rs, bs))
+    t = Fraction(threshold).limit_denominator(1000)
+    floor, min_gap = Fraction(36), Fraction(round(CYCLE_MIN_HOURS * 3600))   # 0.01 h, 1 h
+    draws = []
     for _ in range(DRAWS // 2):
-        r = statistics.median(rng.choices(recent, k=len(recent)))
-        b = statistics.median(rng.choices(base, k=len(base)))
-        ratios.append(math.log(max(r, 0.01) / max(b, 0.01)))
-        gaps.append(r - b)
-    better_full, worse_full = math.log(1 - threshold), math.log(1 + threshold)
-    better_half, worse_half = math.log(1 - threshold / 2), math.log(1 + threshold / 2)
-    n = len(ratios)
-    pairs = list(zip(ratios, gaps))
+        r = max(Fraction(statistics.median(rng.choices(rs, k=len(rs)))), floor)   # median of ints: exact
+        b = max(Fraction(statistics.median(rng.choices(bs, k=len(bs)))), floor)
+        draws.append((r, b))
+    n = len(draws)
 
     def frac(pred):
-        return sum(1 for x, g in pairs if pred(x, g)) / n
-    s = sorted(ratios)
-    return {"recent": round(statistics.median(recent), 1), "base": round(statistics.median(base), 1),
-            "diff": round(math.exp(statistics.median(ratios)) - 1, 2),
+        return sum(1 for r, b in draws if pred(r, b)) / n
+    s = sorted(math.log(r / b) for r, b in draws)
+    return {"recent": round(statistics.median(rs) / 3600, 1), "base": round(statistics.median(bs) / 3600, 1),
+            "diff": round(math.exp(s[n // 2]) - 1, 2),
             "interval": [round(math.exp(s[int(n * .05)]) - 1, 2), round(math.exp(s[int(n * .95)]) - 1, 2)],
-            "p_better": frac(lambda x, g: x <= better_full and -g >= CYCLE_MIN_HOURS),
-            "p_worse": frac(lambda x, g: x >= worse_full and g >= CYCLE_MIN_HOURS),
-            "p_better_half": frac(lambda x, g: x <= better_half),
-            "p_worse_half": frac(lambda x, g: x >= worse_half)}
+            "p_better": frac(lambda r, b: r <= b * (1 - t) and b - r >= min_gap),
+            "p_worse": frac(lambda r, b: r >= b * (1 + t) and r - b >= min_gap),
+            "p_better_half": frac(lambda r, b: r <= b * (1 - t / 2)),
+            "p_worse_half": frac(lambda r, b: r >= b * (1 + t / 2))}
+
+
+def canonical_seconds(hours) -> list[int]:
+    return sorted(round(h * 3600) for h in hours)
 
 
 def _summary(diffs, rs, bs, threshold, higher_is_better: bool) -> dict:
@@ -280,8 +285,8 @@ def _stratum(r_all, b_all, need):
         return "個人 MR", rp, bp, True
     if len(rs) >= need[0] and len(bs) >= need[1]:
         return "release 切片", rs, bs, True
-    share = lambda xs, ys: len(ys) / len(xs) if xs else 0.0
-    moved = abs(share(r_all, rs) - share(b_all, bs)) >= 0.2
+    share = lambda xs, ys: Fraction(len(ys), len(xs)) if xs else Fraction(0)
+    moved = abs(share(r_all, rs) - share(b_all, bs)) >= Fraction(1, 5)
     return "混合", r_all, b_all, not moved
 
 
@@ -363,10 +368,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
 
     rc = [m for m in R if m["cycle_hours"] is not None]
     bc = [m for m in B if m["cycle_hours"] is not None]
-    # canonical: the same values (as the obs record them), the same order → the same posterior
-    rv = sorted(round(m["cycle_hours"], 2) for m in rc)
-    bv = sorted(round(m["cycle_hours"], 2) for m in bc)
-    ch = cycle_change(rv, bv, METRICS["cycle_time"]["threshold"], (pid, "cyc", rv, bv)) \
+    rv, bv = [m["cycle_hours"] for m in rc], [m["cycle_hours"] for m in bc]
+    ch = cycle_change(rv, bv, METRICS["cycle_time"]["threshold"], (pid, "cyc")) \
         if len(rc) >= 2 and len(bc) >= 2 else None
 
     def self_share(ms):           # exact (a Fraction): the gate's edges must not move with float error
@@ -375,8 +378,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     sr_x, sb_x = self_share(rc), self_share(bc)
     sr, sb = (round(float(x), 2) if x is not None else None for x in (sr_x, sb_x))   # display only
     row = add("cycle_time", ch, len(rc), len(bc), MIN["cycle"],
-              _obs("R", (f"{m['mr_id']}={m['cycle_hours']:.2f}" for m in rc)) +
-              _obs("B", (f"{m['mr_id']}={m['cycle_hours']:.2f}" for m in bc)),
+              _obs("R", (f"{m['mr_id']}={round(m['cycle_hours'] * 3600)}s" for m in rc)) +   # what cycle_change uses
+              _obs("B", (f"{m['mr_id']}={round(m['cycle_hours'] * 3600)}s" for m in bc)),
               {"recent": sorted(({"mr": m, "value": round(m["cycle_hours"], 1)} for m in rc), key=lambda e: -e["value"]),
                "base": sorted(({"mr": m, "value": round(m["cycle_hours"], 1)} for m in bc), key=lambda e: -e["value"])},
               _weekly([m for m in mrs if m["cycle_hours"] is not None], now,
@@ -399,7 +402,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
 
     def share(ms, pred):
         known = [m for m in ms if pred(m) is not None]
-        return round(sum(1 for m in known if pred(m)) / len(known), 2) if known else None
+        return Fraction(sum(1 for m in known if pred(m)), len(known)) if known else None   # exact
 
     def med_files(ms):
         f = [m["files"] for m in ms if m["files"]]
@@ -420,8 +423,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     shifted = []
     for key, label in (("frontend", "前端比例"), ("fix", "fix MR 比例"), ("self_merge", "self-merge 比例")):
         b_, a = context[key]
-        if a is not None and b_ is not None and abs(a - b_) >= 0.2:
-            shifted.append(f"{label} {b_:.0%} → {a:.0%}")
+        if a is not None and b_ is not None and abs(a - b_) >= Fraction(1, 5):
+            shifted.append(f"{label} {float(b_):.0%} → {float(a):.0%}")
     b_, a = context["files"]
     if a and b_ and (a >= 1.5 * b_ or a <= b_ / 1.5):
         shifted.append(f"MR 大小(改動檔案中位數){b_:g} → {a:g}")

@@ -262,6 +262,12 @@ class TestFollowups(unittest.TestCase):
         self.assertEqual([(r["feature_mr_id"], r["kind"], r["days_after"]) for r in rows],
                          [(2, "fix_mr", 5.0)])                   # b.py's feature is 76 days old
 
+    def test_days_after_is_not_rounded(self):
+        features = [self.f(1, "2026-09-01T00:00:00Z", ["a.py"])]
+        fixes = [self.f(9, "2026-10-01T01:00:00Z", ["a.py"])]                  # 30 days and 1 hour
+        (row,) = followups.compute(features, fixes, [], days=60)
+        self.assertGreater(row["days_after"], 30)
+
     def test_ai_refind_ignores_the_same_mr_and_other_projects(self):
         features = [self.f(1, "2026-09-01T00:00:00Z", ["a.py"])]
         findings = [{"note_id": 10, "mr_id": 5, "project": "g/app", "file": "a.py",
@@ -1169,6 +1175,33 @@ class TestTrajectory(DbCase):
         base = [mk(100 + i, 10.0, 30 + i % 50, i < 81) for i in range(101)]    # 81/101 > 80 %
         recent = [mk(i, 10.0, 2 + i % 20, i < 81) for i in range(101)]
         self.assertEqual(cyc(base + recent)["state"], "not_comparable")
+
+    def test_cycle_edges_are_exact_and_nothing_is_rounded_before_judging(self):
+        from history import trajectory as tj
+        one_hour = tj.cycle_change([1.13] * 5, [0.13] * 8, 0.25, "e")         # exactly +1 h (and > 25 %)
+        self.assertEqual(one_hour["p_worse"], 1.0)
+        quarter = tj.cycle_change([8.95] * 5, [7.16] * 8, 0.25, "q")          # exactly +25 % (and > 1 h)
+        self.assertEqual(quarter["p_worse"], 1.0)
+        short = tj.cycle_change([4.999] * 5, [4.0] * 8, 0.25, "s")            # under 1 h and under 25 %
+        self.assertEqual(short["p_worse"], 0.0)
+
+    def test_a_mix_shift_of_exactly_20pp_is_not_comparable(self):
+        from history import trajectory as tj
+        mk = lambda sl: ({"slice": sl}, 1)
+        _, _, _, ok = tj._stratum([mk(True)] * 4 + [mk(False)], [mk(True)] * 8, (6, 9))
+        self.assertFalse(ok)                                                  # 8/8 → 4/5
+
+    def test_shares_are_exact_and_the_shift_hint_fires_at_20pp(self):
+        from history import trajectory as tj
+        def mk(i, days_ago, self_merge):
+            return {"mr_id": i, "project": "g/py_backend/x", "merged_at": NOW - timedelta(days=days_ago),
+                    "reviewed": True, "cycle_hours": 10.0, "self_merge": self_merge,
+                    "grades": {c: None for c in CATEGORIES}, "reasons": {c: None for c in CATEGORIES},
+                    "escaped": False, "confirmed_bugs": 0, "bug_sources": [], "pending_bugs": 0,
+                    "is_fix": False, "files": 3, "track": "backend", "slice": False}
+        a = tj.analyze_person([mk(100 + i, 40 + i, i < 1) for i in range(10)] +
+                              [mk(i, 2 + i, i < 3) for i in range(10)], [], NOW, 7)
+        self.assertTrue(any(s.startswith("self-merge 比例 10% → 30%") for s in a["shifted"]))
 
     def test_switching_the_comparison_basis_starts_a_new_streak(self):
         def on(basis, ids):

@@ -186,7 +186,8 @@ def spark(metric):
 @register.filter
 def pct(value):
     """A probability / share as a percentage; anything missing or not a number is —."""
-    return f"{value * 100:.0f}%" if isinstance(value, (int, float)) and not isinstance(value, bool) else "—"
+    from numbers import Real
+    return f"{float(value) * 100:.0f}%" if isinstance(value, Real) and not isinstance(value, bool) else "—"
 
 
 @register.filter
