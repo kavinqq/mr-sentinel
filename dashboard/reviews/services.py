@@ -736,8 +736,8 @@ def _cached_analysis(conn, cfg):
 FLAG_ORDER = {"case": 0, "watch": 1, "together": 2, "improve": 3, "ok": 4, "thin": 5}
 FLAG_TEXT = {"case": "high 個案", "watch": "要關注", "together": "一起查看", "improve": "明顯改善",
              "ok": "無警示", "thin": "資料不足"}
-SHORT_LABEL = {"requirements": "需求符合度", "verification": "驗證有效性", "escape_rate": "未處理就 merge",
-               "bug_rate": "後續 bug", "cycle_time": "開啟到 merge 時間"}
+SHORT_LABEL = {"requirements": "需求符合度", "verification": "驗證有效性", "escape_rate": "未處理 merge",
+               "bug_rate": "後續 bug", "cycle_time": "merge 時間"}
 FLAG_ICON = {"case": "error", "watch": "priority_high", "together": "join_inner", "improve": "trending_up",
              "ok": "", "thin": ""}
 
@@ -861,6 +861,15 @@ def trajectory_page(person: int | None = None) -> dict:
         row["improve"] = [al for al in alerts if al["kind"] == "improve"]
         row["main"] = [by_key[k] for k in ("requirements", "verification", "escape_rate", "bug_rate", "cycle_time")]
         row["flag"] = _flag(row)
+        row["metrics_all"] = metrics
+        text = " ".join(a["shifted"])
+        row["shift"] = {"frontend": "前端比例" in text, "fix": "fix MR" in text,
+                        "self_merge": "self-merge" in text, "files": "MR 大小" in text}
+        recent_projects = list(a["context"]["projects"][1])
+        top = [{"name": n, "n": c} for n, c in recent_projects[:4]]
+        if len(recent_projects) > 4:
+            top.append({"name": "其他", "n": sum(c for _, c in recent_projects[4:])})
+        row["projects"] = top
         rows.append(row)
     rows.sort(key=lambda r: (FLAG_ORDER[r["flag"]], r["name"]))
     windows = next(iter(analyses.values()))["windows"] if analyses else None

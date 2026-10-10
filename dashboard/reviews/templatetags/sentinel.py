@@ -198,3 +198,125 @@ def grade_tag(value, unit):
     if unit == "%":
         return "c-red" if value else "c-green"
     return "c-gray"
+
+
+GAUGE_SPAN = 3          # the axis runs to ±3 thresholds; beyond that the bar is clipped with an arrow
+THRESHOLD_TEXT = {"分": "±0.5 分", "%": "±15 個百分點", "小時": "±25% 且至少 1 小時"}
+
+
+@register.filter
+def gauge(metric, size="card"):
+    """The estimated change as a picture: one axis for every metric, in units of its
+    threshold and turned so right is always better. A dashed line marks the threshold,
+    the bar the 90% interval, the dot the estimate; numbers go in the accessible name."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+    m = metric or {}
+    w, h, pad = (260, 30, 8) if size == "wide" else (200, 26, 7)
+    x = lambda v: pad + (max(-GAUGE_SPAN, min(GAUGE_SPAN, v)) + GAUGE_SPAN) / (2 * GAUGE_SPAN) * (w - 2 * pad)
+    mid, top, bh = h / 2, h / 2 - 5, 10
+    track = (f'<rect class="zw" x="{x(-GAUGE_SPAN):.1f}" y="{top}" width="{x(-1) - x(-GAUGE_SPAN):.1f}" height="{bh}" rx="3"/>'
+             f'<rect class="zn" x="{x(-1):.1f}" y="{top}" width="{x(1) - x(-1):.1f}" height="{bh}"/>'
+             f'<rect class="zb" x="{x(1):.1f}" y="{top}" width="{x(GAUGE_SPAN) - x(1):.1f}" height="{bh}" rx="3"/>'
+             f'<line class="t" x1="{x(-1):.1f}" x2="{x(-1):.1f}" y1="2" y2="{h - 2}"/>'
+             f'<line class="t" x1="{x(1):.1f}" x2="{x(1):.1f}" y1="2" y2="{h - 2}"/>'
+             f'<line class="z" x1="{x(0):.1f}" x2="{x(0):.1f}" y1="{top - 1}" y2="{top + bh + 1}"/>')
+    label = escape(m.get("label", ""))
+    t, diff, iv = m.get("threshold"), m.get("diff"), m.get("interval")
+    if m.get("kind") == "activity" or not t:
+        return mark_safe('<span class="ms-gauge-na">活動量,不判定變化</span>')
+    if m.get("state") in ("insufficient", "not_comparable") or diff is None or not iv:
+        why = "流程不可比" if m.get("state") == "not_comparable" else "樣本不足"
+        return mark_safe(f'<svg class="ms-gauge is-empty" viewBox="0 0 {w} {h}" role="img" aria-label="{label}:{why},不判定">'
+                         f'{track}<text x="{w / 2:.0f}" y="{mid + 4:.0f}" text-anchor="middle">{why}</text></svg>')
+    sign = 1 if m.get("better") == "higher" else -1
+    v = sign * diff / t
+    lo, hi = sorted((sign * iv[0] / t, sign * iv[1] / t))
+    tone = m.get("tone", "flat")
+    name = (f'{label}:估計變化 {escape(m.get("diff_text", ""))},90% 區間 {escape(m.get("interval_text") or "—")},'
+            f'門檻 {THRESHOLD_TEXT.get(m.get("unit"), "")};右側為變好')
+    out = [f'<svg class="ms-gauge tone-{tone}" viewBox="0 0 {w} {h}" role="img" aria-label="{name}"><title>{name}</title>', track,
+           f'<line class="iv" x1="{x(lo):.1f}" x2="{x(hi):.1f}" y1="{mid}" y2="{mid}"/>']
+    if lo < -GAUGE_SPAN:
+        out.append(f'<path class="clip" d="M{pad - 5} {mid} l5 -4 v8 z"/>')
+    if hi > GAUGE_SPAN:
+        out.append(f'<path class="clip" d="M{w - pad + 5} {mid} l-5 -4 v8 z"/>')
+    out.append(f'<circle class="pt" cx="{x(v):.1f}" cy="{mid}" r="{5 if size == "wide" else 4.5}"/></svg>')
+    return mark_safe("".join(out))
+
+
+@register.simple_tag
+def gauge_key():
+    """The legend every gauge shares."""
+    from django.utils.safestring import mark_safe
+    return mark_safe(
+        '<span class="ms-gauge-key" aria-hidden="true">'
+        '<span class="k-w">← 變差</span>'
+        '<svg viewBox="0 0 120 16"><rect class="zw" x="2" y="3" width="38" height="10" rx="3"/><rect class="zn" x="40" y="3" width="40" height="10"/>'
+        '<rect class="zb" x="80" y="3" width="38" height="10" rx="3"/><line class="t" x1="40" x2="40" y1="0" y2="16"/>'
+        '<line class="t" x1="80" x2="80" y1="0" y2="16"/><line class="iv" x1="52" x2="96" y1="8" y2="8"/><circle class="pt" cx="74" cy="8" r="4"/></svg>'
+        '<span class="k-b">變好 →</span>'
+        '<span class="k-t">點 = 估計變化 · 線 = 90% 區間 · 虛線 = 門檻</span></span>')
+
+
+@register.filter
+def profile(metrics):
+    """The 8 graded categories as a dumbbell chart on the 1–5 scale: hollow = base,
+    filled = recent (raw means), the connector coloured by the metric's state."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+    rows = [m for m in metrics or [] if m.get("kind") == "rating"]
+    if not rows:
+        return ""
+    lw, w, rh, top = 96, 380, 26, 18
+    x = lambda v: lw + (v - 1) / 4 * (w - lw - 12)
+    h = top + rh * len(rows) + 4
+    out = [f'<svg class="ms-profile" viewBox="0 0 {w} {h}" role="img" aria-label="八個面向的評分,基線與最近 28 天的原始平均">']
+    for g in range(1, 6):
+        out.append(f'<line class="grid" x1="{x(g):.1f}" x2="{x(g):.1f}" y1="{top - 4}" y2="{h - 4}"/>'
+                   f'<text class="tick" x="{x(g):.1f}" y="11" text-anchor="middle">{g}</text>')
+    for i, m in enumerate(rows):
+        y = top + rh * i + rh / 2
+        b, r = m.get("raw_base"), m.get("raw_recent")
+        tone = m.get("tone", "flat")
+        desc = f'{escape(m["label"])}:基線 {"—" if b is None else f"{b:.2f}"},最近 {"—" if r is None else f"{r:.2f}"},{escape(m.get("state_text", ""))}'
+        out.append(f'<g class="row tone-{tone}"><title>{desc}</title>'
+                   f'<text class="lab" x="{lw - 10}" y="{y + 4:.1f}" text-anchor="end">{escape(m["label"])}</text>')
+        if b is not None and r is not None:
+            out.append(f'<line class="conn" x1="{x(b):.1f}" x2="{x(r):.1f}" y1="{y}" y2="{y}"/>')
+        if b is not None:
+            out.append(f'<circle class="b" cx="{x(b):.1f}" cy="{y}" r="4.5"/>')
+        if r is not None:
+            out.append(f'<circle class="r" cx="{x(r):.1f}" cy="{y}" r="5"/>')
+        if b is None and r is None:
+            out.append(f'<text class="none" x="{x(3):.1f}" y="{y + 4:.1f}" text-anchor="middle">沒有評分</text>')
+        out.append("</g>")
+    out.append("</svg>")
+    return mark_safe("".join(out))
+
+
+@register.simple_tag
+def shift_bar(pair, kind="share", shifted=False):
+    """One work-mix measure, base → recent, as a dumbbell on its track: a share on
+    0–100%, a count on 0 to 1.25 × the larger side."""
+    from django.utils.safestring import mark_safe
+    b, r = (pair or (None, None))[:2]
+    nums = [float(v) for v in (b, r) if v is not None]
+    if not nums:
+        return mark_safe('<span class="ms-dim">—</span>')
+    top = 1 if kind == "share" else max(max(nums) * 1.25, 1)
+    w, h, pad = 140, 18, 6
+    x = lambda v: pad + float(v) / top * (w - 2 * pad)
+    text = (lambda v: f"{float(v) * 100:.0f}%") if kind == "share" else (lambda v: f"{float(v):g}")
+    show = lambda v: "—" if v is None else text(v)
+    out = [f'<span class="ms-shift{" is-shifted" if shifted else ""}"><svg viewBox="0 0 {w} {h}" aria-hidden="true">'
+           f'<line class="track" x1="{pad}" x2="{w - pad}" y1="{h / 2}" y2="{h / 2}"/>']
+    if b is not None and r is not None:
+        out.append(f'<line class="conn" x1="{x(b):.1f}" x2="{x(r):.1f}" y1="{h / 2}" y2="{h / 2}"/>')
+    if b is not None:
+        out.append(f'<circle class="b" cx="{x(b):.1f}" cy="{h / 2}" r="4"/>')
+    if r is not None:
+        out.append(f'<circle class="r" cx="{x(r):.1f}" cy="{h / 2}" r="4.5"/>')
+    out.append(f'</svg><span class="v">{show(b)} → <strong>{show(r)}</strong></span></span>')
+    return mark_safe("".join(out))
+

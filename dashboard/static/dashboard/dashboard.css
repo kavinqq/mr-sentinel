@@ -699,3 +699,101 @@ td.path code { word-break: break-all; }
 .ms-nav-flag.f-watch { color: #AB6400; }
 .ms-nav-flag.f-together { color: #CC4E00; }
 .ms-nav-flag.f-improve { color: #218358; }
+
+/* ---------- 個人軌跡:圖形 ---------- */
+.ms .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* change gauge: right = better, dashed = threshold, bar = 90% interval, dot = estimate */
+.ms .ms-gauge { display: block; width: 100%; height: auto; max-width: 260px; overflow: visible; --g: #8A8F98; }
+.ms .ms-gauge .zw, .ms .ms-gauge-key .zw { fill: #FDECEC; }
+.ms .ms-gauge .zn, .ms .ms-gauge-key .zn { fill: #F1F1F4; }
+.ms .ms-gauge .zb, .ms .ms-gauge-key .zb { fill: #E6F4EC; }
+.ms .ms-gauge .t, .ms .ms-gauge-key .t { stroke: #8A8F98; stroke-width: 1; stroke-dasharray: 2 2; }
+.ms .ms-gauge .z { stroke: #B4B7BF; stroke-width: 1; }
+.ms .ms-gauge .iv, .ms .ms-gauge-key .iv { stroke: var(--g); stroke-width: 4; stroke-linecap: round; opacity: .55; }
+.ms .ms-gauge .pt, .ms .ms-gauge-key .pt { fill: var(--g); stroke: #fff; stroke-width: 1.5; }
+.ms .ms-gauge .clip { fill: var(--g); }
+.ms .ms-gauge.tone-watch, .ms .ms-gauge.tone-watch-soft { --g: #C2410C; }
+.ms .ms-gauge.tone-down { --g: #EA7A2E; }
+.ms .ms-gauge.tone-improve { --g: #218358; }
+.ms .ms-gauge.tone-improve-soft, .ms .ms-gauge.tone-up { --g: #12A594; }
+.ms .ms-gauge.tone-flat { --g: #646A73; }
+.ms .ms-gauge.is-empty rect { opacity: .45; }
+.ms .ms-gauge.is-empty .t, .ms .ms-gauge.is-empty .z { opacity: .4; }
+.ms .ms-gauge.is-empty text { font-size: 12px; fill: #55595F; }
+.ms .ms-gauge-key .iv { stroke: #5E6AD2; } .ms .ms-gauge-key .pt { fill: #5E6AD2; }
+.ms .ms-gauge-na { color: var(--ms-muted); font-size: .85rem; }
+.ms .ms-gauge-key { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: .85rem; color: var(--ms-muted); }
+.ms .ms-gauge-key svg { width: 120px; height: 16px; }
+.ms .ms-gauge-key .k-w { color: #B42318; font-weight: 600; } .ms .ms-gauge-key .k-b { color: #17633F; font-weight: 600; }
+.ms .ms-gauge-key .k-t { margin-left: 8px; }
+.ms .ms-legend-row { margin: 0 0 10px; }
+.ms .ms-mkey { margin: 20px 0 4px; }
+
+/* overview cards: one gauge per main metric */
+.ms .ms-pcard-metrics li { display: grid; grid-template-columns: 6.6em 1fr 22px; align-items: center; gap: 10px; padding: 3px 0; }
+.ms .ms-pcard-metrics .ms-gauge { max-width: none; }
+.ms .ms-state-ic { display: inline-flex; justify-content: center; align-items: center; width: 22px; height: 22px; border-radius: 50%;
+                   background: #F0F0F0; color: #646464; }
+.ms .ms-state-ic .material-symbols-outlined { font-size: 16px; }
+.ms .ms-state-ic.tone-watch, .ms .ms-state-ic.tone-watch-soft { background: #FFF1D6; color: #9A3A00; }
+.ms .ms-state-ic.tone-down { background: #FFEFD6; color: #9A3A00; }
+.ms .ms-state-ic.tone-improve { background: #E6F6EB; color: #17633F; }
+.ms .ms-state-ic.tone-improve-soft, .ms .ms-state-ic.tone-up { background: #E0F8F3; color: #006556; }
+.ms .ms-state-ic.tone-none { background: #fff; box-shadow: inset 0 0 0 1px #D9D9D9; }
+
+/* alert card: current change */
+.ms .ms-qgauge { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; }
+.ms .ms-qgauge .ms-gauge { max-width: 300px; }
+.ms .ms-qgauge-cap { font-size: .82rem; color: var(--ms-muted); }
+
+/* person overview: rating profile + work mix */
+.ms .ms-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin: 16px 0 8px; }
+.ms .ms-panel { border: 1px solid var(--ms-line); border-radius: 12px; padding: 14px 16px; background: var(--ms-bg); min-width: 0; }
+.ms .ms-panel h3 { margin: 0 0 2px; font-size: 1rem; }
+.ms .ms-panel-key { margin: 0 0 8px; font-size: .85rem; color: var(--ms-muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ms .ms-panel-key .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.ms .ms-panel-key .dot.b { background: #fff; box-shadow: inset 0 0 0 2px #8A8F98; }
+.ms .ms-panel-key .dot.r { background: #5E6AD2; margin-left: 6px; }
+.ms .ms-profile { display: block; width: 100%; height: auto; }
+.ms .ms-profile .grid { stroke: #ECECF0; }
+.ms .ms-profile .tick { font-size: 10px; fill: #6B7079; }
+.ms .ms-profile .lab { font-size: 12px; fill: #33363C; }
+.ms .ms-profile .none { font-size: 10px; fill: #8A8F98; }
+.ms .ms-profile .row { --g: #5E6AD2; }
+.ms .ms-profile .row.tone-watch, .ms .ms-profile .row.tone-watch-soft { --g: #C2410C; }
+.ms .ms-profile .row.tone-down { --g: #EA7A2E; }
+.ms .ms-profile .row.tone-improve { --g: #218358; }
+.ms .ms-profile .row.tone-improve-soft, .ms .ms-profile .row.tone-up { --g: #12A594; }
+.ms .ms-profile .conn { stroke: var(--g); stroke-width: 3; opacity: .45; stroke-linecap: round; }
+.ms .ms-profile .b { fill: #fff; stroke: #8A8F98; stroke-width: 2; }
+.ms .ms-profile .r { fill: var(--g); stroke: #fff; stroke-width: 1.5; }
+.ms .ms-shifts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ms .ms-shifts li { display: grid; grid-template-columns: 7.5em 1fr; align-items: center; gap: 10px; font-size: .92rem; }
+.ms .ms-shifts .k { color: var(--ms-muted); white-space: nowrap; }
+.ms .ms-shift { display: flex; align-items: center; gap: 10px; padding: 2px 6px; border-radius: 6px; }
+.ms .ms-shift svg { width: 140px; height: 18px; flex: none; }
+.ms .ms-shift .track { stroke: #E4E4E9; stroke-width: 4; stroke-linecap: round; }
+.ms .ms-shift .conn { stroke: #5E6AD2; stroke-width: 3; opacity: .4; }
+.ms .ms-shift .b { fill: #fff; stroke: #8A8F98; stroke-width: 2; }
+.ms .ms-shift .r { fill: #5E6AD2; stroke: #fff; stroke-width: 1.5; }
+.ms .ms-shift .v { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ms .ms-shift.is-shifted { background: #FFF7C2; box-shadow: inset 0 0 0 1px #F3D673; }
+.ms .ms-shift.is-shifted .conn, .ms .ms-shift.is-shifted .r { stroke: #AB6400; }
+.ms .ms-shift.is-shifted .r { fill: #AB6400; }
+.ms .ms-shift.is-shifted::after { content: "有變動"; font-size: .78rem; font-weight: 700; color: #7A4500; }
+.ms .ms-proj-cap { margin: 12px 0 4px; font-size: .85rem; color: var(--ms-muted); }
+.ms .ms-projbar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; gap: 2px; }
+.ms .ms-projbar .seg { flex-basis: 0; min-width: 4px; }
+.ms .s0 { background: #5E6AD2; } .ms .s1 { background: #12A594; } .ms .s2 { background: #F2994A; }
+.ms .s3 { background: #8E4EC6; } .ms .s4 { background: #B4B7BF; }
+.ms .ms-proj-legend { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .85rem; }
+.ms .ms-proj-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.ms .ms-proj-legend span { color: var(--ms-muted); font-variant-numeric: tabular-nums; }
+
+/* metric table: the gauge column */
+.ms .ms-mtable col.c-name { width: 26%; } .ms .ms-mtable col.c-gauge { width: 28%; }
+.ms .ms-mtable col.c-val { width: 15%; } .ms .ms-mtable col.c-spark { width: 15%; } .ms .ms-mtable col.c-state { width: 16%; }
+.ms .ms-mtable td[data-label="估計變化"] { padding-top: 12px; }
+.ms .ms-mtable td[data-label="基線 → 最近"] .ms-mnote { display: block; }
+.ms .ms-spark { max-width: 160px; height: 36px; }
+@media (max-width: 760px) { .ms .ms-mtable td[data-label="估計變化"] .ms-gauge { max-width: 100%; } }

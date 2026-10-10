@@ -61,6 +61,7 @@
           <p class="ms-qtitle">{{ m.label }}{% if al.kind == "watch" %}惡化訊號{% else %}改善訊號{% endif %}達提醒門檻
             <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
             {% if al.acknowledged_at %}<span class="ms-tag c-gray">已檢視 · {{ al.acknowledged_by }}</span>{% endif %}</p>
+          <div class="ms-qgauge">{{ m|gauge:"wide" }}<span class="ms-qgauge-cap">目前</span></div>
           <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次判定、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
           <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 樣本不足或流程不可比,提醒保留到資料足夠再判斷{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再達到門檻,連續兩次低於一半門檻後會自動結束{% endif %}{% endif %}</p>
           {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同期工作組成也變了:{{ r.a.shifted|join:"、" }} — 建議先看同類型 MR 的比較</p>{% endif %}
@@ -106,6 +107,7 @@
           <p class="ms-qtitle">{{ m.label }}{% if al.kind == "watch" %}惡化訊號{% else %}改善訊號{% endif %}達提醒門檻
             <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
             {% if al.acknowledged_at %}<span class="ms-tag c-gray">已檢視 · {{ al.acknowledged_by }}</span>{% endif %}</p>
+          <div class="ms-qgauge">{{ m|gauge:"wide" }}<span class="ms-qgauge-cap">目前</span></div>
           <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次判定、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
           <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 樣本不足或流程不可比,提醒保留到資料足夠再判斷{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再達到門檻,連續兩次低於一半門檻後會自動結束{% endif %}{% endif %}</p>
           {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同期工作組成也變了:{{ r.a.shifted|join:"、" }} — 建議先看同類型 MR 的比較</p>{% endif %}
@@ -138,29 +140,45 @@
       </ol>
     </section>
     {% endif %}
-    <ul class="ms-context" aria-label="同期的工作組成">
-      <li{% if "前端比例" in r.a.shifted|join:"" %} class="is-shifted"{% endif %}><span>前端比例</span>{{ r.a.context.frontend.0|pct }} → {{ r.a.context.frontend.1|pct }}</li>
-      <li{% if "fix MR" in r.a.shifted|join:"" %} class="is-shifted"{% endif %}><span>fix MR 比例</span>{{ r.a.context.fix.0|pct }} → {{ r.a.context.fix.1|pct }}</li>
-      <li{% if "MR 大小" in r.a.shifted|join:"" %} class="is-shifted"{% endif %}><span>改動檔案中位數</span>{{ r.a.context.files.0|default_if_none:"—" }} → {{ r.a.context.files.1|default_if_none:"—" }}</li>
-      <li{% if "self-merge" in r.a.shifted|join:"" %} class="is-shifted"{% endif %}><span>self-merge</span>{{ r.a.context.self_merge.0|pct }} → {{ r.a.context.self_merge.1|pct }}</li>
-      <li class="wide"><span>最近專案</span>{% for name, n in r.a.context.projects.1 %}{{ name }} {{ n }}{% if not forloop.last %}、{% endif %}{% empty %}—{% endfor %}</li>
-    </ul>
+    <div class="ms-overview">
+      <section class="ms-panel" aria-labelledby="pf{{ r.pid }}">
+        <h3 id="pf{{ r.pid }}">八面向評分</h3>
+        <p class="ms-panel-key"><span class="dot b"></span>基線 <span class="dot r"></span>最近 28 天 · 原始平均,1–5 分</p>
+        {{ r.metrics_all|profile }}
+      </section>
+      <section class="ms-panel" aria-labelledby="cx{{ r.pid }}">
+        <h3 id="cx{{ r.pid }}">同期工作組成</h3>
+        <p class="ms-panel-key"><span class="dot b"></span>基線 <span class="dot r"></span>最近 · 標黃 = 有明顯變動</p>
+        <ul class="ms-shifts">
+          <li><span class="k">前端比例</span>{% shift_bar r.a.context.frontend "share" r.shift.frontend %}</li>
+          <li><span class="k">fix MR 比例</span>{% shift_bar r.a.context.fix "share" r.shift.fix %}</li>
+          <li><span class="k">self-merge</span>{% shift_bar r.a.context.self_merge "share" r.shift.self_merge %}</li>
+          <li><span class="k">改動檔案中位數</span>{% shift_bar r.a.context.files "count" r.shift.files %}</li>
+        </ul>
+        {% if r.projects %}
+        <p class="ms-proj-cap">最近專案</p>
+        <div class="ms-projbar" role="img" aria-label="最近專案:{% for p in r.projects %}{{ p.name }} {{ p.n }} 個{% if not forloop.last %}、{% endif %}{% endfor %}">
+          {% for p in r.projects %}<span class="seg s{{ forloop.counter0 }}" style="flex-grow: {{ p.n }}" title="{{ p.name }} {{ p.n }}"></span>{% endfor %}
+        </div>
+        <ul class="ms-proj-legend">{% for p in r.projects %}<li><i class="s{{ forloop.counter0 }}"></i>{{ p.name }} <span>{{ p.n }}</span></li>{% endfor %}</ul>
+        {% endif %}
+      </section>
+    </div>
 
+    <div class="ms-mkey">{% gauge_key %}</div>
     {% for group, metrics in r.groups %}
     {% if group == "輔助品質趨勢" or group == "活動與資料覆蓋" %}<details class="ms-mgroup-fold"><summary>{{ group }}<span class="hint">{% if group == "輔助品質趨勢" %}其餘 6 個面向,只看趨勢、不單獨警示{% else %}只用來理解工作切分{% endif %}</span></summary>{% endif %}
     <div class="ms-mgroup">
       {% if group != "輔助品質趨勢" and group != "活動與資料覆蓋" %}<h3>{{ group }}</h3>{% endif %}
       <table class="ms-mtable">
-        <colgroup><col class="c-name"><col class="c-val"><col class="c-diff"><col class="c-iv"><col class="c-n"><col class="c-spark"><col class="c-state"></colgroup>
-        <thead{% if not forloop.first %} class="sr-only-head"{% endif %}><tr><th scope="col">指標</th><th scope="col" class="ms-num">基線 → 最近(實際值)</th><th scope="col" class="ms-num" title="估計的變化量(評分、比例含團隊先驗;時間為中位數比)">估計變化</th><th scope="col">變化的 90% 區間</th><th scope="col" class="ms-num">樣本 B/R</th><th scope="col">近 12 週</th><th scope="col">判定</th></tr></thead>
+        <colgroup><col class="c-name"><col class="c-gauge"><col class="c-val"><col class="c-spark"><col class="c-state"></colgroup>
+        <thead{% if not forloop.first %} class="sr-only-head"{% endif %}><tr><th scope="col">指標</th><th scope="col">估計變化(右 = 變好)</th><th scope="col" class="ms-num">基線 → 最近</th><th scope="col">近 12 週</th><th scope="col">判定</th></tr></thead>
         <tbody>
         {% for m in metrics %}
           <tr id="m{{ r.pid }}-{{ m.key }}" class="tone-{{ m.tone }}">
             <th scope="row" data-label="指標"><span class="ms-mname">{{ m.label }}</span><span class="ms-mnote">{{ m.note }}</span>{% if m.stratum and m.state != "insufficient" %}<span class="ms-mnote">比較基礎:{{ m.stratum }}</span>{% endif %}</th>
-            <td data-label="基線 → 最近" class="ms-num">{% if m.state == "insufficient" %}<span class="ms-dim">—</span>{% else %}{{ m.base_text }} → <strong>{{ m.recent_text }}</strong>{% endif %}</td>
-            <td data-label="變化" class="ms-num">{% if m.state == "insufficient" %}<span class="ms-dim">—</span>{% else %}{{ m.diff_text }}{% endif %}</td>
-            <td data-label="變化的 90% 區間">{% if m.state == "insufficient" or not m.interval_text %}<span class="ms-dim">—</span>{% else %}{{ m.interval_text }}{% endif %}</td>
-            <td data-label="樣本 B/R" class="ms-num">{{ m.n_base }}/{{ m.n_recent }}{% if m.state == "insufficient" and m.need_text %}<span class="ms-mnote">{{ m.need_text }}</span>{% endif %}</td>
+            <td data-label="估計變化">{{ m|gauge:"wide" }}</td>
+            <td data-label="基線 → 最近" class="ms-num">{% if m.state == "insufficient" %}<span class="ms-dim">—</span>{% else %}{{ m.base_text }} → <strong>{{ m.recent_text }}</strong>{% endif %}<span class="ms-mnote">樣本 {{ m.n_base }}/{{ m.n_recent }}{% if m.state == "insufficient" and m.need_text %} · {{ m.need_text }}{% endif %}</span></td>
             <td data-label="近 12 週">{{ m|spark }}</td>
             <td data-label="判定">
               <span class="ms-state tone-{{ m.tone }}"><span class="material-symbols-outlined" aria-hidden="true">{% if m.tone == "watch" or m.tone == "watch-soft" %}priority_high{% elif m.tone == "improve" or m.tone == "improve-soft" %}star{% elif m.tone == "down" %}south_east{% elif m.tone == "up" %}north_east{% elif m.tone == "none" %}help{% else %}remove{% endif %}</span>{{ m.state_text }}</span>
@@ -169,9 +187,9 @@
             </td>
           </tr>
           {% if m.evidence.recent or m.evidence.base %}
-          <tr class="ms-why-row" id="w{{ r.pid }}-{{ m.key }}" hidden><td colspan="7">
+          <tr class="ms-why-row" id="w{{ r.pid }}-{{ m.key }}" hidden><td colspan="5">
                 <div class="ms-why-body">
-                  {% if m.state != "insufficient" and m.kind != "activity" %}<p class="ms-why-summary">{% if m.unit == "%" %}估計比例(含團隊先驗){{ m.base|pct }} → {{ m.recent|pct }} · {% elif m.unit == "分" %}估計平均(含團隊先驗){{ m.base|floatformat:2 }} → {{ m.recent|floatformat:2 }} · {% endif %}門檻:{% if m.unit == "%" %}±15 個百分點{% elif m.unit == "小時" %}±25% 且至少 1 小時{% else %}±0.5 分{% endif %} · 改善超過門檻的機率 {{ m.p_better|pct }} · 變差超過門檻的機率 {{ m.p_worse|pct }}{% if m.x_recent is not None %} · 最近 {{ m.x_recent }}/{{ m.n_recent }}、基線 {{ m.x_base }}/{{ m.n_base }}{% endif %}{% if m.pending %} · 另有 {{ m.pending }} 筆後續 bug 待確認{% endif %}</p>{% endif %}
+                  {% if m.state != "insufficient" and m.kind != "activity" %}<p class="ms-why-summary">{% if m.unit == "%" %}估計比例(含團隊先驗){{ m.base|pct }} → {{ m.recent|pct }} · {% elif m.unit == "分" %}估計平均(含團隊先驗){{ m.base|floatformat:2 }} → {{ m.recent|floatformat:2 }} · {% endif %}估計變化 {{ m.diff_text }}{% if m.interval_text %}(90% 區間 {{ m.interval_text }}){% endif %} · 門檻:{% if m.unit == "%" %}±15 個百分點{% elif m.unit == "小時" %}±25% 且至少 1 小時{% else %}±0.5 分{% endif %} · 改善超過門檻的機率 {{ m.p_better|pct }} · 變差超過門檻的機率 {{ m.p_worse|pct }}{% if m.x_recent is not None %} · 最近 {{ m.x_recent }}/{{ m.n_recent }}、基線 {{ m.x_base }}/{{ m.n_base }}{% endif %}{% if m.pending %} · 另有 {{ m.pending }} 筆後續 bug 待確認{% endif %}</p>{% endif %}
                   <div class="ms-why-cols">
                     <div><h4>最近 {{ m.n_recent }} 筆{% if m.n_recent > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由長到短{% else %}有事件的在前{% endif %}</h4>
                       <ul>{% for e in m.evidence.recent|slice:":10" %}<li><span class="ms-tag {{ e.value|grade_tag:m.unit }}">{% if m.unit == "%" %}{% if m.key == "bug_rate" %}{% if e.value %}{{ e.value }} 個 bug{% else %}沒有{% endif %}{% elif e.value %}推定未處理{% else %}未觀察到未處理{% endif %}{% elif m.unit == "小時" %}{{ e.value }} h{% else %}{{ e.value }} 分{% endif %}</span> <a class="ms-link" href="{{ e.mr.web_url }}" target="_blank" rel="noopener">{{ e.mr.project|cut:"developer/" }}!{{ e.mr.iid }}</a>{% if e.mr.slice %}<span class="ms-tag c-violet">release 切片</span>{% endif %}
@@ -210,6 +228,7 @@
   {% elif person_filter %}
   <p class="ms-empty-block">這位成員目前不在個人軌跡的分析範圍(非成員、已離職或還沒有資料)。<a class="ms-link" href="{% url 'trajectory' %}">回到全員一覽 →</a></p>
   {% else %}
+  <div class="ms-legend-row">{% gauge_key %}</div>
   <ul class="ms-flag-legend" aria-label="圖示說明">
     {% for f in "case watch together improve"|split %}<li>{% include "reviews/_traj_flag.html" with flag=f %}<span class="n">{% for k, v in counts.items %}{% if k == f %}{{ v }} 人{% endif %}{% endfor %}</span></li>{% endfor %}
   </ul>
@@ -226,8 +245,8 @@
       {% endif %}
       <ul class="ms-pcard-metrics">
         {% for m in r.main %}
-        <li class="tone-{{ m.tone }}"><span class="name" title="{{ m.label }}">{{ short_label|get:m.key }}</span>
-          <span class="ms-state tone-{{ m.tone }}"><span class="material-symbols-outlined" aria-hidden="true">{% if m.tone == "watch" or m.tone == "watch-soft" %}priority_high{% elif m.tone == "improve" or m.tone == "improve-soft" %}star{% elif m.tone == "down" %}south_east{% elif m.tone == "up" %}north_east{% elif m.tone == "none" %}help{% else %}remove{% endif %}</span>{{ m.state_text }}</span></li>
+        <li class="tone-{{ m.tone }}"><span class="name" title="{{ m.label }}">{{ short_label|get:m.key }}</span>{{ m|gauge }}
+          <span class="ms-state-ic tone-{{ m.tone }}" title="{{ m.state_text }}"><span class="material-symbols-outlined" aria-hidden="true">{% if m.tone == "watch" or m.tone == "watch-soft" %}priority_high{% elif m.tone == "improve" or m.tone == "improve-soft" %}star{% elif m.tone == "down" %}south_east{% elif m.tone == "up" %}north_east{% elif m.tone == "none" %}help{% else %}remove{% endif %}</span><span class="sr-only">{{ m.state_text }}</span></span></li>
         {% endfor %}
       </ul>
       <p class="ms-pcard-foot">最近個人 MR {{ r.a.context.personal.1 }}、release 切片 {{ r.a.context.slices.1 }}<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></p>
