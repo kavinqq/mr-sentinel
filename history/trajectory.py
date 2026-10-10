@@ -139,21 +139,21 @@ def cycle_change(recent: list[float], base: list[float], threshold: float, seed)
     floor, min_gap = Fraction(36), Fraction(round(CYCLE_MIN_HOURS * 3600))   # 0.01 h, 1 h
     draws = []
     for _ in range(DRAWS // 2):
-        r = max(Fraction(statistics.median(rng.choices(rs, k=len(rs)))), floor)   # median of ints: exact
-        b = max(Fraction(statistics.median(rng.choices(bs, k=len(bs)))), floor)
+        r = Fraction(statistics.median(rng.choices(rs, k=len(rs))))   # median of ints: exact
+        b = Fraction(statistics.median(rng.choices(bs, k=len(bs))))
         draws.append((r, b))
     n = len(draws)
 
-    def frac(pred):
-        return sum(1 for r, b in draws if pred(r, b)) / n
-    s = sorted(math.log(r / b) for r, b in draws)
+    def frac(pred):           # ratios on the floored medians (no ÷0), the 1-hour gap on the raw ones
+        return sum(1 for r, b in draws if pred(max(r, floor), max(b, floor), r - b)) / n
+    s = sorted(math.log(max(r, floor) / max(b, floor)) for r, b in draws)
     return {"recent": round(statistics.median(rs) / 3600, 1), "base": round(statistics.median(bs) / 3600, 1),
             "diff": round(math.exp(s[n // 2]) - 1, 2),
             "interval": [round(math.exp(s[int(n * .05)]) - 1, 2), round(math.exp(s[int(n * .95)]) - 1, 2)],
-            "p_better": frac(lambda r, b: r <= b * (1 - t) and b - r >= min_gap),
-            "p_worse": frac(lambda r, b: r >= b * (1 + t) and r - b >= min_gap),
-            "p_better_half": frac(lambda r, b: r <= b * (1 - t / 2)),
-            "p_worse_half": frac(lambda r, b: r >= b * (1 + t / 2))}
+            "p_better": frac(lambda r, b, g: r <= b * (1 - t) and -g >= min_gap),
+            "p_worse": frac(lambda r, b, g: r >= b * (1 + t) and g >= min_gap),
+            "p_better_half": frac(lambda r, b, g: r <= b * (1 - t / 2)),
+            "p_worse_half": frac(lambda r, b, g: r >= b * (1 + t / 2))}
 
 
 def canonical_seconds(hours) -> list[int]:

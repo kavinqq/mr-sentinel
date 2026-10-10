@@ -1184,6 +1184,12 @@ class TestTrajectory(DbCase):
         self.assertEqual(quarter["p_worse"], 1.0)
         short = tj.cycle_change([4.999] * 5, [4.0] * 8, 0.25, "s")            # under 1 h and under 25 %
         self.assertEqual(short["p_worse"], 0.0)
+        tiny_base = tj.cycle_change([1.005] * 5, [0.005] * 8, 0.25, "f")     # 18 s → 3618 s: exactly +1 h
+        self.assertEqual(tiny_base["p_worse"], 1.0)
+        faster = tj.cycle_change([0.005] * 5, [1.005] * 8, 0.25, "g")        # and the other way
+        self.assertEqual(faster["p_better"], 1.0)
+        from_zero = tj.cycle_change([1.0] * 5, [0.0] * 8, 0.25, "z")
+        self.assertEqual(from_zero["p_worse"], 1.0)
 
     def test_a_mix_shift_of_exactly_20pp_is_not_comparable(self):
         from history import trajectory as tj
