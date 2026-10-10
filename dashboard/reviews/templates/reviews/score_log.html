@@ -5,7 +5,7 @@
 <div class="ms">
   <div class="ms-head">
     <div><h1>評分變動紀錄</h1>
-      <p class="ms-sub">新 MR → review → 寫入資料庫 → 重算個人與團隊分數;有變才記一筆,每筆下方寫的是觸發這次重算的事件。</p></div>
+      <p class="ms-sub">MR、review 或設定有更新時會重新計算分數;分數有變才記一筆,每筆下方寫的是這次重算的原因。</p></div>
     <form method="get" class="ms-row">
       <select name="person" aria-label="對象" onchange="this.form.submit()"><option value="">所有人</option>
         <option value="-1" {% if person == -1 %}selected{% endif %}>團隊</option>

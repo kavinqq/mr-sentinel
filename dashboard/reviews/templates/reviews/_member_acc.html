@@ -4,7 +4,7 @@
     <span><a class="ms-who" href="{% url 'person' r.author_id %}">{% person_tag r.author_id r.name|default:r.username %} <span class="handle">{{ r.username }}</span></a></span>
     <span>{% if r.ranked %}<span class="ms-tag {{ r.level|tag:'level' }}">{{ r.level|default:"資料不足" }}</span>{% else %}<span class="ms-tag {{ r.role|tag:'role' }}">{{ r.role|default:"member"|role_label }}</span>{% endif %}</span>
     <span class="ms-num ms-strong">{{ r.score|default_if_none:"—" }}{% if r.fullstack_bonus %}<span class="ms-tag c-green ms-bonus" title="前後端都達標的全端加分(等級用加分前的 {{ r.score_before_bonus }})">全端 +{{ r.fullstack_bonus|floatformat:0 }}</span>{% endif %}{% if r.lifted %}<span class="ms-tag c-teal ms-bonus" title="團隊貢獻把總分拉高(只寫 code 的話是 {{ r.score_code_only|default_if_none:'—' }})">貢獻加權</span>{% endif %}{% if r.sample %}<span class="ms-tag ms-bonus {{ r.sample|tag:'sample' }}" title="只有 {{ r.rated_mrs }} 個 MR 打過分">{{ r.sample }}</span>{% endif %}</span>
-    <span class="ms-num" title="已打分 {{ r.rated_mrs }} / 個人 MR {{ r.own_mrs }}">{{ r.rated_mrs }}<span class="ms-of">/{{ r.own_mrs }}</span></span>
+    <span class="ms-num" title="已評分 {{ r.rated_mrs }} / 個人 MR {{ r.own_mrs }}">{{ r.rated_mrs }}<span class="ms-of">/{{ r.own_mrs }}</span></span>
     <span class="ms-num" title="{{ r.commits }} 個 commit,其中 {{ r.direct_commits }} 個沒走 MR">{{ r.commits }}{% if r.direct_commits %}<span class="ms-of" title="沒走 MR"> · {{ r.direct_commits }} 直推</span>{% endif %}</span>
     {% for it in r.item_list %}{% if r.track_list %}<span aria-hidden="true"></span>{% else %}<span class="ms-num {{ it.score|item_cls:cfg.item_max }}">{% if it.score is None %}—{% else %}{{ it.score|floatformat:1 }}{% endif %}</span>{% endif %}{% endfor %}
     {% for t in r.track_list %}
@@ -23,9 +23,9 @@
     {% if r.reviewed_mrs and r.role != "departed" and r.role != "external" %}<div style="margin:0 0 16px;padding-bottom:16px;border-bottom:1px solid var(--ms-line)">{% include "reviews/_evaluation.html" with evaluation=r.evaluation stale=r.evaluation_stale compact=True person_id=r.author_id %}</div>{% endif %}
     <dl class="ms-facts">
       <div><dt>評估狀態</dt><dd>{{ r.explain }}</dd></div>
-      <div><dt>finding</dt><dd>High {{ r.severities.high }} · Medium {{ r.severities.medium }} · Low {{ r.severities.low }}{% if r.escaped %} · merge 時沒修 {{ r.escaped }}{% endif %}</dd></div>
+      <div><dt>finding</dt><dd>High {{ r.severities.high }} · Medium {{ r.severities.medium }} · Low {{ r.severities.low }}{% if r.escaped %} · merge 時可能未處理 {{ r.escaped }}{% endif %}</dd></div>
       <div><dt>後續 bug</dt><dd>已確認 {{ r.confirmed_followups }} · 推估 {{ r.followups.fix_mr|add:r.followups.ai_refind }}</dd></div>
-      {% if r.ranked and r.next_level %}<div><dt>差 {{ r.next_level }}</dt><dd>{{ r.next_level_misses|join:"、" }}</dd></div>{% endif %}
+      {% if r.ranked and r.next_level %}<div><dt>升 {{ r.next_level }} 還需要</dt><dd>{{ r.next_level_misses|join:"、" }}</dd></div>{% endif %}
     </dl>
     {% if r.records %}
     <table class="ms-mini">
@@ -35,7 +35,7 @@
           <td class="ms-dim" style="width:110px">{{ rec.created_at|tw:"%Y-%m-%d" }}</td>
           <td style="white-space:normal">{% if rec.url %}<a class="ms-link" href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.short }}</a>{% else %}<strong>{{ rec.short }}</strong>{% endif %} <span class="ms-dim">{{ rec.title|truncatechars:70 }}</span></td>
           <td style="width:90px"><span class="ms-tag {{ rec.kind|tag:'mr' }}">{{ rec.kind }}</span></td>
-          <td style="width:220px"><span class="ms-tags" style="margin:0">{% if rec.total %}{% if rec.counts.high %}<span class="ms-tag c-solid-red">High {{ rec.counts.high }}</span>{% endif %}{% if rec.counts.medium %}<span class="ms-tag c-amber">Medium {{ rec.counts.medium }}</span>{% endif %}{% if rec.counts.low %}<span class="ms-tag c-blue">Low {{ rec.counts.low }}</span>{% endif %}{% elif rec.graded_only %}<span class="ms-tag c-gray">已打分 · 沒有 review</span>{% elif rec.reviewed %}<span class="ms-tag c-green">乾淨</span>{% else %}<span class="ms-tag c-gray">未 review</span>{% endif %}</span></td>
+          <td style="width:220px"><span class="ms-tags" style="margin:0">{% if rec.total %}{% if rec.counts.high %}<span class="ms-tag c-solid-red">High {{ rec.counts.high }}</span>{% endif %}{% if rec.counts.medium %}<span class="ms-tag c-amber">Medium {{ rec.counts.medium }}</span>{% endif %}{% if rec.counts.low %}<span class="ms-tag c-blue">Low {{ rec.counts.low }}</span>{% endif %}{% elif rec.graded_only %}<span class="ms-tag c-gray">已評分 · 沒有 review</span>{% elif rec.reviewed %}<span class="ms-tag c-green">沒有 finding</span>{% else %}<span class="ms-tag c-gray">未 review</span>{% endif %}</span></td>
           <td class="ms-num ms-dim" style="width:50px">{{ rec.uncounted|default:"" }}</td>
         </tr>
       {% endfor %}</tbody>

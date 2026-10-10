@@ -52,33 +52,33 @@ MODEL_VERSION = 2
 METRICS = {
     "requirements": {"label": "需求符合度", "group": "主要品質訊號", "better": "higher", "alert": True,
                      "threshold": 0.5, "unit": "分", "kind": "rating",
-                     "note": "規劃:MR description 有沒有把要做什麼說清楚、做對"},
-    "verification": {"label": "驗證有效性", "group": "主要品質訊號", "better": "higher", "alert": True,
+                     "note": "實作是否符合 MR 說明與需求"},
+    "verification": {"label": "測試把關", "group": "主要品質訊號", "better": "higher", "alert": True,
                      "threshold": 0.5, "unit": "分", "kind": "rating",
-                     "note": "把關:測試能不能抓到問題"},
-    "escape_rate": {"label": "merge 時未處理 finding 的比例(推定)", "group": "merge 與後續問題", "better": "lower",
+                     "note": "測試能不能抓到問題"},
+    "escape_rate": {"label": "merge 時可能仍有未處理 finding 的 MR 比例", "group": "merge 與後續問題", "better": "lower",
                     "alert": True, "threshold": 0.15, "unit": "%", "kind": "rate",
-                    "note": "bot review 過的 MR 中,merge 時仍有 finding 沒處理的比例(依目前討論串狀態推定)"},
-    "bug_rate": {"label": "merge 後 30 天確認的後續 bug", "group": "merge 與後續問題", "better": "lower",
+                    "note": "bot review 過的 MR 中,merge 時可能還有 finding 沒處理的比例(依討論串狀態推定)"},
+    "bug_rate": {"label": "有後續 bug 的 MR 比例", "group": "merge 與後續問題", "better": "lower",
                  "alert": True, "threshold": 0.15, "unit": "%", "kind": "rate",
-                 "note": "merge 滿 30 天的 MR 中,有人工確認後續 bug 的比例;未確認的推估不算"},
-    "cycle_time": {"label": "MR 開啟至 merge 時間", "group": "MR 流程時間", "better": "lower", "alert": True,
+                 "note": "只看 merge 已滿 30 天的 MR:30 天內出現、且經人工確認的後續 bug;待確認的不算"},
+    "cycle_time": {"label": "MR 建立到 merge 的時間", "group": "MR 流程時間", "better": "lower", "alert": True,
                    "threshold": 0.25, "unit": "小時", "kind": "cycle",
-                   "note": "中位數,含等待 review;self-merge 比例高或改變時不判定"},
+                   "note": "典型時間(中位數),包含等待 review;自己 merge 的比例偏高或變動大時暫不評估"},
     **{c: {"label": label, "group": "輔助品質趨勢", "better": "higher", "alert": False, "threshold": 0.5,
-           "unit": "分", "kind": "rating", "note": "輔助趨勢,不單獨警示"}
+           "unit": "分", "kind": "rating", "note": "輔助趨勢,不單獨提醒"}
        for c, label in CATEGORIES.items() if c not in ("requirements", "verification")},
-    "activity": {"label": "Merged MR 數", "group": "活動與資料覆蓋", "better": None, "alert": False,
+    "activity": {"label": "已 merge 的 MR 數", "group": "MR 活動量", "better": None, "alert": False,
                  "threshold": None, "unit": "個/週", "kind": "activity",
-                 "note": "活動量,只用來理解工作怎麼切分;AI 寫 code 時不代表速度"},
+                 "note": "只用來了解工作怎麼拆成 MR;MR 數不代表開發速度"},
 }
-GROUPS = ["主要品質訊號", "merge 與後續問題", "MR 流程時間", "輔助品質趨勢", "活動與資料覆蓋"]
+GROUPS = ["主要品質訊號", "merge 與後續問題", "MR 流程時間", "輔助品質趨勢", "MR 活動量"]
 MIN = {"rating": (5, 8), "rate": (5, 8), "bug": (8, 10), "cycle": (5, 8)}
 STATE_TEXT = {
-    "insufficient": "樣本不足,暫不判定", "uncertain": "未達變化判定條件", "better": "可能改善",
-    "worse": "可能變差", "observe_better": "觀察:改善", "observe_worse": "觀察:變差",
-    "strong_better": "改善達門檻", "strong_worse": "變差達門檻", "activity": "活動量",
-    "not_comparable": "流程不可比,暫不判定",
+    "insufficient": "資料不足,暫不評估", "uncertain": "目前無法確認變化", "better": "可能改善",
+    "worse": "可能變差", "observe_better": "有改善訊號", "observe_worse": "有變差訊號",
+    "strong_better": "改善訊號明確", "strong_worse": "變差訊號明確", "activity": "活動量",
+    "not_comparable": "比較條件不同,暫不評估",
 }
 
 
@@ -355,7 +355,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
         if not comparable and row["state"] != "insufficient":
             row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"],
                        eligible={"watch": False, "improve": False},
-                       blocked="個人 MR 與 release 切片的比例差太多,不能直接比")
+                       blocked="兩段期間的資料類型比例差太多,暫不直接比較")
 
     rr = [m for m in R if m["reviewed"] and not m["slice"]]
     bb = [m for m in B if m["reviewed"] and not m["slice"]]
@@ -387,7 +387,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     causes = {src for m in mr_ if m["confirmed_bugs"] for src in m.get("bug_sources", [])}
     if len(causes) < 2:                   # a worsening needs two independent causes; improving does not
         row["eligible"] = {"watch": False, "improve": True}
-        row["blocked"] = f"最近 cohort 確認的獨立後續 bug 只有 {len(causes)} 個(要 2 個才提醒變差)"
+        row["blocked"] = f"最近這批 MR 已確認的後續 bug 來自 {len(causes)} 個不同來源;至少要 2 個才會提醒"
 
     rc = [m for m in R if m["cycle_hours"] is not None]
     bc = [m for m in B if m["cycle_hours"] is not None]
@@ -413,7 +413,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     if row["state"] != "insufficient" and sr_x is not None and sb_x is not None and \
             (max(sr_x, sb_x) > Fraction(SELF_MERGE_MAX).limit_denominator() or abs(sr_x - sb_x) >= Fraction(1, 5)):
         row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"],
-                   eligible={"watch": False, "improve": False}, blocked=f"self-merge 比例 {sb:.0%} → {sr:.0%}")
+                   eligible={"watch": False, "improve": False}, blocked=f"自己 merge 的比例 {sb:.0%} → {sr:.0%}")
 
     pr = [m for m in R if not m["slice"]]
     pb = [m for m in B if not m["slice"]]
@@ -444,13 +444,13 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
                "personal": (len(pb), len(pr)),
                "projects": (projects(B), projects(R))}
     shifted = []
-    for key, label in (("frontend", "前端比例"), ("fix", "fix MR 比例"), ("self_merge", "self-merge 比例")):
+    for key, label in (("frontend", "前端比例"), ("fix", "修 bug 的 MR 比例"), ("self_merge", "自己 merge 的比例")):
         b_, a = context[key]
         if a is not None and b_ is not None and abs(a - b_) >= Fraction(1, 5):
             shifted.append(f"{label} {float(b_):.0%} → {float(a):.0%}")
     b_, a = context["files"]
     if a and b_ and (a >= 1.5 * b_ or a <= b_ / 1.5):
-        shifted.append(f"MR 大小(改動檔案中位數){b_:g} → {a:g}")
+        shifted.append(f"每個 MR 通常改幾個檔案 {b_:g} → {a:g}")
     by = {x["key"]: x for x in metrics}
     together = (by["cycle_time"]["state"] in ("strong_better", "observe_better", "better")
                 and by["escape_rate"]["state"] in ("strong_worse", "observe_worse"))
@@ -608,7 +608,7 @@ def _lifecycle(conn, pid, m, now, as_of) -> tuple[int, int]:
         now_calm = m["state"] not in ("insufficient", "not_comparable") and m.get(side) is not None \
             and m[side] < 0.70
         if held and ((len(since_open) == 2 and len(calm) == 2 and now_calm) or flipped):
-            _close(conn, alert["id"], as_of, "data", "方向反轉" if flipped else "連續兩次未再超過一半門檻")
+            _close(conn, alert["id"], as_of, "data", "出現明確的反向訊號" if flipped else "連續兩次評估都已回到門檻一半以內")
             return 0, 1
         return 0, 0
     if not m["alert"]:
@@ -677,7 +677,7 @@ def update(conn, cfg: dict, now: datetime | None = None, analyses: dict | None =
         # people no longer evaluated (left, other team): their alerts end, the record stays
         for row in conn.execute("SELECT id, person_id FROM trajectory_alerts WHERE closed_at IS NULL").fetchall():
             if row["person_id"] not in analyses:
-                closed += _close(conn, row["id"], as_of, "data", "不再評估此人")
+                closed += _close(conn, row["id"], as_of, "data", "這位成員已不在分析範圍內")
         db.set_state(conn, "trajectory_as_of", as_of)
     return {"judged": judged, "opened": opened, "closed": closed}
 
@@ -702,6 +702,6 @@ def acknowledge(conn, alert_id: int, actor: str, note: str = "", now: datetime |
 def end_tracking(conn, alert_id: int, actor: str, reason: str, now: datetime | None = None) -> bool:
     """結束追蹤: a human closes it, with a reason; the 28-day cool-down starts."""
     if not reason.strip():
-        raise ValueError("結束追蹤要寫原因")
+        raise ValueError("請填寫結束追蹤的原因")
     with conn:
         return _close(conn, alert_id, db.utc(now) if now else db.now_iso(), actor, reason.strip())

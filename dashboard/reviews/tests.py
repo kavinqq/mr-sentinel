@@ -352,7 +352,7 @@ class TestTrajectoryPage(DashboardCase):
         resp = self.client.get(reverse("trajectory"), {"person": 7})
         self.assertContains(resp, "目前無法重新評估")
         self.assertNotContains(resp, "下降訊號")
-        self.assertContains(resp, "惡化訊號")
+        self.assertContains(resp, "出現變差訊號")
 
     def test_the_overview_and_the_sidebar_flag_each_person(self):
         self.open_alert(stale=0)
@@ -363,8 +363,8 @@ class TestTrajectoryPage(DashboardCase):
         nav = services.trajectory_nav()
         self.assertEqual([(p["pid"], p["flag"]) for p in nav if p["pid"] == 7], [(7, "case")])
         resp = self.client.get(reverse("trajectory"), {"person": 7})
-        self.assertContains(resp, 'aria-label="high 個案"')     # the icon in the sidebar
-        self.assertContains(resp, "要關注")                      # and the alert on the person's page
+        self.assertContains(resp, 'aria-label="嚴重問題待確認"')     # the icon in the sidebar
+        self.assertContains(resp, "需留意")                      # and the alert on the person's page
 
     def test_clicks_reuse_the_analysis_until_the_data_changes(self):
         from history import trajectory as tj
@@ -385,10 +385,10 @@ class TestTrajectoryPage(DashboardCase):
         url = reverse("trajectory_alert", args=[aid])
         self.client.post(url, {"action": "ack", "note": "聊過"})
         resp = self.client.post(url, {"action": "end", "reason": ""}, follow=True)
-        self.assertContains(resp, "要寫原因")
+        self.assertContains(resp, "請填寫結束追蹤的原因")
         self.client.post(url, {"action": "end", "reason": "接手難的專案"})
         resp = self.client.post(url, {"action": "ack"}, follow=True)
-        self.assertContains(resp, "已經結束或不存在")
+        self.assertContains(resp, "已結束或找不到")
         resp = self.client.post(url, {"action": "ack", "next": "https://evil.example/"})
         self.assertEqual(resp["Location"], reverse("trajectory"))       # never off-site
 

@@ -26,8 +26,8 @@ def get(mapping, key):
     return (mapping or {}).get(key)
 
 
-THREAD_LABEL = {"unanswered": "未回應", "appeal": "已回覆 · 待判斷", "rejected": "已回覆 · 仍要修",
-                "accepted": "申訴成立 · 未關閉", "closed": "已解決"}
+THREAD_LABEL = {"unanswered": "未回應", "appeal": "已回覆 · 待確認", "rejected": "已回覆 · 仍需處理",
+                "accepted": "回覆已採納 · 討論串未結束", "closed": "已解決"}
 
 
 # one hue per kind of label, the same everywhere (dashboard.css .c-*)
@@ -146,7 +146,7 @@ def spark(metric):
     if not values:
         return mark_safe('<span class="ms-spark-empty">不提供週走勢</span>')
     if len(pts) < 2:
-        return mark_safe('<span class="ms-spark-empty">資料太少</span>')
+        return mark_safe('<span class="ms-spark-empty">資料不足</span>')
     unit = metric.get("unit")
     lo, hi = (1, 5) if unit == "分" else (0, 1) if unit == "%" else (min(v for _, v in pts), max(v for _, v in pts))
     if hi == lo:
@@ -224,16 +224,16 @@ def gauge(metric, size="card"):
     label = escape(m.get("label", ""))
     t, diff, iv = m.get("threshold"), m.get("diff"), m.get("interval")
     if m.get("kind") == "activity" or not t:
-        return mark_safe('<span class="ms-gauge-na">活動量,不判定變化</span>')
+        return mark_safe('<span class="ms-gauge-na">活動量,不評估變化</span>')
     if m.get("state") in ("insufficient", "not_comparable") or diff is None or not iv:
-        why = "流程不可比" if m.get("state") == "not_comparable" else "樣本不足"
-        return mark_safe(f'<svg class="ms-gauge is-empty" viewBox="0 0 {w} {h}" role="img" aria-label="{label}:{why},不判定">'
+        why = "比較條件不同" if m.get("state") == "not_comparable" else "資料不足"
+        return mark_safe(f'<svg class="ms-gauge is-empty" viewBox="0 0 {w} {h}" role="img" aria-label="{label}:{why},暫不評估">'
                          f'{track}<text x="{w / 2:.0f}" y="{mid + 4:.0f}" text-anchor="middle">{why}</text></svg>')
     sign = 1 if m.get("better") == "higher" else -1
     v = sign * diff / t
     lo, hi = sorted((sign * iv[0] / t, sign * iv[1] / t))
     tone = m.get("tone", "flat")
-    name = (f'{label}:估計變化 {escape(m.get("diff_text", ""))},90% 區間 {escape(m.get("interval_text") or "—")},'
+    name = (f'{label}:估計變化 {escape(m.get("diff_text", ""))},估計範圍(90%){escape(m.get("interval_text") or "—")},'
             f'門檻 {THRESHOLD_TEXT.get(m.get("unit"), "")};右側為變好')
     out = [f'<svg class="ms-gauge tone-{tone}" viewBox="0 0 {w} {h}" role="img" aria-label="{name}"><title>{name}</title>', track,
            f'<line class="iv" x1="{x(lo):.1f}" x2="{x(hi):.1f}" y1="{mid}" y2="{mid}"/>']
@@ -256,7 +256,7 @@ def gauge_key():
         '<rect class="zb" x="80" y="3" width="38" height="10" rx="3"/><line class="t" x1="40" x2="40" y1="0" y2="16"/>'
         '<line class="t" x1="80" x2="80" y1="0" y2="16"/><line class="iv" x1="52" x2="96" y1="8" y2="8"/><circle class="pt" cx="74" cy="8" r="4"/></svg>'
         '<span class="k-b">變好 →</span>'
-        '<span class="k-t">點 = 估計變化 · 線 = 90% 區間 · 虛線 = 門檻</span></span>')
+        '<span class="k-t">點 = 估計變化 · 線 = 估計範圍(90%) · 虛線 = 門檻</span></span>')
 
 
 @register.filter
@@ -271,7 +271,7 @@ def profile(metrics):
     lw, w, rh, top = 96, 380, 26, 18
     x = lambda v: lw + (v - 1) / 4 * (w - lw - 12)
     h = top + rh * len(rows) + 4
-    out = [f'<svg class="ms-profile" viewBox="0 0 {w} {h}" role="img" aria-label="八個面向的評分,基線與最近 28 天的原始平均">']
+    out = [f'<svg class="ms-profile" viewBox="0 0 {w} {h}" role="img" aria-label="八個面向的評分,前 56 天與最近 28 天的實際平均">']
     for g in range(1, 6):
         out.append(f'<line class="grid" x1="{x(g):.1f}" x2="{x(g):.1f}" y1="{top - 4}" y2="{h - 4}"/>'
                    f'<text class="tick" x="{x(g):.1f}" y="11" text-anchor="middle">{g}</text>')
@@ -279,7 +279,7 @@ def profile(metrics):
         y = top + rh * i + rh / 2
         b, r = m.get("raw_base"), m.get("raw_recent")
         tone = m.get("tone", "flat")
-        desc = f'{escape(m["label"])}:基線 {"—" if b is None else f"{b:.2f}"},最近 {"—" if r is None else f"{r:.2f}"},{escape(m.get("state_text", ""))}'
+        desc = f'{escape(m["label"])}:前 56 天 {"—" if b is None else f"{b:.2f}"},最近 {"—" if r is None else f"{r:.2f}"},{escape(m.get("state_text", ""))}'
         out.append(f'<g class="row tone-{tone}"><title>{desc}</title>'
                    f'<text class="lab" x="{lw - 10}" y="{y + 4:.1f}" text-anchor="end">{escape(m["label"])}</text>')
         if b is not None and r is not None:

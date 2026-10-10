@@ -7,21 +7,21 @@
     <div>
       <h1>個人軌跡</h1>
       <p class="ms-sub">
-        {% if windows %}最近 <strong>{{ windows.recent.0|date:"m/d" }}–{{ windows.recent.1|date:"m/d" }}</strong> 對比基線 <strong>{{ windows.base.0|date:"m/d" }}–{{ windows.base.1|date:"m/d" }}</strong> · 後續 bug 用 merge 滿 30 天的 cohort ·{% endif %}
+        {% if windows %}最近 <strong>{{ windows.recent.0|date:"m/d" }}–{{ windows.recent.1|date:"m/d" }}</strong> 與前 56 天 <strong>{{ windows.base.0|date:"m/d" }}–{{ windows.base.1|date:"m/d" }}</strong> 比較 · 後續 bug 只看 merge 已滿 30 天的 MR ·{% endif %}
         資料更新 {{ last_sync|tw }}{% if as_of %} · 判定更新 {{ as_of|tw }}{% endif %} · 分析時間 {{ analysis_as_of|tw }}
       </p>
     </div>
     <details class="ms-method-pop">
       <summary><span class="material-symbols-outlined" aria-hidden="true">help</span>方法與限制</summary>
       <div class="ms-method-pop-body">
-        <p>每個人只跟<strong>自己過去</strong>比:最近 28 天對比前 56 天。團隊資料只用來穩定樣本少的估計,不排名。</p>
+        <p>每個人只跟<strong>自己過去</strong>比:最近 28 天對比前 56 天。資料少的時候會參考團隊資料讓估計穩一點,但不拿來排名。</p>
         <ul>
-          <li>樣本是 merge 的 MR(與 release 中本人的 commit 切片);一個 MR 的 8 項評分只算一個樣本。</li>
-          <li>只有變化超過實際門檻才算:評分 0.5 分、比例 15 個百分點、時間 25% 且至少 1 小時。</li>
-          <li>顯示的百分比是「變化超過門檻的估計機率」,不是 p-value。</li>
-          <li><strong>要關注 / 明顯改善</strong>只在主要指標出現:同一比較基礎下連續兩次強烈判定,且這段期間累積新增至少 2 個 MR(或 1 個、兩次判定相隔 14 天以上),至少保留 14 天,關閉後 28 天內不重複提醒。</li>
-          <li>high finding 未處理就 merge 會立刻列為個案,不當成趨勢。</li>
-          <li>MR 數、commit 數只當活動量;merge 不等於上線。</li>
+          <li>看的是已 merge 的 MR,以及 release 裡本人的改動;一個 MR 的 8 項評分只算一筆資料。</li>
+          <li>變化要超過門檻才算數:評分 0.5 分、比例 15 個百分點、時間 25% 且至少 1 小時。</li>
+          <li>顯示的百分比是「變化超過門檻的估計機率」。</li>
+          <li><strong>需留意 / 明顯改善</strong>只看主要指標:比較同類型的資料,連續兩次評估都出現明確訊號才提醒;期間要新增至少 2 個 MR,或新增 1 個且兩次評估相隔 14 天以上。提醒至少追蹤 14 天,結束後 28 天內不重複提醒。</li>
+          <li>high 的 finding 如果 merge 時可能還沒處理,會直接列入「嚴重問題待確認」,和趨勢分開看。</li>
+          <li>MR 數、commit 數只看活動量;merge 不等於上線。</li>
         </ul>
         <p class="ms-dim">這些訊號是安排討論與支援的線索,不是對個人能力的判定。</p>
       </div>
@@ -36,10 +36,10 @@
       {% include "reviews/_traj_flag.html" with flag=r.flag %}
       <a class="ms-link ms-person-more" href="{% url 'person' r.pid %}">評分與 review 紀錄 →</a>
     </header>
-    <p class="ms-person-sample">最近:個人 MR <strong>{{ r.a.context.personal.1 }}</strong>、release 切片 <strong>{{ r.a.context.slices.1 }}</strong> · 基線:個人 MR {{ r.a.context.personal.0 }}、release 切片 {{ r.a.context.slices.0 }} · 各指標的有效樣本不同 · <span class="ms-spark-legend"><i aria-hidden="true"></i>走勢圖底色 = 最近 28 天</span></p>
+    <p class="ms-person-sample">最近 28 天:個人 MR <strong>{{ r.a.context.personal.1 }}</strong>、release 中的個人改動 <strong>{{ r.a.context.slices.1 }}</strong> · 前 56 天:個人 MR {{ r.a.context.personal.0 }}、release 中的個人改動 {{ r.a.context.slices.0 }} · 每個指標實際用到的資料筆數不同 · <span class="ms-spark-legend"><i aria-hidden="true"></i>走勢圖底色 = 最近 28 天</span></p>
     {% if r.a.cases %}
-    <div class="ms-cases" aria-label="high 個案">
-      <h3><span class="material-symbols-outlined" aria-hidden="true">error</span>high 個案(近 84 天,推定未處理就 merge)</h3>
+    <div class="ms-cases" aria-label="嚴重問題待確認">
+      <h3><span class="material-symbols-outlined" aria-hidden="true">error</span>嚴重問題待確認(近 84 天,merge 時可能還沒處理)</h3>
       <ul>
       {% for c in r.a.cases %}
         <li>
@@ -51,20 +51,20 @@
     </div>
     {% endif %}
     {% if r.alerts or r.a.together %}
-    <section class="ms-signals" aria-label="需要處理的訊號">
+    <section class="ms-signals" aria-label="趨勢提醒">
       <h3>提醒</h3>
       <ol class="ms-queue">
       {% for al in r.watch %}{% with m=al.m %}
       <li class="ms-qcard {% if al.kind == 'watch' %}is-watch{% else %}is-good{% endif %}{% if al.acknowledged_at %} is-seen{% endif %}">
         <span class="ms-qicon material-symbols-outlined" aria-hidden="true">{% if al.kind == "watch" %}priority_high{% else %}trending_up{% endif %}</span>
         <div class="ms-qbody">
-          <p class="ms-qtitle">{{ m.label }}{% if al.kind == "watch" %}惡化訊號{% else %}改善訊號{% endif %}達提醒門檻
-            <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
+          <p class="ms-qtitle">{{ m.label }}:{% if al.kind == "watch" %}出現變差訊號{% else %}出現改善訊號{% endif %},追蹤中
+            <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}需留意{% else %}明顯改善{% endif %}</span>
             {% if al.acknowledged_at %}<span class="ms-tag c-gray">已檢視 · {{ al.acknowledged_by }}</span>{% endif %}</p>
           <div class="ms-qgauge">{{ m|gauge:"wide" }}<span class="ms-qgauge-cap">目前</span></div>
-          <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次判定、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
-          <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 樣本不足或流程不可比,提醒保留到資料足夠再判斷{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再達到門檻,連續兩次低於一半門檻後會自動結束{% endif %}{% endif %}</p>
-          {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同期工作組成也變了:{{ r.a.shifted|join:"、" }} — 建議先看同類型 MR 的比較</p>{% endif %}
+          <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次評估、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
+          <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 資料不足或比較條件不同,先保留提醒,等能比較時再評估{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再符合提醒條件,連續兩次評估都回到門檻一半以內就會自動結束{% endif %}{% endif %}</p>
+          {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同一期間的工作內容也有變動:{{ r.a.shifted|join:"、" }} — 建議先比較同類型的 MR</p>{% endif %}
           {% if al.note %}<p class="ms-qnote">備註:{{ al.note }}</p>{% endif %}
         </div>
         <div class="ms-qactions">
@@ -75,7 +75,7 @@
               <input type="hidden" name="action" value="ack"><input type="hidden" name="next" value="{{ request.get_full_path }}">
               <label for="note-{{ al.id }}">備註(可留空)</label>
               <input id="note-{{ al.id }}" type="text" name="note" placeholder="例如:下週一對一時聊">
-              <p class="ms-help">只記錄你看過了;警示會繼續追蹤,資料恢復後自動結束。</p>
+              <p class="ms-help">只記錄你看過了;提醒會繼續追蹤,符合結束條件後自動結束。</p>
               <button type="submit" class="primary">記錄已檢視</button></form>
           </details>
           {% endif %}
@@ -95,8 +95,8 @@
       <li class="ms-qcard is-watch">
         <span class="ms-qicon material-symbols-outlined" aria-hidden="true">join_inner</span>
         <div class="ms-qbody">
-          <p class="ms-qtitle">一起查看:MR 開啟至 merge 時間縮短,同期推定未處理就 merge 的比例上升</p>
-          <p class="ms-qnote">兩個訊號同時出現,建議一起看;它本身不是警示。</p>
+          <p class="ms-qtitle">一起查看:MR 處理時間變短,同時 merge 時可能未處理 finding 的比例變高</p>
+          <p class="ms-qnote">兩個訊號同時出現,建議一起討論;這項提示本身不會開始追蹤。</p>
         </div>
       </li>
       {% endif %}
@@ -104,13 +104,13 @@
       <li class="ms-qcard {% if al.kind == 'watch' %}is-watch{% else %}is-good{% endif %}{% if al.acknowledged_at %} is-seen{% endif %}">
         <span class="ms-qicon material-symbols-outlined" aria-hidden="true">{% if al.kind == "watch" %}priority_high{% else %}trending_up{% endif %}</span>
         <div class="ms-qbody">
-          <p class="ms-qtitle">{{ m.label }}{% if al.kind == "watch" %}惡化訊號{% else %}改善訊號{% endif %}達提醒門檻
-            <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
+          <p class="ms-qtitle">{{ m.label }}:{% if al.kind == "watch" %}出現變差訊號{% else %}出現改善訊號{% endif %},追蹤中
+            <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}需留意{% else %}明顯改善{% endif %}</span>
             {% if al.acknowledged_at %}<span class="ms-tag c-gray">已檢視 · {{ al.acknowledged_by }}</span>{% endif %}</p>
           <div class="ms-qgauge">{{ m|gauge:"wide" }}<span class="ms-qgauge-cap">目前</span></div>
-          <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次判定、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
-          <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 樣本不足或流程不可比,提醒保留到資料足夠再判斷{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再達到門檻,連續兩次低於一半門檻後會自動結束{% endif %}{% endif %}</p>
-          {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同期工作組成也變了:{{ r.a.shifted|join:"、" }} — 建議先看同類型 MR 的比較</p>{% endif %}
+          <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次評估、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
+          <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 資料不足或比較條件不同,先保留提醒,等能比較時再評估{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再符合提醒條件,連續兩次評估都回到門檻一半以內就會自動結束{% endif %}{% endif %}</p>
+          {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同一期間的工作內容也有變動:{{ r.a.shifted|join:"、" }} — 建議先比較同類型的 MR</p>{% endif %}
           {% if al.note %}<p class="ms-qnote">備註:{{ al.note }}</p>{% endif %}
         </div>
         <div class="ms-qactions">
@@ -121,7 +121,7 @@
               <input type="hidden" name="action" value="ack"><input type="hidden" name="next" value="{{ request.get_full_path }}">
               <label for="note-{{ al.id }}">備註(可留空)</label>
               <input id="note-{{ al.id }}" type="text" name="note" placeholder="例如:下週一對一時聊">
-              <p class="ms-help">只記錄你看過了;警示會繼續追蹤,資料恢復後自動結束。</p>
+              <p class="ms-help">只記錄你看過了;提醒會繼續追蹤,符合結束條件後自動結束。</p>
               <button type="submit" class="primary">記錄已檢視</button></form>
           </details>
           {% endif %}
@@ -143,17 +143,17 @@
     <div class="ms-overview">
       <section class="ms-panel" aria-labelledby="pf{{ r.pid }}">
         <h3 id="pf{{ r.pid }}">八面向評分</h3>
-        <p class="ms-panel-key"><span class="dot b"></span>基線 <span class="dot r"></span>最近 28 天 · 原始平均,1–5 分</p>
+        <p class="ms-panel-key"><span class="dot b"></span>前 56 天 <span class="dot r"></span>最近 28 天 · 實際平均,1–5 分</p>
         {{ r.metrics_all|profile }}
       </section>
       <section class="ms-panel" aria-labelledby="cx{{ r.pid }}">
-        <h3 id="cx{{ r.pid }}">同期工作組成</h3>
-        <p class="ms-panel-key"><span class="dot b"></span>基線 <span class="dot r"></span>最近 · 標黃 = 有明顯變動</p>
+        <h3 id="cx{{ r.pid }}">工作內容分布</h3>
+        <p class="ms-panel-key"><span class="dot b"></span>前 56 天 <span class="dot r"></span>最近 28 天 · 標黃 = 變動明顯</p>
         <ul class="ms-shifts">
           <li><span class="k">前端比例</span>{% shift_bar r.a.context.frontend "share" r.shift.frontend %}</li>
-          <li><span class="k">fix MR 比例</span>{% shift_bar r.a.context.fix "share" r.shift.fix %}</li>
-          <li><span class="k">self-merge</span>{% shift_bar r.a.context.self_merge "share" r.shift.self_merge %}</li>
-          <li><span class="k">改動檔案中位數</span>{% shift_bar r.a.context.files "count" r.shift.files %}</li>
+          <li><span class="k">修 bug 的 MR</span>{% shift_bar r.a.context.fix "share" r.shift.fix %}</li>
+          <li><span class="k">自己 merge</span>{% shift_bar r.a.context.self_merge "share" r.shift.self_merge %}</li>
+          <li><span class="k">每個 MR 改幾個檔案</span>{% shift_bar r.a.context.files "count" r.shift.files %}</li>
         </ul>
         {% if r.projects %}
         <p class="ms-proj-cap">最近專案</p>
@@ -167,18 +167,18 @@
 
     <div class="ms-mkey">{% gauge_key %}</div>
     {% for group, metrics in r.groups %}
-    {% if group == "輔助品質趨勢" or group == "活動與資料覆蓋" %}<details class="ms-mgroup-fold"><summary>{{ group }}<span class="hint">{% if group == "輔助品質趨勢" %}其餘 6 個面向,只看趨勢、不單獨警示{% else %}只用來理解工作切分{% endif %}</span></summary>{% endif %}
+    {% if group == "輔助品質趨勢" or group == "MR 活動量" %}<details class="ms-mgroup-fold"><summary>{{ group }}<span class="hint">{% if group == "輔助品質趨勢" %}其餘 6 個面向,只看趨勢、不單獨提醒{% else %}只用來了解工作怎麼拆成 MR{% endif %}</span></summary>{% endif %}
     <div class="ms-mgroup">
       {% if group != "輔助品質趨勢" and group != "活動與資料覆蓋" %}<h3>{{ group }}</h3>{% endif %}
       <table class="ms-mtable">
         <colgroup><col class="c-name"><col class="c-gauge"><col class="c-val"><col class="c-spark"><col class="c-state"></colgroup>
-        <thead{% if not forloop.first %} class="sr-only-head"{% endif %}><tr><th scope="col">指標</th><th scope="col">估計變化(右 = 變好)</th><th scope="col" class="ms-num">基線 → 最近</th><th scope="col">近 12 週</th><th scope="col">判定</th></tr></thead>
+        <thead{% if not forloop.first %} class="sr-only-head"{% endif %}><tr><th scope="col">指標</th><th scope="col">估計變化(右 = 變好)</th><th scope="col" class="ms-num">前 56 天 → 最近 28 天</th><th scope="col">近 12 週</th><th scope="col">判定</th></tr></thead>
         <tbody>
         {% for m in metrics %}
           <tr id="m{{ r.pid }}-{{ m.key }}" class="tone-{{ m.tone }}">
-            <th scope="row" data-label="指標"><span class="ms-mname">{{ m.label }}</span><span class="ms-mnote">{{ m.note }}</span>{% if m.stratum and m.state != "insufficient" %}<span class="ms-mnote">比較基礎:{{ m.stratum }}</span>{% endif %}</th>
+            <th scope="row" data-label="指標"><span class="ms-mname">{{ m.label }}</span><span class="ms-mnote">{{ m.note }}</span>{% if m.stratum and m.state != "insufficient" %}<span class="ms-mnote">比較:{{ m.stratum_text }}</span>{% endif %}</th>
             <td data-label="估計變化">{{ m|gauge:"wide" }}</td>
-            <td data-label="基線 → 最近" class="ms-num">{% if m.state == "insufficient" %}<span class="ms-dim">—</span>{% else %}{{ m.base_text }} → <strong>{{ m.recent_text }}</strong>{% endif %}<span class="ms-mnote">樣本 {{ m.n_base }}/{{ m.n_recent }}{% if m.state == "insufficient" and m.need_text %} · {{ m.need_text }}{% endif %}</span></td>
+            <td data-label="前 56 天 → 最近" class="ms-num">{% if m.state == "insufficient" %}<span class="ms-dim">—</span>{% else %}{{ m.base_text }} → <strong>{{ m.recent_text }}</strong>{% endif %}<span class="ms-mnote">{{ m.n_base }} 筆 → {{ m.n_recent }} 筆{% if m.state == "insufficient" and m.need_text %} · {{ m.need_text }}{% endif %}</span></td>
             <td data-label="近 12 週">{{ m|spark }}</td>
             <td data-label="判定">
               <span class="ms-state tone-{{ m.tone }}"><span class="material-symbols-outlined" aria-hidden="true">{% if m.tone == "watch" or m.tone == "watch-soft" %}priority_high{% elif m.tone == "improve" or m.tone == "improve-soft" %}star{% elif m.tone == "down" %}south_east{% elif m.tone == "up" %}north_east{% elif m.tone == "none" %}help{% else %}remove{% endif %}</span>{{ m.state_text }}</span>
@@ -189,14 +189,14 @@
           {% if m.evidence.recent or m.evidence.base %}
           <tr class="ms-why-row" id="w{{ r.pid }}-{{ m.key }}" hidden><td colspan="5">
                 <div class="ms-why-body">
-                  {% if m.state != "insufficient" and m.kind != "activity" %}<p class="ms-why-summary">{% if m.unit == "%" %}估計比例(含團隊先驗){{ m.base|pct }} → {{ m.recent|pct }} · {% elif m.unit == "分" %}估計平均(含團隊先驗){{ m.base|floatformat:2 }} → {{ m.recent|floatformat:2 }} · {% endif %}估計變化 {{ m.diff_text }}{% if m.interval_text %}(90% 區間 {{ m.interval_text }}){% endif %} · 門檻:{% if m.unit == "%" %}±15 個百分點{% elif m.unit == "小時" %}±25% 且至少 1 小時{% else %}±0.5 分{% endif %} · 改善超過門檻的機率 {{ m.p_better|pct }} · 變差超過門檻的機率 {{ m.p_worse|pct }}{% if m.x_recent is not None %} · 最近 {{ m.x_recent }}/{{ m.n_recent }}、基線 {{ m.x_base }}/{{ m.n_base }}{% endif %}{% if m.pending %} · 另有 {{ m.pending }} 筆後續 bug 待確認{% endif %}</p>{% endif %}
+                  {% if m.state != "insufficient" and m.kind != "activity" %}<p class="ms-why-summary">{% if m.unit == "%" %}參考團隊資料後的估計比例 {{ m.base|pct }} → {{ m.recent|pct }} · {% elif m.unit == "分" %}參考團隊資料後的估計平均 {{ m.base|floatformat:2 }} → {{ m.recent|floatformat:2 }} · {% endif %}估計變化 {{ m.diff_text }}{% if m.interval_text %}(估計範圍 {{ m.interval_text }}){% endif %} · 門檻:{% if m.unit == "%" %}±15 個百分點{% elif m.unit == "小時" %}±25% 且至少 1 小時{% else %}±0.5 分{% endif %} · 改善超過門檻的機率 {{ m.p_better|pct }} · 變差超過門檻的機率 {{ m.p_worse|pct }}{% if m.x_recent is not None %} · 最近 {{ m.n_recent }} 筆中 {{ m.x_recent }} 筆、前 56 天 {{ m.n_base }} 筆中 {{ m.x_base }} 筆{% endif %}{% if m.pending %} · 另有 {{ m.pending }} 筆後續 bug 待確認{% endif %}</p>{% endif %}
                   <div class="ms-why-cols">
-                    <div><h4>最近 {{ m.n_recent }} 筆{% if m.n_recent > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由長到短{% else %}有事件的在前{% endif %}</h4>
-                      <ul>{% for e in m.evidence.recent|slice:":10" %}<li><span class="ms-tag {{ e.value|grade_tag:m.unit }}">{% if m.unit == "%" %}{% if m.key == "bug_rate" %}{% if e.value %}{{ e.value }} 個 bug{% else %}沒有{% endif %}{% elif e.value %}推定未處理{% else %}未觀察到未處理{% endif %}{% elif m.unit == "小時" %}{{ e.value }} h{% else %}{{ e.value }} 分{% endif %}</span> <a class="ms-link" href="{{ e.mr.web_url }}" target="_blank" rel="noopener">{{ e.mr.project|cut:"developer/" }}!{{ e.mr.iid }}</a>{% if e.mr.slice %}<span class="ms-tag c-violet">release 切片</span>{% endif %}
-                        {% if e.why %}<p>{{ e.why }}</p>{% endif %}</li>{% empty %}<li class="ms-dim">沒有樣本</li>{% endfor %}</ul></div>
-                    <div><h4>基線 {{ m.n_base }} 筆{% if m.n_base > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由長到短{% else %}有事件的在前{% endif %}</h4>
-                      <ul>{% for e in m.evidence.base|slice:":10" %}<li><span class="ms-tag {{ e.value|grade_tag:m.unit }}">{% if m.unit == "%" %}{% if m.key == "bug_rate" %}{% if e.value %}{{ e.value }} 個 bug{% else %}沒有{% endif %}{% elif e.value %}推定未處理{% else %}未觀察到未處理{% endif %}{% elif m.unit == "小時" %}{{ e.value }} h{% else %}{{ e.value }} 分{% endif %}</span> <a class="ms-link" href="{{ e.mr.web_url }}" target="_blank" rel="noopener">{{ e.mr.project|cut:"developer/" }}!{{ e.mr.iid }}</a>{% if e.mr.slice %}<span class="ms-tag c-violet">release 切片</span>{% endif %}
-                        {% if e.why %}<p>{{ e.why }}</p>{% endif %}</li>{% empty %}<li class="ms-dim">沒有樣本</li>{% endfor %}</ul></div>
+                    <div><h4>最近 28 天 {{ m.n_recent }} 筆{% if m.n_recent > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由長到短{% else %}有事件的在前{% endif %}</h4>
+                      <ul>{% for e in m.evidence.recent|slice:":10" %}<li><span class="ms-tag {{ e.value|grade_tag:m.unit }}">{% if m.unit == "%" %}{% if m.key == "bug_rate" %}{% if e.value %}{{ e.value }} 個 bug{% else %}沒有{% endif %}{% elif e.value %}可能有未處理{% else %}沒發現未處理{% endif %}{% elif m.unit == "小時" %}{{ e.value }} h{% else %}{{ e.value }} 分{% endif %}</span> <a class="ms-link" href="{{ e.mr.web_url }}" target="_blank" rel="noopener">{{ e.mr.project|cut:"developer/" }}!{{ e.mr.iid }}</a>{% if e.mr.slice %}<span class="ms-tag c-violet">release 中的改動</span>{% endif %}
+                        {% if e.why %}<p>{{ e.why }}</p>{% endif %}</li>{% empty %}<li class="ms-dim">沒有資料</li>{% endfor %}</ul></div>
+                    <div><h4>前 56 天 {{ m.n_base }} 筆{% if m.n_base > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由長到短{% else %}有事件的在前{% endif %}</h4>
+                      <ul>{% for e in m.evidence.base|slice:":10" %}<li><span class="ms-tag {{ e.value|grade_tag:m.unit }}">{% if m.unit == "%" %}{% if m.key == "bug_rate" %}{% if e.value %}{{ e.value }} 個 bug{% else %}沒有{% endif %}{% elif e.value %}可能有未處理{% else %}沒發現未處理{% endif %}{% elif m.unit == "小時" %}{{ e.value }} h{% else %}{{ e.value }} 分{% endif %}</span> <a class="ms-link" href="{{ e.mr.web_url }}" target="_blank" rel="noopener">{{ e.mr.project|cut:"developer/" }}!{{ e.mr.iid }}</a>{% if e.mr.slice %}<span class="ms-tag c-violet">release 中的改動</span>{% endif %}
+                        {% if e.why %}<p>{{ e.why }}</p>{% endif %}</li>{% empty %}<li class="ms-dim">沒有資料</li>{% endfor %}</ul></div>
                   </div>
                 </div>
           </td></tr>
@@ -205,15 +205,15 @@
         </tbody>
       </table>
     </div>
-    {% if group == "輔助品質趨勢" or group == "活動與資料覆蓋" %}</details>{% endif %}
+    {% if group == "輔助品質趨勢" or group == "MR 活動量" %}</details>{% endif %}
     {% endfor %}
     {% if closed %}
     <details class="ms-mgroup-fold ms-closed"><summary>已結束的提醒<span class="hint">{{ closed|length }} 則</span></summary>
     <ol class="ms-recs">
       {% for c in closed %}
       <li class="ms-rec"><div class="ms-rec-main">
-        <div class="ms-tags"><span class="ms-tag {% if c.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if c.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
-          <span class="ms-tag c-gray">{% if c.closed_by == "data" %}資料自動結束{% else %}{{ c.closed_by }} 結束{% endif %}</span></div>
+        <div class="ms-tags"><span class="ms-tag {% if c.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if c.kind == "watch" %}需留意{% else %}明顯改善{% endif %}</span>
+          <span class="ms-tag c-gray">{% if c.closed_by == "data" %}系統自動結束{% else %}{{ c.closed_by }} 結束{% endif %}</span></div>
         <p class="ms-rec-title">{{ c.label }}<span>{{ c.summary }}</span></p>
         <ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ c.opened_at|tw:"%m/%d" }} → {{ c.closed_at|tw:"%m/%d" }}</li>
           {% if c.close_reason %}<li><span class="material-symbols-outlined" aria-hidden="true">notes</span>{{ c.close_reason }}</li>{% endif %}
@@ -241,7 +241,7 @@
         {% include "reviews/_traj_flag.html" with flag=r.flag %}
       </div>
       {% if r.alerts or r.a.cases %}
-      <p class="ms-pcard-why">{% if r.a.cases %}{{ r.a.cases|length }} 個 high 個案{% if r.alerts %} · {% endif %}{% endif %}{% for al in r.alerts %}{{ al.m.label }}{% if al.kind == "watch" %}惡化{% else %}改善{% endif %}{% if not forloop.last %}、{% endif %}{% endfor %}</p>
+      <p class="ms-pcard-why">{% if r.a.cases %}{{ r.a.cases|length }} 則嚴重問題待確認{% if r.alerts %} · {% endif %}{% endif %}{% for al in r.alerts %}{{ al.m.label }}{% if al.kind == "watch" %}需留意{% else %}明顯改善{% endif %}{% if not forloop.last %}、{% endif %}{% endfor %}</p>
       {% endif %}
       <ul class="ms-pcard-metrics">
         {% for m in r.main %}
@@ -249,7 +249,7 @@
           <span class="ms-state-ic tone-{{ m.tone }}" title="{{ m.state_text }}"><span class="material-symbols-outlined" aria-hidden="true">{% if m.tone == "watch" or m.tone == "watch-soft" %}priority_high{% elif m.tone == "improve" or m.tone == "improve-soft" %}star{% elif m.tone == "down" %}south_east{% elif m.tone == "up" %}north_east{% elif m.tone == "none" %}help{% else %}remove{% endif %}</span><span class="sr-only">{{ m.state_text }}</span></span></li>
         {% endfor %}
       </ul>
-      <p class="ms-pcard-foot">最近個人 MR {{ r.a.context.personal.1 }}、release 切片 {{ r.a.context.slices.1 }}<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></p>
+      <p class="ms-pcard-foot">最近 28 天:個人 MR {{ r.a.context.personal.1 }}、release 改動 {{ r.a.context.slices.1 }}<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></p>
     </li>
     {% endfor %}
   </ul>

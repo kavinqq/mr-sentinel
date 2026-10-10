@@ -5,18 +5,18 @@
 
 {% with f=lead %}
 <section class="ms-group">
-  <div class="ms-group-head"><h2>你 merge 的別人 MR</h2><span class="count">{{ f.merges|length }}</span>
-    <span class="hint">帶著未處理 finding 的排在最前面,可以直接點進去追蹤</span></div>
+  <div class="ms-group-head"><h2>本人 merge 的其他人 MR</h2><span class="count">{{ f.merges|length }}</span>
+    <span class="hint">可能有未處理 finding 的排在最前面,可以點進去確認</span></div>
   {% if f.merges %}
   <ol class="ms-recs">
     {% for m in f.merges %}
     <li class="ms-rec">
       <div class="ms-rec-main">
         <div class="ms-tags">
-          {% if m.outcome == "escaped" %}<span class="ms-tag c-red">{{ m.escaped }} 則未處理就 merge</span>{% if m.worst %}<span class="ms-tag {{ m.worst|tag:'sev' }}">最嚴重 {{ m.worst|sev_label }}</span>{% endif %}
-          {% elif m.outcome == "cleared" %}<span class="ms-tag c-green">finding 處理完才 merge</span>
+          {% if m.outcome == "escaped" %}<span class="ms-tag c-red">{{ m.escaped }} 則 merge 時可能未處理</span>{% if m.worst %}<span class="ms-tag {{ m.worst|tag:'sev' }}">最嚴重 {{ m.worst|sev_label }}</span>{% endif %}
+          {% elif m.outcome == "cleared" %}<span class="ms-tag c-green">finding 已處理</span>
           {% else %}<span class="ms-tag c-gray">沒有 finding</span>{% endif %}
-          {% if m.followup %}<span class="ms-tag c-orange">上線後確認有 bug</span>{% endif %}
+          {% if m.followup %}<span class="ms-tag c-orange">已確認有後續 bug</span>{% endif %}
         </div>
         <p class="ms-rec-title">{% if m.mr %}<a href="{{ m.mr.web_url }}" target="_blank" rel="noopener">{{ m.mr|short_mr }}</a><span>{{ m.mr.title }}</span>{% endif %}</p>
         {% if m.mr %}<ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ m.mr.merged_at|tw }}</li>
@@ -29,12 +29,12 @@
 </section>
 
 <section class="ms-group">
-  <div class="ms-group-head"><h2>你負責的 release MR</h2><span class="count">{{ f.releases|length }}</span></div>
+  <div class="ms-group-head"><h2>本人參與的 release MR</h2><span class="count">{{ f.releases|length }}</span></div>
   {% if f.releases %}
   <ol class="ms-recs">
     {% for m in f.releases %}
     <li class="ms-rec"><div class="ms-rec-main">
-      <div class="ms-tags">{% if m.outcome == "escaped" %}<span class="ms-tag c-red">{{ m.escaped }} 則未處理就上版</span>{% elif m.outcome == "cleared" %}<span class="ms-tag c-green">finding 處理完才上版</span>{% else %}<span class="ms-tag c-gray">沒有 finding</span>{% endif %}{% if m.followup %}<span class="ms-tag c-orange">上線後確認有 bug</span>{% endif %}</div>
+      <div class="ms-tags">{% if m.outcome == "escaped" %}<span class="ms-tag c-red">{{ m.escaped }} 則 merge 時可能未處理</span>{% elif m.outcome == "cleared" %}<span class="ms-tag c-green">finding 已處理</span>{% else %}<span class="ms-tag c-gray">沒有 finding</span>{% endif %}{% if m.followup %}<span class="ms-tag c-orange">已確認有後續 bug</span>{% endif %}</div>
       <p class="ms-rec-title">{% if m.mr %}<a href="{{ m.mr.web_url }}" target="_blank" rel="noopener">{{ m.mr|short_mr }}</a><span>{{ m.mr.title }}</span>{% endif %}</p>
     </div></li>
     {% endfor %}
@@ -44,7 +44,7 @@
 
 <section class="ms-group">
   <div class="ms-group-head"><h2>接手與協作</h2><span class="count">{{ f.handover|length }}</span>
-    <span class="hint">別人的 MR 裡有你的 commit</span></div>
+    <span class="hint">其他人的 MR 裡有本人的 commit</span></div>
   {% if f.handover %}
   <ol class="ms-recs">
     {% for h in f.handover %}
@@ -55,6 +55,6 @@
     </div></li>
     {% endfor %}
   </ol>
-  {% else %}<p class="ms-empty-block">這段期間別人的 MR 裡沒有你的 commit</p>{% endif %}
+  {% else %}<p class="ms-empty-block">這段期間其他人的 MR 裡沒有本人的 commit</p>{% endif %}
 </section>
 {% endwith %}

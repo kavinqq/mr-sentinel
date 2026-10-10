@@ -7,7 +7,7 @@ from django.apps import AppConfig
 
 class ReviewsConfig(AppConfig):
     name = "reviews"
-    verbose_name = "Review 歷史"
+    verbose_name = "Review 紀錄"
 
     def ready(self):
         # Warm the 個人軌跡 analysis (a ~2 s Monte-Carlo) in the background when the

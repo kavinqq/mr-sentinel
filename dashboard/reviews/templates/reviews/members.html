@@ -27,7 +27,7 @@
 
   <section class="ms-group">
     <div class="ms-group-head"><h2>所有人</h2><span class="count">{{ people|length }}</span>
-      <span class="hint">改完一次儲存 · 「非成員」是別組支援,不評分也不打分</span></div>
+      <span class="hint">改完一次儲存 · 「非成員」是其他組來支援的人,不列入評分</span></div>
     <form method="post" id="roles-form">{% csrf_token %}
       <input type="hidden" name="action" value="roles">
       <div class="ms-bulk-bar" role="group" aria-label="批次設定">

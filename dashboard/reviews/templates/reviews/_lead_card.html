@@ -9,29 +9,29 @@
   <div class="ms-lead-facts">
     <div class="ms-fact">
       <div class="k"><span class="material-symbols-outlined" aria-hidden="true">merge</span>Merge 把關</div>
-      <div class="v">{{ f.merges|length }}<span class="unit">個別人的 MR</span></div>
+      <div class="v">{{ f.merges|length }}<span class="unit">個其他人的 MR</span></div>
       <div class="ms-tags">
-        {% if f.merge_tally.escaped %}<span class="ms-tag c-red">{{ f.merge_tally.escaped }} 個帶著未處理的 finding</span>{% endif %}
-        {% if f.merge_tally.cleared %}<span class="ms-tag c-green">{{ f.merge_tally.cleared }} 個處理完才 merge</span>{% endif %}
+        {% if f.merge_tally.escaped %}<span class="ms-tag c-red">{{ f.merge_tally.escaped }} 個 MR 可能有未處理 finding</span>{% endif %}
+        {% if f.merge_tally.cleared %}<span class="ms-tag c-green">{{ f.merge_tally.cleared }} 個 MR 的 finding 已處理</span>{% endif %}
         <span class="ms-tag c-gray">{{ f.merge_tally.clean }} 個沒有 finding</span>
       </div>
     </div>
     <div class="ms-fact">
-      <div class="k"><span class="material-symbols-outlined" aria-hidden="true">rocket_launch</span>整合與上版</div>
-      <div class="v">{{ f.releases|length }}<span class="unit">個 release MR(你開的或 merge 的)</span></div>
+      <div class="k"><span class="material-symbols-outlined" aria-hidden="true">rocket_launch</span>release 整合</div>
+      <div class="v">{{ f.releases|length }}<span class="unit">個 release MR(本人建立或 merge 的)</span></div>
       <div class="ms-tags">
-        {% if f.release_tally.escaped %}<span class="ms-tag c-red">{{ f.release_tally.escaped }} 個帶著未處理的 finding</span>{% else %}<span class="ms-tag c-green">都沒有未處理的 finding</span>{% endif %}
+        {% if f.release_tally.escaped %}<span class="ms-tag c-red">{{ f.release_tally.escaped }} 個 MR 可能有未處理 finding</span>{% else %}<span class="ms-tag c-green">沒發現未處理的 finding</span>{% endif %}
       </div>
     </div>
     <div class="ms-fact">
       <div class="k"><span class="material-symbols-outlined" aria-hidden="true">handshake</span>接手與協作</div>
-      <p class="ms-fact-note">別人的 MR 裡有你的 commit</p>
+      <p class="ms-fact-note">其他人的 MR 裡有本人的 commit</p>
       <div class="v">{{ f.handover|length }}<span class="unit">個 MR</span></div>
     </div>
     <div class="ms-fact">
       <div class="k"><span class="material-symbols-outlined" aria-hidden="true">rate_review</span>Review 留言</div>
       <div class="v">{{ f.review_notes }}<span class="unit">則 · {{ f.review_mrs }} 個 MR</span></div>
-      {% if not f.review_notes %}<div class="ms-tags"><span class="ms-tag c-amber">口頭 / Slack 的回饋量不到</span></div>{% endif %}
+      {% if not f.review_notes %}<div class="ms-tags"><span class="ms-tag c-amber">不含口頭或 Slack 上的 review 回饋</span></div>{% endif %}
     </div>
   </div>
 </article>

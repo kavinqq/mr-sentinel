@@ -9,9 +9,9 @@ CATEGORIES = {
     "requirements": "需求符合度",    # vs. the MR description / spec: missing, wrong, unasked-for
     "correctness": "正確性",         # wrong results, crashes, races, data loss
     "compatibility": "相容與遷移",   # existing API / schema / data / callers / rollout order
-    "operability": "營運與復原",     # cannot detect, retry, compensate, roll back; deploy gaps
+    "operability": "維運與復原",     # cannot detect, retry, compensate, roll back; deploy gaps
     "performance": "效能",           # N+1, unbounded work under a stated load
-    "verification": "驗證有效性",    # tests that cannot catch the defect; a CI green that lies
+    "verification": "測試把關",    # tests that cannot catch the defect; a CI green that lies
     "maintainability": "可維護性",   # duplication, dead code, misleading names, over-engineering
 }
 # categories before the 8-way taxonomy: where they can go without a judgment.

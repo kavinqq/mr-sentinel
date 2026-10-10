@@ -1,5 +1,5 @@
 """The unfold sidebar. 個人軌跡 has one entry per member, each with an icon when
-something needs a look (high 個案 / 要關注 / 一起查看) or improved a lot (明顯改善)."""
+something needs a look (嚴重問題待確認 / 需留意 / 一起查看) or improved a lot (明顯改善)."""
 from django.urls import reverse, reverse_lazy
 from django.utils.html import escape
 
@@ -42,7 +42,7 @@ def trajectory_items():
 
 def sidebar(request):
     return [
-        {"title": "Review 歷史", "separator": False, "items": [
+        {"title": "Review 紀錄", "separator": False, "items": [
             _nav("團隊總覽", "monitoring", reverse_lazy("admin:index")),
             _nav("評分變動紀錄", "timeline", reverse_lazy("score_log")),
         ]},
@@ -60,7 +60,7 @@ def sidebar(request):
         {"title": "紀錄", "separator": True, "collapsible": True, "items": [
             _nav("覆核紀錄", "fact_check", reverse_lazy("admin:reviews_findingreview_changelist")),
             _nav("後續 bug 覆核", "bug_report", reverse_lazy("admin:reviews_followupreview_changelist")),
-            _nav("角色紀錄", "badge", reverse_lazy("admin:reviews_personrole_changelist")),
+            _nav("身分變更紀錄", "badge", reverse_lazy("admin:reviews_personrole_changelist")),
             _nav("Email 紀錄", "contact_mail", reverse_lazy("admin:reviews_emailalias_changelist")),
             _nav("評分版本", "history", reverse_lazy("admin:reviews_scoringconfig_changelist")),
             _nav("同步請求", "sync", reverse_lazy("admin:reviews_syncrequest_changelist")),

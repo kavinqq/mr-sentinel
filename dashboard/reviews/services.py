@@ -30,7 +30,8 @@ ITEM_SHORT = {k: _SHORT.get(k, v) for k, v in score.ITEMS.items()}   # column he
 SEVERITY_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 ROLES = hdb.ROLES
 SEVERITY_ORDER = ("high", "medium", "low")
-SYNC_KINDS = {"sync": "增量同步", "full_sync": "完整同步", "evaluate": "重新產生評價"}
+FOLLOWUP_KIND_TEXT = {"fix_mr": "修 bug 的 MR", "ai_refind": "AI 再次發現"}
+SYNC_KINDS = {"sync": "增量同步", "full_sync": "完整同步", "evaluate": "重新產生 review 摘要"}
 
 
 def history_path() -> Path:
@@ -361,10 +362,10 @@ def finding_owner(note_id: int) -> int | None:
 
 def set_role(gitlab_id: int, role: str, actor: str) -> PersonRole:
     if role not in ROLES:
-        raise ValueError(f"unknown role {role!r}")
+        raise ValueError("身分選項無效,請重新選擇")
     person = Person.objects.filter(gitlab_id=gitlab_id).first()
     if person is None:
-        raise ValueError("沒有這個人")
+        raise ValueError("找不到這位成員")
     saved = PersonRole.objects.create(person_id=gitlab_id, role=role, actor=actor,
                                       created_at=hdb.now_iso())
     record(f"{person.name or person.username} 改為{ROLES[role]}", actor)
@@ -375,10 +376,10 @@ def set_roles(changes: dict[int, str], actor: str) -> int:
     """Several role changes in one go: all validated first, only real changes
     stored, one rescore and one log line for the lot. Returns how many changed."""
     if any(role not in ROLES for role in changes.values()):
-        raise ValueError("有不認得的身分")
+        raise ValueError("身分選項無效,請重新選擇")
     people = {p.gitlab_id: p for p in Person.objects.filter(gitlab_id__in=list(changes))}
     if set(changes) - set(people):
-        raise ValueError("有不存在的人")
+        raise ValueError("有成員已不在名單中,請重新整理後再試")
     current = {}
     for r in PersonRole.objects.filter(person_id__in=list(changes)).order_by("created_at", "id"):
         current[r.person_id] = r.role
@@ -454,12 +455,12 @@ def email_page() -> dict:
 def confirm_email(email: str, gitlab_id: int | None, actor: str) -> EmailAlias:
     email = (email or "").strip().lower()
     if "@" not in email:
-        raise ValueError("不是 email")
+        raise ValueError("Email 格式不正確")
     if gitlab_id is not None and not Person.objects.filter(gitlab_id=gitlab_id).exists():
-        raise ValueError("沒有這個人")
+        raise ValueError("找不到這位成員")
     saved = EmailAlias.objects.create(email=email, person_id=gitlab_id, actor=actor,
                                       created_at=hdb.now_iso())
-    record(f"email {email} 對應{'到 ' + str(saved.person) if gitlab_id else '設為忽略'}", actor)
+    record(f"email {email} " + (f"對應到 {saved.person}" if gitlab_id else "設為忽略"), actor)
     return saved
 
 
@@ -473,9 +474,9 @@ def score_log(gitlab_id: int | None = None, limit: int = 200) -> list:
 def review_finding(note_id: int, actor: str, category: str | None = None,
                    excluded: bool | None = None, reason: str = "") -> FindingReview:
     if category is not None and category not in CATEGORIES:
-        raise ValueError(f"unknown category {category!r}")
+        raise ValueError("面向選項無效")
     if category is None and excluded is None:
-        raise ValueError("nothing to change")
+        raise ValueError("沒有需要變更的內容")
     saved = FindingReview.objects.create(
         note_id=note_id, category=category, actor=actor, created_at=hdb.now_iso(),
         excluded=None if excluded is None else int(excluded), reason=reason.strip() or None)
@@ -494,14 +495,14 @@ def review_followup(feature_mr_id: int, kind: str, source_ref: str, verdict: str
     finding review). The follow-up itself must exist — a verdict is never free text."""
     from .models import Followup
     if verdict not in FOLLOWUP_VERDICTS:
-        raise ValueError(f"unknown verdict {verdict!r}")
+        raise ValueError("確認結果無效")
     if not Followup.objects.filter(feature_mr_id=feature_mr_id, kind=kind,
                                    source_ref=source_ref).exists():
         raise ValueError("沒有這筆後續 bug")
     saved = FollowupReview.objects.create(
         feature_mr_id=feature_mr_id, kind=kind, source_ref=source_ref, verdict=verdict,
         reason=reason.strip() or None, actor=actor, created_at=hdb.now_iso())
-    record(f"後續 bug 覆核(MR {feature_mr_id} · {kind}):{FOLLOWUP_VERDICTS[verdict]}", actor)
+    record(f"後續 bug 覆核(MR {feature_mr_id} · {FOLLOWUP_KIND_TEXT.get(kind, kind)}):{FOLLOWUP_VERDICTS[verdict]}", actor)
     return saved
 
 
@@ -515,7 +516,7 @@ def validate_scoring(cfg) -> list[str]:
         errors.append(f"缺少欄位: {', '.join(sorted(missing))}")
     unknown = set(cfg) - set(hdb.DEFAULT_SCORING)
     if unknown:
-        errors.append(f"不認得的欄位: {', '.join(sorted(unknown))}(舊版公式的欄位已不使用)")
+        errors.append(f"不支援的欄位: {', '.join(sorted(unknown))}(舊版公式的欄位已不使用)")
 
     def number(v, lo=None, hi=None):
         return isinstance(v, (int, float)) and not isinstance(v, bool) and \
@@ -544,7 +545,7 @@ def validate_scoring(cfg) -> list[str]:
                 for t in tracks.values()):
             errors.append('tracks 必須是 {key: {"label": "前端", "match": ["/frontend/"]}}')
         elif sum(1 for t in tracks.values() if not t["match"]) != 1:
-            errors.append("tracks 要剛好一條 match 是空的(對不到任何規則的專案歸到那條)")
+            errors.append("tracks 裡必須剛好有一條的 match 是空的(對不到任何規則的專案會歸到那條)")
     if "fullstack_bonus" in cfg and not number(cfg["fullstack_bonus"], 0, 10):
         errors.append("fullstack_bonus 必須在 0 到 10 之間")
     if "fullstack_min_score" in cfg and not number(cfg["fullstack_min_score"], 0, top * len(score.ITEMS)):
@@ -566,14 +567,14 @@ def validate_scoring(cfg) -> list[str]:
                 errors.append("只有最後一級的 min_score 可以是 null(其餘級距都要有下限)")
             elif floors[:-1] != sorted(floors[:-1], reverse=True) or \
                     len(set(floors[:-1])) != len(floors) - 1:
-                errors.append("min_score 必須由高到低遞減(最好的等級寫在最前面)")
+                errors.append("min_score 必須由高到低遞減(門檻最高的等級寫在最前面)")
             names = [lv["level"] for lv in levels]
             if len(set(names)) != len(names):
                 errors.append("level 名稱不能重複")
             for lv in levels:
                 bad = set(lv) - {"level", *score.GATES}
                 if bad:
-                    errors.append(f"{lv['level']}: 不認得的欄位 {', '.join(sorted(bad))}"
+                    errors.append(f"{lv['level']}: 不支援的欄位 {', '.join(sorted(bad))}"
                                   f"(可用: {', '.join(score.GATES)})")
                 for key in ("max_high", "max_escaped", "max_confirmed_followups", "min_coverage",
                             "min_mrs", "min_recent_mrs"):
@@ -609,14 +610,14 @@ def new_scoring_version(cfg: dict, note: str, actor: str) -> ScoringConfig:
             continue
         record(f"評分公式改為 v{saved.version}" + (f"({saved.note})" if saved.note else ""), actor)
         return saved
-    raise ValueError("同時有太多人在改評分設定,請重試")
+    raise ValueError("評分設定剛好有其他更新,請稍後再試")
 
 
 def request_sync(kind: str, actor: str) -> SyncRequest:
     """Queue it, then start the core job detached — the web request never runs a
     sync itself, and the job's own lock means a second click cannot double it."""
     if kind not in SYNC_KINDS:
-        raise ValueError(f"unknown sync kind {kind!r}")
+        raise ValueError("同步方式無效")
     req = SyncRequest.objects.create(kind=kind, requested_by=actor, requested_at=hdb.now_iso())
     try:
         kick_history_job()
@@ -667,7 +668,7 @@ def _fmt_diff(m):
     if d is None:
         return "—"
     if unit == "%":
-        return f"{d * 100:+.0f} pp"
+        return f"{d * 100:+.0f} 個百分點"
     if unit == "小時":
         return f"{d * 100:+.0f}%"
     if unit == "個/週":
@@ -680,7 +681,7 @@ def _fmt_interval(m):
     if not iv:
         return None
     if unit == "%":
-        return f"{iv[0] * 100:+.0f} ~ {iv[1] * 100:+.0f} pp"
+        return f"{iv[0] * 100:+.0f} ~ {iv[1] * 100:+.0f} 個百分點"
     if unit == "小時":
         return f"{iv[0] * 100:+.0f}% ~ {iv[1] * 100:+.0f}%"
     return f"{iv[0]:+.2f} ~ {iv[1]:+.2f}"
@@ -708,6 +709,9 @@ def person_color(pid) -> int:
         _PERSON_RANK.update({g: i % PERSON_COLORS for i, g in enumerate(ids)})
     return _PERSON_RANK.get(pid, pid % PERSON_COLORS)
 
+
+# history.trajectory keeps its basis names (they are part of stored judgments); these are how they read.
+STRATUM_TEXT = {"個人 MR": "個人 MR", "release 切片": "release 中的個人改動", "混合": "個人 MR 與 release 改動一起看"}
 
 TONE = {"strong_worse": "watch", "observe_worse": "watch-soft", "worse": "down",
         "strong_better": "improve", "observe_better": "improve-soft", "better": "up",
@@ -757,10 +761,10 @@ def _cached_analysis(conn, cfg):
 
 # One flag per person, most urgent first: what the sidebar icon and the overview show.
 FLAG_ORDER = {"case": 0, "watch": 1, "together": 2, "improve": 3, "ok": 4, "thin": 5}
-FLAG_TEXT = {"case": "high 個案", "watch": "要關注", "together": "一起查看", "improve": "明顯改善",
-             "ok": "無警示", "thin": "資料不足"}
-SHORT_LABEL = {"requirements": "需求符合度", "verification": "驗證有效性", "escape_rate": "未處理 merge",
-               "bug_rate": "後續 bug", "cycle_time": "merge 時間"}
+FLAG_TEXT = {"case": "嚴重問題待確認", "watch": "需留意", "together": "一起查看", "improve": "明顯改善",
+             "ok": "目前無提醒", "thin": "資料不足"}
+SHORT_LABEL = {"requirements": "需求符合度", "verification": "測試把關", "escape_rate": "未處理問題",
+               "bug_rate": "後續 bug", "cycle_time": "MR 處理時間"}
 FLAG_ICON = {"case": "error", "watch": "priority_high", "together": "join_inner", "improve": "trending_up",
              "ok": "", "thin": ""}
 
@@ -857,7 +861,8 @@ def trajectory_page(person: int | None = None) -> dict:
             metrics.append({**m, "tone": TONE.get(m["state"], "flat"), "as_of": a["as_of"],
                             "base_text": base_text, "recent_text": recent_text,
                             "diff_text": _fmt_diff(m), "interval_text": _fmt_interval(m),
-                            "need_text": f"需 {m['need'][1]}/{m['need'][0]}" if m["need"][0] else ""})
+                            "need_text": f"至少要 {m['need'][1]} → {m['need'][0]} 筆" if m["need"][0] else "",
+                            "stratum_text": STRATUM_TEXT.get(m.get("stratum"), m.get("stratum"))})
         by_key = {m["key"]: m for m in metrics}
         alerts = []
         for al in open_.get(pid, []):
@@ -886,8 +891,8 @@ def trajectory_page(person: int | None = None) -> dict:
         row["flag"] = _flag(row)
         row["metrics_all"] = metrics
         text = " ".join(a["shifted"])
-        row["shift"] = {"frontend": "前端比例" in text, "fix": "fix MR" in text,
-                        "self_merge": "self-merge" in text, "files": "MR 大小" in text}
+        row["shift"] = {"frontend": "前端比例" in text, "fix": "修 bug" in text,
+                        "self_merge": "自己 merge" in text, "files": "改幾個檔案" in text}
         recent_projects = list(a["context"]["projects"][1])
         top = [{"name": n, "n": c} for n, c in recent_projects[:4]]
         if len(recent_projects) > 4:

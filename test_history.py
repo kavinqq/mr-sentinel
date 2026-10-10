@@ -390,7 +390,7 @@ class TestRatingScore(unittest.TestCase):
         rat = self.ratings(10, 4, verification=None)
         r = score.person_report(self.mrs(10), [], [], CFG, 1, NOW, rat)
         self.assertIsNone(r["level"])
-        self.assertEqual(r["missing_items"], ["驗證有效性"])
+        self.assertEqual(r["missing_items"], ["測試把關"])
 
     def test_gates_and_next_level(self):
         fs = self.findings((0, "high", "correctness", False))
@@ -1040,7 +1040,7 @@ class TestTrajectory(DbCase):
         self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))
         tj.update(self.conn, CFG, NOW + timedelta(days=3), {})
         row = self.conn.execute("SELECT close_reason FROM trajectory_alerts").fetchone()
-        self.assertEqual(row[0], "不再評估此人")
+        self.assertEqual(row[0], "這位成員已不在分析範圍內")
 
     def test_a_regrade_of_the_same_mrs_is_not_new_evidence(self):
         self.step(0, self.m(value=1))
@@ -1207,7 +1207,7 @@ class TestTrajectory(DbCase):
                     "is_fix": False, "files": 3, "track": "backend", "slice": False}
         a = tj.analyze_person([mk(100 + i, 40 + i, i < 1) for i in range(10)] +
                               [mk(i, 2 + i, i < 3) for i in range(10)], [], NOW, 7)
-        self.assertTrue(any(s.startswith("self-merge 比例 10% → 30%") for s in a["shifted"]))
+        self.assertTrue(any(s.startswith("自己 merge 的比例 10% → 30%") for s in a["shifted"]))
 
     def test_switching_the_comparison_basis_starts_a_new_streak(self):
         def on(basis, ids):

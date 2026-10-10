@@ -34,7 +34,7 @@ def dashboard_callback(request, context):
 def person(request, author_id: int):
     detail = services.person_detail(author_id)
     if detail is None:
-        raise Http404("沒有這個人的 MR")
+        raise Http404("找不到這位成員的 MR 紀錄")
     show = request.GET.get("show", "window")
     findings, followups = detail["findings"], detail["followups"]
     if show == "window":          # same range as the score above, so the numbers match
@@ -70,7 +70,7 @@ def review_finding(request, note_id: int):
         if action == "category":
             services.review_finding(note_id, request.user.username,
                                     category=request.POST.get("category"), reason=reason)
-            messages.success(request, f"已把「{finding.title}」改成 "
+            messages.success(request, f"已把「{finding.title}」的面向改成 "
                                       f"{CATEGORIES.get(request.POST.get('category'), '')}")
         elif action in ("exclude", "include"):
             if action == "exclude" and not reason.strip():
@@ -81,7 +81,7 @@ def review_finding(request, note_id: int):
                 messages.success(request, ("已標記為誤判,不計分" if action == "exclude"
                                            else "已恢復計分") + f":{finding.title}")
         else:
-            return HttpResponseBadRequest("unknown action")
+            return HttpResponseBadRequest("操作無效,請重新整理後再試")
     except ValueError as exc:
         messages.error(request, str(exc))
     owner = services.finding_owner(note_id) or finding.mr.author_id    # blame may have moved it
@@ -96,7 +96,7 @@ def review_followup(request, author_id: int):
                                  request.POST.get("verdict", ""), request.user.username,
                                  request.POST.get("reason", ""))
     except ValueError as exc:
-        messages.error(request, f"沒有存:{exc}")
+        messages.error(request, f"沒有儲存成功:{exc}")
     else:
         messages.success(request, f"已記錄:{services.FOLLOWUP_VERDICTS[request.POST['verdict']]},"
                                   f"分數已重新計算")
@@ -125,7 +125,7 @@ def scoring(request):
         try:
             cfg = json.loads(draft or "")
         except ValueError as exc:
-            messages.error(request, f"不是合法的 JSON:{exc}")
+            messages.error(request, f"JSON 格式不正確:{exc}")
         else:
             try:
                 saved = services.new_scoring_version(cfg, request.POST.get("note", ""),
@@ -154,8 +154,8 @@ def sync_request(request):
     except (ValueError, services.SyncStartError) as exc:
         messages.error(request, str(exc))
     else:
-        messages.success(request, f"已送出{services.SYNC_KINDS[kind]},背景執行中"
-                                  f"(完整同步約 2 分鐘、評價約 1 分鐘),重新整理即可看到結果")
+        messages.success(request, f"已送出{services.SYNC_KINDS[kind]},正在背景處理"
+                                  f"(完整同步約 2 分鐘、摘要約 1 分鐘),完成後重新整理就能看到")
     return redirect(_back(request, reverse("admin:index")))
 
 
@@ -168,7 +168,7 @@ def members(request):
         try:
             n = services.set_roles(changes, request.user.username)
         except ValueError as exc:
-            messages.error(request, f"沒有存:{exc}")
+            messages.error(request, f"沒有儲存成功:{exc}")
         else:
             messages.success(request, f"已更新 {n} 個人的身分,分數已重新計算" if n else "沒有任何變更")
         return redirect("members")
@@ -178,8 +178,8 @@ def members(request):
         except ValueError as exc:
             messages.error(request, str(exc))
         else:
-            messages.success(request, f"已加入 {added.username},背景同步會向 GitLab 確認帳號"
-                                      f"(約 1 分鐘),重新整理即可看到")
+            messages.success(request, f"已送出 {added.username} 的加入申請,正在向 GitLab 確認帳號"
+                                      f"(約 1 分鐘),完成後重新整理就能看到")
         return redirect("members")
     return _page(request, "reviews/members.html", "成員管理", **services.members())
 
@@ -203,7 +203,7 @@ def emails(request):
             gitlab_id = None if raw == "ignore" else int(raw)
             services.confirm_email(request.POST.get("email", ""), gitlab_id, request.user.username)
         except (ValueError, TypeError) as exc:
-            messages.error(request, f"沒有存:{exc}")
+            messages.error(request, f"沒有儲存成功:{exc}")
         else:
             messages.success(request, "已儲存,分數已重新計算")
         return redirect("emails")
@@ -234,13 +234,13 @@ def trajectory_alert(request, alert_id: int):
         if action == "ack":
             ok = services.trajectory_ack(alert_id, request.user.username, request.POST.get("note", ""))
             (messages.success if ok else messages.error)(
-                request, "已記錄你看過了,提醒會繼續追蹤" if ok else "這則提醒已經結束或不存在,沒有記錄")
+                request, "已記錄你看過了,提醒會繼續追蹤" if ok else "這則提醒已結束或找不到,沒有記錄已檢視")
         elif action == "end":
             ok = services.trajectory_end(alert_id, request.user.username, request.POST.get("reason", ""))
             (messages.success if ok else messages.error)(
-                request, "已結束追蹤;28 天內同一個指標不會再提醒" if ok else "這則提醒已經結束或不存在")
+                request, "已結束追蹤;28 天內同一個指標不會再提醒" if ok else "這則提醒已結束或找不到")
         else:
-            return HttpResponseBadRequest("unknown action")
+            return HttpResponseBadRequest("操作無效,請重新整理後再試")
     except ValueError as exc:
         messages.error(request, str(exc))
     return redirect(_back(request, reverse("trajectory")))

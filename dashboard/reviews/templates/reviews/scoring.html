@@ -33,16 +33,16 @@
         <div><dt><code>window_days</code></dt><dd>評分看最近幾天的 MR</dd></div>
         <div><dt><code>recent_days</code></dt><dd>等級的 <code>min_recent_mrs</code> 看最近幾天(要有新的證據才能升等)</dd></div>
         <div><dt><code>tracks</code></dt><dd>前端 / 後端怎麼分:專案路徑含 <code>match</code> 任一段就歸那條;<code>match</code> 為空的那條收其餘專案</dd></div>
-        <div><dt><code>fullstack_bonus</code> · <code>fullstack_min_score</code></dt><dd>兩條都有足夠打過分的 MR、且較弱那條也達這個分數,另加幾分(只顯示,等級用加分前的分數)</dd></div>
-        <div><dt><code>min_reviewed_mrs</code></dt><dd>打過分的個人 MR 少於這個數就不給等級</dd></div>
-        <div><dt><code>followup_days</code></dt><dd>上線後幾天內的 fix / 新 finding 算後續 bug</dd></div>
+        <div><dt><code>fullstack_bonus</code> · <code>fullstack_min_score</code></dt><dd>兩條都有足夠已評分的 MR、且較弱那條也達這個分數,另加幾分(只顯示,等級用加分前的分數)</dd></div>
+        <div><dt><code>min_reviewed_mrs</code></dt><dd>已評分的個人 MR 少於這個數就不給等級</dd></div>
+        <div><dt><code>followup_days</code></dt><dd>merge 後幾天內的 fix / 新 finding 算後續 bug</dd></div>
         <div><dt><code>finding_cap</code></dt><dd>MR 上留下的 finding 讓該面向最多幾分(high / medium / low)</dd></div>
-        <div><dt><code>escape_increment</code></dt><dd>merge 時還沒修,該面向再扣幾分(依嚴重度)</dd></div>
+        <div><dt><code>escape_increment</code></dt><dd>merge 時可能未處理,該面向再扣幾分(依嚴重度)</dd></div>
         <div><dt><code>followup_increment</code></dt><dd>確認的後續 bug 再扣幾分(fix_mr / ai_refind);未確認的不扣</dd></div>
-        <div><dt><code>prior_strength</code> · <code>prior_score</code></dt><dd>每項向 prior_score 收縮,強度等於幾個虛擬 MR;越大越難拿高分</dd></div>
+        <div><dt><code>prior_strength</code> · <code>prior_score</code></dt><dd>prior_score 是參考分數,prior_strength 是它等於幾筆 MR 的分量;越大,少量資料越不容易讓分數偏離參考分數</dd></div>
         <div><dt><code>item_max</code></dt><dd>每項滿分;總分 = 8 × 已評估各項平均</dd></div>
         <div><dt><code>required_items</code></dt><dd>這些面向沒評估到就是「資料不足」。可用:{% for k, v in categories.items %}<code>{{ k }}</code> {{ v }}{% if not forloop.last %}、{% endif %}{% endfor %}</dd></div>
-        <div><dt><code>levels</code></dt><dd>由好到差,每一級條件<strong>全部</strong>符合才算;最後一級 <code>min_score</code> 為 <code>null</code>。條件:<code>min_score</code> 總分、<code>min_item</code> 最弱一項、<code>min_coverage</code> 已評估面向、<code>min_mrs</code> 打過分的 MR、<code>min_recent_mrs</code> 近期打過分的 MR、<code>max_high</code>、<code>max_escaped</code>、<code>max_confirmed_followups</code>、<code>min_clean_rate</code>(0.9 = 90%)</dd></div>
+        <div><dt><code>levels</code></dt><dd>依門檻由高到低,每一級條件<strong>全部</strong>符合才算;最後一級 <code>min_score</code> 為 <code>null</code>。條件:<code>min_score</code> 總分、<code>min_item</code> 最低單項、<code>min_coverage</code> 已評估面向、<code>min_mrs</code> 打過分的 MR、<code>min_recent_mrs</code> 近期打過分的 MR、<code>max_high</code>、<code>max_escaped</code>、<code>max_confirmed_followups</code>、<code>min_clean_rate</code>(0.9 = 90%)</dd></div>
       </dl>
     </section>
   </div>

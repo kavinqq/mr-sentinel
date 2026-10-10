@@ -1,16 +1,16 @@
 {% load sentinel %}{% if evaluation %}
 <div class="ms-eval{% if compact %} compact{% endif %}">
   <div class="ms-eval-summary" role="note">
-    <span class="ms-eval-tag">總評</span>
+    <span class="ms-eval-tag">review 摘要</span>
     <p>{{ evaluation.summary }}</p>
   </div>
 
   {% for part in "strengths weaknesses"|split %}
   {% with items=evaluation|get:part good=forloop.first %}
-  <section class="ms-eval-part {% if good %}good{% else %}bad{% endif %}" aria-label="{% if good %}優點{% else %}缺點{% endif %}">
+  <section class="ms-eval-part {% if good %}good{% else %}bad{% endif %}" aria-label="{% if good %}做得好的地方{% else %}可以討論的地方{% endif %}">
     <h4 class="ms-eval-h">
       <span class="material-symbols-outlined" aria-hidden="true">{% if good %}thumb_up{% else %}report{% endif %}</span>
-      {% if good %}優點{% else %}缺點{% endif %}<span class="count">{{ items|length }}</span>
+      {% if good %}做得好的地方{% else %}可以討論的地方{% endif %}<span class="count">{{ items|length }}</span>
     </h4>
     {% if items %}
     <ol class="ms-eval-list">
@@ -27,7 +27,7 @@
       </li>
       {% endfor %}
     </ol>
-    {% else %}<p class="ms-eval-empty">{% if good %}沒有足以佐證的優點{% else %}沒有明顯缺點{% endif %}</p>{% endif %}
+    {% else %}<p class="ms-eval-empty">{% if good %}目前紀錄裡還沒有足夠的例子{% else %}目前紀錄裡沒有明顯需要討論的地方{% endif %}</p>{% endif %}
   </section>
   {% endwith %}
   {% endfor %}
@@ -36,4 +36,4 @@
     {% if stale %}<span class="ms-tag c-amber">紀錄已變動,下次同步會更新</span>{% endif %}
     {% if compact %}· <a class="ms-link" href="{% url 'person' person_id %}">看建議與依據 →</a>{% endif %}</p>
 </div>
-{% else %}<p class="ms-eval-empty">還沒有評價{% if stale %} — 下次同步會產生,或到個人頁按「重新產生評價」{% endif %}</p>{% endif %}
+{% else %}<p class="ms-eval-empty">還沒有 review 摘要{% if stale %} — 下次同步會產生,或到個人頁按「重新產生摘要」{% endif %}</p>{% endif %}
