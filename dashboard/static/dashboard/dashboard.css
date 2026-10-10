@@ -648,3 +648,54 @@ td.path code { word-break: break-all; }
 .ms .ms-case-meta { margin: 4px 0 0; font-size: .92rem; color: var(--ms-muted); overflow-wrap: anywhere; }
 .ms .ms-spark-legend { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; color: var(--ms-muted); }
 .ms .ms-spark-legend i { display: inline-block; width: 18px; height: 10px; border-radius: 2px; background: #EEF0FB; border: 1px solid #C7CCEF; }
+
+/* 個人軌跡 by person: one flag per person (Radix 11/3 pairs, ≥4.5:1), the people
+   grid, and the same flag as an icon on each person in the sidebar */
+.ms .ms-flag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px 2px 8px; border-radius: 999px;
+  border: 1px solid; font-size: .9rem; font-weight: 600; line-height: 1.6; white-space: nowrap; }
+.ms .ms-flag .material-symbols-outlined { font-size: 18px; }
+.ms .ms-flag.f-case     { background: #FEEBEC; border-color: #F4A9AA; color: #CE2C31; }
+.ms .ms-flag.f-watch    { background: #FFF7C2; border-color: #F3D673; color: #AB6400; }
+.ms .ms-flag.f-together { background: #FFF1E7; border-color: #F5AE73; color: #CC4E00; }
+.ms .ms-flag.f-improve  { background: #E6F6EB; border-color: #ADDDC0; color: #218358; }
+.ms .ms-flag.f-ok       { background: #F7F7F8; border-color: #D9D9DF; color: #33363C; padding-left: 10px; }
+.ms .ms-flag.f-thin     { background: #fff; border-color: #D9D9DF; border-style: dashed; color: #33363C; padding-left: 10px; }
+
+.ms .ms-flag-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0 0 16px; padding: 0; }
+.ms .ms-flag-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.ms .ms-flag-legend .n { font-variant-numeric: tabular-nums; color: var(--ms-muted); }
+
+.ms .ms-people-grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+.ms .ms-pcard { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 16px 18px;
+  border: 1px solid var(--ms-line); border-radius: 12px; background: #fff;
+  transition: border-color .15s ease, box-shadow .15s ease; }
+.ms .ms-pcard:hover, .ms .ms-pcard:focus-within { border-color: var(--ms-line-strong); box-shadow: 0 2px 10px rgba(20, 20, 40, .06); }
+.ms .ms-pcard.f-case { border-left: 4px solid #E5484D; }
+.ms .ms-pcard.f-watch, .ms .ms-pcard.f-together { border-left: 4px solid #FFC53D; }
+.ms .ms-pcard.f-improve { border-left: 4px solid #30A46C; }
+.ms .ms-pcard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ms .ms-pcard-head h2 { margin: 0; font-size: 1.15rem; }
+.ms .ms-pcard-link { color: var(--ms-text); }
+.ms .ms-pcard-link::after { content: ""; position: absolute; inset: 0; border-radius: 12px; }   /* whole card clickable */
+.ms .ms-pcard-why { margin: 0; font-size: .95rem; color: var(--ms-text); }
+.ms .ms-pcard-metrics { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ms .ms-pcard-metrics li { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .95rem;
+  padding: 3px 0; border-bottom: 1px dashed var(--ms-line); }
+.ms .ms-pcard-metrics li:last-child { border-bottom: 0; }
+.ms .ms-pcard-metrics .name { white-space: nowrap; }
+.ms .ms-pcard-metrics .ms-state { font-size: .9rem; white-space: nowrap; }
+.ms .ms-pcard-foot { margin: auto 0 0; display: flex; justify-content: space-between; align-items: center;
+  color: var(--ms-muted); font-size: .9rem; }
+.ms .ms-signals { margin: 12px 0 16px; }
+.ms .ms-signals h3 { font-size: 1rem; margin: 0 0 8px; }
+.ms .ms-person-more { margin-left: auto; font-size: .95rem; }
+.ms .ms-closed { margin-top: 16px; }
+
+/* sidebar: the person's flag after the name */
+.ms-nav-person { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-nav-flag { margin-left: 6px; font-size: 18px !important; line-height: 1; vertical-align: -3px; }
+.ms-nav-flag.f-case { color: #CE2C31; }
+.ms-nav-flag.f-watch { color: #AB6400; }
+.ms-nav-flag.f-together { color: #CC4E00; }
+.ms-nav-flag.f-improve { color: #218358; }

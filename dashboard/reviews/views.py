@@ -221,12 +221,10 @@ def score_log(request):
 
 @require_GET
 def trajectory(request):
-    view = request.GET.get("view", "todo")
-    if view not in ("todo", "all", "positive", "closed"):
-        view = "todo"
     person = request.GET.get("person")
-    data = services.trajectory_page(view, int(person) if person and person.isdigit() else None)
-    return _page(request, "reviews/trajectory.html", "個人軌跡", **data)
+    data = services.trajectory_page(int(person) if person and person.isdigit() else None)
+    title = f"個人軌跡 · {data['current']['name']}" if data["current"] else "個人軌跡"
+    return _page(request, "reviews/trajectory.html", title, **data)
 
 
 @require_POST

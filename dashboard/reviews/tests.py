@@ -340,46 +340,45 @@ class TestTrajectoryPage(DashboardCase):
 
     def test_every_view_renders_even_with_a_stale_alert_on_thin_data(self):
         self.open_alert()
-        for view in ("todo", "all", "positive", "closed"):
-            resp = self.client.get(reverse("trajectory"), {"view": view})
-            self.assertEqual(resp.status_code, 200, view)
-        resp = self.client.get(reverse("trajectory"), {"view": "todo"})
+        for params in ({}, {"person": 7}, {"person": 999}):
+            resp = self.client.get(reverse("trajectory"), params)
+            self.assertEqual(resp.status_code, 200, params)
+        resp = self.client.get(reverse("trajectory"), {"person": 7})
         self.assertContains(resp, "目前無法重新評估")
         self.assertContains(resp, "3.20 → 2.40")                      # what it was opened on
 
     def test_current_state_not_the_saved_flag_decides_what_the_card_says(self):
         self.open_alert(stale=0)                          # saved as evaluable, but the data is thin now
-        resp = self.client.get(reverse("trajectory"), {"view": "todo"})
+        resp = self.client.get(reverse("trajectory"), {"person": 7})
         self.assertContains(resp, "目前無法重新評估")
         self.assertNotContains(resp, "下降訊號")
         self.assertContains(resp, "惡化訊號")
 
-    def test_the_closed_view_keeps_the_real_counts(self):
+    def test_the_overview_and_the_sidebar_flag_each_person(self):
         self.open_alert(stale=0)
-        resp = self.client.get(reverse("trajectory"), {"view": "closed"})
-        self.assertEqual(resp.context["counts"]["todo"], 1)
+        resp = self.client.get(reverse("trajectory"))
+        self.assertEqual(resp.context["counts"]["case"], 1)       # the fixture has a high case: it outranks the watch
+        self.assertContains(resp, "?person=7")
+        services.trajectory_nav()                          # computes the cache in the request above already
+        nav = services.trajectory_nav()
+        self.assertEqual([(p["pid"], p["flag"]) for p in nav if p["pid"] == 7], [(7, "case")])
+        resp = self.client.get(reverse("trajectory"), {"person": 7})
+        self.assertContains(resp, 'aria-label="high 個案"')     # the icon in the sidebar
+        self.assertContains(resp, "要關注")                      # and the alert on the person's page
 
     def test_clicks_reuse_the_analysis_until_the_data_changes(self):
         from history import trajectory as tj
         real = tj.analyze
         with mock.patch.object(tj, "analyze", side_effect=lambda *a, **k: real(*a, **k)) as spy:
-            for view in ("todo", "all", "closed", "positive"):
-                self.client.get(reverse("trajectory"), {"view": view})
-            self.client.get(reverse("trajectory"), {"view": "all", "person": 7})   # filtered from the cache
+            for params in ({}, {"person": 7}, {}, {"person": 7}):
+                self.client.get(reverse("trajectory"), params)
             self.assertEqual(spy.call_count, 1)
             conn = services.history_conn()
             with conn:
                 conn.execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES ('last_sync_at', 'later')")
             conn.close()
-            self.client.get(reverse("trajectory"), {"view": "todo"})
+            self.client.get(reverse("trajectory"))
             self.assertEqual(spy.call_count, 2)                                    # a sync invalidates
-
-    def test_one_person_analyses_only_that_person(self):
-        from history import trajectory as tj
-        real = tj.analyze
-        with mock.patch.object(tj, "analyze", side_effect=lambda *a, **k: real(*a, **k)) as spy:
-            self.client.get(reverse("trajectory"), {"view": "all", "person": 7})
-        self.assertEqual(spy.call_args.kwargs["only"], 7)
 
     def test_ack_then_end_and_an_ended_alert_cannot_be_acknowledged(self):
         aid = self.open_alert(stale=0)

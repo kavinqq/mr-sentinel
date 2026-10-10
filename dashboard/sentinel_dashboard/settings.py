@@ -122,13 +122,6 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ---------- django-unfold (admin theme; also the shell of our own pages) ----------
 from django.templatetags.static import static  # noqa: E402
-from django.urls import reverse_lazy  # noqa: E402
-
-
-def _nav(title, icon, link):
-    return {"title": title, "icon": icon, "link": link}
-
-
 UNFOLD = {
     "SITE_TITLE": "mr-sentinel",
     "SITE_HEADER": "mr-sentinel",
@@ -138,7 +131,9 @@ UNFOLD = {
     "THEME": "light",               # light only, no switcher
     "SHOW_HISTORY": False,
     "SHOW_VIEW_ON_SITE": False,
-    "STYLES": [lambda request: static("dashboard/dashboard.css")],
+    # ?v=<mtime>: a changed stylesheet is never served from the browser's cache
+    "STYLES": [lambda request: static("dashboard/dashboard.css")
+               + f"?v={int((BASE_DIR / 'static/dashboard/dashboard.css').stat().st_mtime)}"],
     "DASHBOARD_CALLBACK": "reviews.views.dashboard_callback",
     "COLORS": {                     # Linear-like: neutral base + one indigo accent
         "primary": {
@@ -160,33 +155,6 @@ UNFOLD = {
     "SIDEBAR": {
         "show_search": False,
         "show_all_applications": False,
-        "navigation": [
-            {"title": "Review 歷史", "separator": False, "items": [
-                _nav("團隊總覽", "monitoring", reverse_lazy("admin:index")),
-                _nav("個人軌跡", "insights", reverse_lazy("trajectory")),
-                _nav("評分變動紀錄", "timeline", reverse_lazy("score_log")),
-            ]},
-            {"title": "設定", "separator": True, "items": [
-                _nav("成員管理", "group", reverse_lazy("members")),
-                _nav("Email 對應", "alternate_email", reverse_lazy("emails")),
-                _nav("評分設定", "tune", reverse_lazy("scoring")),
-            ]},
-            {"title": "原始資料(唯讀)", "separator": True, "collapsible": True, "items": [
-                _nav("開發者", "person_search", reverse_lazy("admin:reviews_person_changelist")),
-                _nav("Merge requests", "merge", reverse_lazy("admin:reviews_mergerequest_changelist")),
-                _nav("Findings", "bug_report", reverse_lazy("admin:reviews_finding_changelist")),
-            ]},
-            {"title": "紀錄", "separator": True, "collapsible": True, "items": [
-                _nav("覆核紀錄", "fact_check", reverse_lazy("admin:reviews_findingreview_changelist")),
-                _nav("後續 bug 覆核", "bug_report", reverse_lazy("admin:reviews_followupreview_changelist")),
-                _nav("角色紀錄", "badge", reverse_lazy("admin:reviews_personrole_changelist")),
-                _nav("Email 紀錄", "contact_mail", reverse_lazy("admin:reviews_emailalias_changelist")),
-                _nav("評分版本", "history", reverse_lazy("admin:reviews_scoringconfig_changelist")),
-                _nav("同步請求", "sync", reverse_lazy("admin:reviews_syncrequest_changelist")),
-            ]},
-            {"title": "帳號", "separator": True, "collapsible": True, "items": [
-                _nav("使用者", "person", reverse_lazy("admin:auth_user_changelist")),
-            ]},
-        ],
+        "navigation": "reviews.nav.sidebar",          # 個人軌跡 lists each member (reviews/nav.py)
     },
 }

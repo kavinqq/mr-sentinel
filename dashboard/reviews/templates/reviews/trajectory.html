@@ -28,64 +28,46 @@
     </details>
   </div>
 
-  <div class="ms-traj-counts" role="list">
-    <a role="listitem" class="ms-count{% if counts.cases %} is-alert{% endif %}" href="?view=todo"><span class="material-symbols-outlined" aria-hidden="true">error</span><strong>{{ counts.cases }}</strong>high 個案</a>
-    <a role="listitem" class="ms-count{% if counts.todo %} is-watch{% endif %}" href="?view=todo"><span class="material-symbols-outlined" aria-hidden="true">priority_high</span><strong>{{ counts.todo }}</strong>待查看</a>
-    <a role="listitem" class="ms-count" href="?view=todo"><span class="material-symbols-outlined" aria-hidden="true">visibility</span><strong>{{ counts.tracking }}</strong>已檢視・仍追蹤</a>
-    <a role="listitem" class="ms-count{% if counts.positive %} is-good{% endif %}" href="?view=positive"><span class="material-symbols-outlined" aria-hidden="true">trending_up</span><strong>{{ counts.positive }}</strong>改善訊號</a>
-    <a role="listitem" class="ms-count" href="?view=all"><span class="material-symbols-outlined" aria-hidden="true">help_center</span><strong>{{ counts.insufficient }}</strong><span title="五個主要指標都還沒有足夠樣本的人數">位資料不足</span></a>
-  </div>
-
-  <nav class="ms-tabs" aria-label="檢視">
-    <a href="?view=todo" {% if view == "todo" %}aria-current="page"{% endif %}>待查看</a>
-    <a href="?view=all" {% if view == "all" %}aria-current="page"{% endif %}>全體成員</a>
-    <a href="?view=positive" {% if view == "positive" %}aria-current="page"{% endif %}>改善訊號</a>
-    <a href="?view=closed" {% if view == "closed" %}aria-current="page"{% endif %}>已結束</a>
-    {% if view == "all" %}
-    <form method="get" class="ms-tabs-filter"><input type="hidden" name="view" value="all">
-      <label class="sr-only" for="pf">只看某人</label>
-      <select id="pf" name="person"><option value="">所有成員</option>
-        {% for pid, name in all_people %}<option value="{{ pid }}" {% if person_filter == pid %}selected{% endif %}>{{ name }}</option>{% endfor %}</select>
-      <button type="submit">套用</button></form>
+  {% if current %}
+{% with r=current %}
+  <section class="ms-person" id="p{{ r.pid }}" aria-labelledby="h{{ r.pid }}">
+    <header class="ms-person-head">
+      <h2 id="h{{ r.pid }}">{{ r.name }}</h2>
+      {% include "reviews/_traj_flag.html" with flag=r.flag %}
+      <a class="ms-link ms-person-more" href="{% url 'person' r.pid %}">評分與 review 紀錄 →</a>
+    </header>
+    <p class="ms-person-sample">最近:個人 MR <strong>{{ r.a.context.personal.1 }}</strong>、release 切片 <strong>{{ r.a.context.slices.1 }}</strong> · 基線:個人 MR {{ r.a.context.personal.0 }}、release 切片 {{ r.a.context.slices.0 }} · 各指標的有效樣本不同 · <span class="ms-spark-legend"><i aria-hidden="true"></i>走勢圖底色 = 最近 28 天</span></p>
+    {% if r.a.cases %}
+    <div class="ms-cases" aria-label="high 個案">
+      <h3><span class="material-symbols-outlined" aria-hidden="true">error</span>high 個案(近 84 天,推定未處理就 merge)</h3>
+      <ul>
+      {% for c in r.a.cases %}
+        <li>
+          <div class="ms-case-head"><span class="ms-tag c-red">high</span>{% if c.category_label %}<span class="ms-tag {{ c.finding.category|tag:'cat' }}">{{ c.category_label }}</span>{% endif %}<strong>{{ c.finding.title }}</strong></div>
+          <p class="ms-case-meta">{% if c.mr %}<a class="ms-link" href="{{ c.mr.web_url }}" target="_blank" rel="noopener">{{ c.mr.project|cut:"developer/" }}!{{ c.mr.iid }}</a> · {% endif %}{% if c.finding.file %}<code>{{ c.finding.file }}{% if c.finding.line %}:{{ c.finding.line }}{% endif %}</code> · {% endif %}{{ c.when|tw }}</p>
+        </li>
+      {% endfor %}
+      </ul>
+    </div>
     {% endif %}
-  </nav>
-
-  {% if view == "todo" or view == "positive" %}
-  <section aria-label="需要查看的訊號">
-    {% if queue %}
-    <ol class="ms-queue">
-      {% for q in queue %}
-      {% if q.type == "case" %}
-      <li class="ms-qcard is-case">
-        <span class="ms-qicon material-symbols-outlined" aria-hidden="true">error</span>
-        <div class="ms-qbody">
-          <p class="ms-qtitle"><a href="?view=all&person={{ q.row.pid }}#p{{ q.row.pid }}">{{ q.row.name }}</a><span class="sep">·</span>high finding 推定未處理就 merge</p>
-          <p class="ms-qline">{% if q.case.mr %}<a class="ms-link" href="{{ q.case.mr.web_url }}" target="_blank" rel="noopener">{{ q.case.mr.project|cut:"developer/" }}!{{ q.case.mr.iid }}</a> · {% endif %}{{ q.case.finding.title }}</p>
-          <p class="ms-qnote">這是一個需要查看的個案,不代表整體工作趨勢。</p>
-        </div>
-      </li>
-      {% elif q.type == "together" %}
-      <li class="ms-qcard is-watch">
-        <span class="ms-qicon material-symbols-outlined" aria-hidden="true">join_inner</span>
-        <div class="ms-qbody">
-          <p class="ms-qtitle"><a href="?view=all&person={{ q.row.pid }}#p{{ q.row.pid }}">{{ q.row.name }}</a><span class="sep">·</span>一起查看:MR 開啟至 merge 時間縮短,同期推定未處理就 merge 的比例上升</p>
-          <p class="ms-qnote">兩個訊號同時出現,建議一起看;它本身不是警示。</p>
-        </div>
-      </li>
-      {% else %}{% with al=q.alert m=q.alert.m %}
+    {% if r.alerts or r.a.together %}
+    <section class="ms-signals" aria-label="需要處理的訊號">
+      <h3>提醒</h3>
+      <ol class="ms-queue">
+      {% for al in r.watch %}{% with m=al.m %}
       <li class="ms-qcard {% if al.kind == 'watch' %}is-watch{% else %}is-good{% endif %}{% if al.acknowledged_at %} is-seen{% endif %}">
         <span class="ms-qicon material-symbols-outlined" aria-hidden="true">{% if al.kind == "watch" %}priority_high{% else %}trending_up{% endif %}</span>
         <div class="ms-qbody">
-          <p class="ms-qtitle"><a href="?view=all&person={{ q.row.pid }}#m{{ q.row.pid }}-{{ m.key }}">{{ q.row.name }}</a><span class="sep">·</span>{{ m.label }}{% if al.kind == "watch" %}惡化訊號{% else %}改善訊號{% endif %}達提醒門檻
+          <p class="ms-qtitle">{{ m.label }}{% if al.kind == "watch" %}惡化訊號{% else %}改善訊號{% endif %}達提醒門檻
             <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
             {% if al.acknowledged_at %}<span class="ms-tag c-gray">已檢視 · {{ al.acknowledged_by }}</span>{% endif %}</p>
           <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次判定、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
           <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 樣本不足或流程不可比,提醒保留到資料足夠再判斷{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再達到門檻,連續兩次低於一半門檻後會自動結束{% endif %}{% endif %}</p>
-          {% if q.row.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同期工作組成也變了:{{ q.row.a.shifted|join:"、" }} — 建議先看同類型 MR 的比較</p>{% endif %}
+          {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同期工作組成也變了:{{ r.a.shifted|join:"、" }} — 建議先看同類型 MR 的比較</p>{% endif %}
           {% if al.note %}<p class="ms-qnote">備註:{{ al.note }}</p>{% endif %}
         </div>
         <div class="ms-qactions">
-          <a class="ms-btn-secondary" href="?view=all&person={{ q.row.pid }}#m{{ q.row.pid }}-{{ m.key }}"><span class="material-symbols-outlined" aria-hidden="true">manage_search</span>查看依據</a>
+          <a class="ms-btn-secondary" href="#m{{ r.pid }}-{{ m.key }}"><span class="material-symbols-outlined" aria-hidden="true">manage_search</span>查看依據</a>
           {% if not al.acknowledged_at %}
           <details class="ms-pop ms-pop-left"><summary>已檢視</summary>
             <form method="post" action="{% url 'trajectory_alert' al.id %}" class="ms-popform">{% csrf_token %}
@@ -106,59 +88,55 @@
           </details>
         </div>
       </li>
-      {% endwith %}{% endif %}
+      {% endwith %}
       {% endfor %}
-    </ol>
-    {% else %}
-    <div class="ms-empty-block">
-      {% if view == "positive" %}目前沒有達到「明顯改善」條件的變化。{% else %}目前沒有達到警示條件的變化。{% endif %}
-      {% if counts.insufficient %}<br>有 {{ counts.insufficient }} 位成員的主要指標資料還不足,<a class="ms-link" href="?view=all">到「全體成員」看每個人的走勢 →</a>{% endif %}
-    </div>
-    {% endif %}
-  </section>
-  {% endif %}
-
-  {% if view == "closed" %}
-  <section aria-label="已結束">
-    {% if closed %}
-    <ol class="ms-recs">
-      {% for c in closed %}
-      <li class="ms-rec"><div class="ms-rec-main">
-        <div class="ms-tags"><span class="ms-tag {% if c.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if c.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
-          <span class="ms-tag c-gray">{% if c.closed_by == "data" %}資料自動結束{% else %}{{ c.closed_by }} 結束{% endif %}</span></div>
-        <p class="ms-rec-title">{{ c.name }}<span>{{ c.label }} · {{ c.summary }}</span></p>
-        <ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ c.opened_at|tw:"%m/%d" }} → {{ c.closed_at|tw:"%m/%d" }}</li>
-          {% if c.close_reason %}<li><span class="material-symbols-outlined" aria-hidden="true">notes</span>{{ c.close_reason }}</li>{% endif %}
-          {% if c.note %}<li>備註:{{ c.note }}</li>{% endif %}</ul>
-      </div></li>
+      {% if r.a.together %}
+      <li class="ms-qcard is-watch">
+        <span class="ms-qicon material-symbols-outlined" aria-hidden="true">join_inner</span>
+        <div class="ms-qbody">
+          <p class="ms-qtitle">一起查看:MR 開啟至 merge 時間縮短,同期推定未處理就 merge 的比例上升</p>
+          <p class="ms-qnote">兩個訊號同時出現,建議一起看;它本身不是警示。</p>
+        </div>
+      </li>
+      {% endif %}
+      {% for al in r.improve %}{% with m=al.m %}
+      <li class="ms-qcard {% if al.kind == 'watch' %}is-watch{% else %}is-good{% endif %}{% if al.acknowledged_at %} is-seen{% endif %}">
+        <span class="ms-qicon material-symbols-outlined" aria-hidden="true">{% if al.kind == "watch" %}priority_high{% else %}trending_up{% endif %}</span>
+        <div class="ms-qbody">
+          <p class="ms-qtitle">{{ m.label }}{% if al.kind == "watch" %}惡化訊號{% else %}改善訊號{% endif %}達提醒門檻
+            <span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
+            {% if al.acknowledged_at %}<span class="ms-tag c-gray">已檢視 · {{ al.acknowledged_by }}</span>{% endif %}</p>
+          <p class="ms-qline"><strong>開啟時({{ al.opened_at|tw:"%m/%d" }})</strong> {{ al.opened_text }} · 變化超過門檻的估計機率 {{ al.p_open|pct }} · 連續 {{ al.snap.streak|default:2 }} 次判定、新增 {{ al.snap.new_mrs|default:"—" }} 個 MR</p>
+          <p class="ms-qline"><strong>目前</strong> {% if al.now_unknown %}<span class="ms-tag c-gray">目前無法重新評估</span> 樣本不足或流程不可比,提醒保留到資料足夠再判斷{% else %}{{ m.state_text }} · {{ m.base_text }} → {{ m.recent_text }}{% if not al.now_matches %} — 最新資料已不再達到門檻,連續兩次低於一半門檻後會自動結束{% endif %}{% endif %}</p>
+          {% if r.a.shifted %}<p class="ms-qcontext"><span class="material-symbols-outlined" aria-hidden="true">tune</span>同期工作組成也變了:{{ r.a.shifted|join:"、" }} — 建議先看同類型 MR 的比較</p>{% endif %}
+          {% if al.note %}<p class="ms-qnote">備註:{{ al.note }}</p>{% endif %}
+        </div>
+        <div class="ms-qactions">
+          <a class="ms-btn-secondary" href="#m{{ r.pid }}-{{ m.key }}"><span class="material-symbols-outlined" aria-hidden="true">manage_search</span>查看依據</a>
+          {% if not al.acknowledged_at %}
+          <details class="ms-pop ms-pop-left"><summary>已檢視</summary>
+            <form method="post" action="{% url 'trajectory_alert' al.id %}" class="ms-popform">{% csrf_token %}
+              <input type="hidden" name="action" value="ack"><input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <label for="note-{{ al.id }}">備註(可留空)</label>
+              <input id="note-{{ al.id }}" type="text" name="note" placeholder="例如:下週一對一時聊">
+              <p class="ms-help">只記錄你看過了;警示會繼續追蹤,資料恢復後自動結束。</p>
+              <button type="submit" class="primary">記錄已檢視</button></form>
+          </details>
+          {% endif %}
+          <details class="ms-pop ms-pop-left"><summary>結束追蹤</summary>
+            <form method="post" action="{% url 'trajectory_alert' al.id %}" class="ms-popform">{% csrf_token %}
+              <input type="hidden" name="action" value="end"><input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <label for="reason-{{ al.id }}">原因(必填)</label>
+              <input id="reason-{{ al.id }}" type="text" name="reason" required placeholder="例如:接手難度高的專案,已討論">
+              <p class="ms-help">結束後 28 天內同一個指標不會再提醒。</p>
+              <button type="submit" class="danger">結束追蹤</button></form>
+          </details>
+        </div>
+      </li>
+      {% endwith %}
       {% endfor %}
-    </ol>
-    {% else %}<p class="ms-empty-block">還沒有結束的警示</p>{% endif %}
-  </section>
-  {% endif %}
-
-  {% if view == "all" %}
-  {% for r in rows %}
-  <section class="ms-person" id="p{{ r.pid }}" aria-labelledby="h{{ r.pid }}">
-    <header class="ms-person-head">
-      <h2 id="h{{ r.pid }}"><a href="{% url 'person' r.pid %}">{{ r.name }}</a></h2>
-      {% for al in r.alerts %}<span class="ms-tag {% if al.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if al.kind == "watch" %}要關注{% else %}明顯改善{% endif %} · {{ al.m.label }}</span>{% endfor %}
-      {% if r.a.cases %}<span class="ms-tag c-red">{{ r.a.cases|length }} 個 high 個案</span>{% endif %}
-      {% if r.insufficient %}<span class="ms-tag c-gray">主要指標資料不足</span>{% endif %}
-    </header>
-    <p class="ms-person-sample">最近:個人 MR <strong>{{ r.a.context.personal.1 }}</strong>、release 切片 <strong>{{ r.a.context.slices.1 }}</strong> · 基線:個人 MR {{ r.a.context.personal.0 }}、release 切片 {{ r.a.context.slices.0 }} · 各指標的有效樣本不同 · <span class="ms-spark-legend"><i aria-hidden="true"></i>走勢圖底色 = 最近 28 天</span></p>
-    {% if r.a.cases %}
-    <div class="ms-cases" aria-label="high 個案">
-      <h3><span class="material-symbols-outlined" aria-hidden="true">error</span>high 個案(近 84 天,推定未處理就 merge)</h3>
-      <ul>
-      {% for c in r.a.cases %}
-        <li>
-          <div class="ms-case-head"><span class="ms-tag c-red">high</span>{% if c.category_label %}<span class="ms-tag {{ c.finding.category|tag:'cat' }}">{{ c.category_label }}</span>{% endif %}<strong>{{ c.finding.title }}</strong></div>
-          <p class="ms-case-meta">{% if c.mr %}<a class="ms-link" href="{{ c.mr.web_url }}" target="_blank" rel="noopener">{{ c.mr.project|cut:"developer/" }}!{{ c.mr.iid }}</a> · {% endif %}{% if c.finding.file %}<code>{{ c.finding.file }}{% if c.finding.line %}:{{ c.finding.line }}{% endif %}</code> · {% endif %}{{ c.when|tw }}</p>
-        </li>
-      {% endfor %}
-      </ul>
-    </div>
+      </ol>
+    </section>
     {% endif %}
     <ul class="ms-context" aria-label="同期的工作組成">
       <li{% if "前端比例" in r.a.shifted|join:"" %} class="is-shifted"{% endif %}><span>前端比例</span>{{ r.a.context.frontend.0|pct }} → {{ r.a.context.frontend.1|pct }}</li>
@@ -211,8 +189,52 @@
     </div>
     {% if group == "輔助品質趨勢" or group == "活動與資料覆蓋" %}</details>{% endif %}
     {% endfor %}
+    {% if closed %}
+    <details class="ms-mgroup-fold ms-closed"><summary>已結束的提醒<span class="hint">{{ closed|length }} 則</span></summary>
+    <ol class="ms-recs">
+      {% for c in closed %}
+      <li class="ms-rec"><div class="ms-rec-main">
+        <div class="ms-tags"><span class="ms-tag {% if c.kind == 'watch' %}c-amber{% else %}c-green{% endif %}">{% if c.kind == "watch" %}要關注{% else %}明顯改善{% endif %}</span>
+          <span class="ms-tag c-gray">{% if c.closed_by == "data" %}資料自動結束{% else %}{{ c.closed_by }} 結束{% endif %}</span></div>
+        <p class="ms-rec-title">{{ c.label }}<span>{{ c.summary }}</span></p>
+        <ul class="ms-rec-meta"><li><span class="material-symbols-outlined" aria-hidden="true">schedule</span>{{ c.opened_at|tw:"%m/%d" }} → {{ c.closed_at|tw:"%m/%d" }}</li>
+          {% if c.close_reason %}<li><span class="material-symbols-outlined" aria-hidden="true">notes</span>{{ c.close_reason }}</li>{% endif %}
+          {% if c.note %}<li>備註:{{ c.note }}</li>{% endif %}</ul>
+      </div></li>
+      {% endfor %}
+    </ol>
+    </details>
+    {% endif %}
   </section>
-  {% empty %}<p class="ms-empty-block">還沒有可以分析的成員資料</p>{% endfor %}
+{% endwith %}
+  {% elif person_filter %}
+  <p class="ms-empty-block">這位成員目前不在個人軌跡的分析範圍(非成員、已離職或還沒有資料)。<a class="ms-link" href="{% url 'trajectory' %}">回到全員一覽 →</a></p>
+  {% else %}
+  <ul class="ms-flag-legend" aria-label="圖示說明">
+    {% for f in "case watch together improve"|split %}<li>{% include "reviews/_traj_flag.html" with flag=f %}<span class="n">{% for k, v in counts.items %}{% if k == f %}{{ v }} 人{% endif %}{% endfor %}</span></li>{% endfor %}
+  </ul>
+  {% if rows %}
+  <ul class="ms-people-grid">
+    {% for r in rows %}
+    <li class="ms-pcard f-{{ r.flag }}">
+      <div class="ms-pcard-head">
+        <h2><a class="ms-pcard-link" href="?person={{ r.pid }}">{{ r.name }}</a></h2>
+        {% include "reviews/_traj_flag.html" with flag=r.flag %}
+      </div>
+      {% if r.alerts or r.a.cases %}
+      <p class="ms-pcard-why">{% if r.a.cases %}{{ r.a.cases|length }} 個 high 個案{% if r.alerts %} · {% endif %}{% endif %}{% for al in r.alerts %}{{ al.m.label }}{% if al.kind == "watch" %}惡化{% else %}改善{% endif %}{% if not forloop.last %}、{% endif %}{% endfor %}</p>
+      {% endif %}
+      <ul class="ms-pcard-metrics">
+        {% for m in r.main %}
+        <li class="tone-{{ m.tone }}"><span class="name" title="{{ m.label }}">{{ short_label|get:m.key }}</span>
+          <span class="ms-state tone-{{ m.tone }}"><span class="material-symbols-outlined" aria-hidden="true">{% if m.tone == "watch" or m.tone == "watch-soft" %}priority_high{% elif m.tone == "improve" or m.tone == "improve-soft" %}star{% elif m.tone == "down" %}south_east{% elif m.tone == "up" %}north_east{% elif m.tone == "none" %}help{% else %}remove{% endif %}</span>{{ m.state_text }}</span></li>
+        {% endfor %}
+      </ul>
+      <p class="ms-pcard-foot">最近個人 MR {{ r.a.context.personal.1 }}、release 切片 {{ r.a.context.slices.1 }}<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="ms-empty-block">還沒有可以分析的成員資料</p>{% endif %}
   {% endif %}
 </div>
 <script>

@@ -695,6 +695,7 @@ TONE = {"strong_worse": "watch", "observe_worse": "watch-soft", "worse": "down",
 # analysis time give the same result, so it is computed once per data change / hour
 # and every click on the page (tabs, filter, 已檢視) reuses it.
 _ANALYSIS_CACHE: dict = {}
+_NAV_LAST: dict = {}            # the last people summary the sidebar showed
 _APPEND_ONLY = ("mr_files", "followups", "finding_reviews", "followup_reviews", "mr_commits", "finding_blame",
                 "mr_ratings", "mr_notes", "review_ratings", "project_commits", "commit_ratings", "scoring_configs")
 _SMALL_MUTABLE = ("sync_state", "person_roles", "email_aliases", "roster_additions", "people")
@@ -714,24 +715,77 @@ def _analysis_inputs(conn) -> str:
     return h.hexdigest()
 
 
-def _cached_analysis(conn, cfg, person):
-    """(analyses, members, analysis time): the time is the start of the hour, so it
-    is honest about what the page shows."""
+def _cached_analysis(conn, cfg):
+    """(analyses, members, analysis time) for everyone; the time is the start of
+    the hour, so it is honest about what the page shows."""
     from history import trajectory as tj
     at = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     key = (_analysis_inputs(conn), at)
-    hit = _ANALYSIS_CACHE.get((key, None)) or (_ANALYSIS_CACHE.get((key, person)) if person else None)
+    hit = _ANALYSIS_CACHE.get(key)
     if hit is None:
         members = []
-        analyses = tj.analyze(conn, cfg, at, only=person, members_out=members)
-        hit = (analyses, members)
+        hit = (tj.analyze(conn, cfg, at, members_out=members), members)
         if len(_ANALYSIS_CACHE) > 8:
             _ANALYSIS_CACHE.clear()
-        _ANALYSIS_CACHE[(key, person)] = hit
-    analyses, members = hit
-    if person:
-        analyses = {pid: a for pid, a in analyses.items() if pid == person}
-    return analyses, list(members), at
+        _ANALYSIS_CACHE[key] = hit
+    _NAV_LAST["key"] = key
+    return hit[0], list(hit[1]), at
+
+
+# One flag per person, most urgent first: what the sidebar icon and the overview show.
+FLAG_ORDER = {"case": 0, "watch": 1, "together": 2, "improve": 3, "ok": 4, "thin": 5}
+FLAG_TEXT = {"case": "high 個案", "watch": "要關注", "together": "一起查看", "improve": "明顯改善",
+             "ok": "無警示", "thin": "資料不足"}
+SHORT_LABEL = {"requirements": "需求符合度", "verification": "驗證有效性", "escape_rate": "未處理就 merge",
+               "bug_rate": "後續 bug", "cycle_time": "開啟到 merge 時間"}
+FLAG_ICON = {"case": "error", "watch": "priority_high", "together": "join_inner", "improve": "trending_up",
+             "ok": "", "thin": ""}
+
+
+def _flag(row) -> str:
+    if row["a"]["cases"]:
+        return "case"
+    if row["watch"]:
+        return "watch"
+    if row["a"]["together"]:
+        return "together"
+    if row["improve"]:
+        return "improve"
+    return "thin" if row["insufficient"] else "ok"
+
+
+def trajectory_nav() -> list[dict]:
+    """[{pid, name, flag}] for the sidebar, cheap on every admin page: the cached
+    analysis when it is current, otherwise the last one shown while a background
+    thread computes the new one (a page never waits on the sidebar)."""
+    import threading
+    try:
+        conn = history_conn()
+    except Exception:
+        return _NAV_LAST.get("rows", [])
+    try:
+        key = (_analysis_inputs(conn), datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0))
+        if key not in _ANALYSIS_CACHE:
+            if not _NAV_LAST.get("warming"):
+                _NAV_LAST["warming"] = True
+                threading.Thread(target=_warm_quietly, daemon=True).start()
+            return _NAV_LAST.get("rows", [])
+    finally:
+        conn.close()
+    if _NAV_LAST.get("rows_key") != key:
+        _NAV_LAST["rows"] = [{"pid": r["pid"], "name": r["name"], "flag": r["flag"]}
+                             for r in sorted(trajectory_page()["rows"], key=lambda r: r["name"])]
+        _NAV_LAST["rows_key"] = key
+    return _NAV_LAST["rows"]
+
+
+def _warm_quietly():
+    try:
+        warm_trajectory()
+    except Exception:
+        pass
+    finally:
+        _NAV_LAST["warming"] = False
 
 
 def warm_trajectory() -> None:
@@ -739,24 +793,26 @@ def warm_trajectory() -> None:
     conn = history_conn()
     try:
         _, cfg = hdb.scoring_config(conn)
-        _cached_analysis(conn, cfg, None)
+        _cached_analysis(conn, cfg)
     finally:
         conn.close()
 
 
-def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
-    """Everything the 個人軌跡 page shows, formatted; the numbers come from
-    history.trajectory, the alert states from its tables."""
+def trajectory_page(person: int | None = None) -> dict:
+    """The 個人軌跡 page, organised by person: without `person` an overview card per
+    member, with it that person's signals, metrics and ended alerts. The numbers
+    come from history.trajectory, the alert states from its tables."""
     from history import trajectory as tj
     conn = history_conn()
     try:
         conn.execute("BEGIN")                          # one consistent snapshot for every read below
         _, cfg = hdb.scoring_config(conn)
-        analyses, members, analysis_as_of = _cached_analysis(conn, cfg, person)
+        analyses, members, analysis_as_of = _cached_analysis(conn, cfg)
         open_ = tj.open_alerts(conn)
         as_of = hdb.get_state(conn, "trajectory_as_of")
         closed = [dict(r) for r in conn.execute(
-            "SELECT * FROM trajectory_alerts WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 50")]
+            "SELECT * FROM trajectory_alerts WHERE closed_at IS NOT NULL AND person_id = ? "
+            "ORDER BY closed_at DESC LIMIT 50", (person,))] if person else []
         last_sync = hdb.get_state(conn, "last_sync_at")
         conn.rollback()
     finally:
@@ -799,38 +855,22 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
         row = {"pid": pid, "person": p, "name": (p.name or p.username) if p else str(pid), "a": a,
                "groups": [(g, [m for m in metrics if m["group"] == g]) for g in tj.GROUPS],
                "alerts": alerts, "insufficient": main_insufficient}
-        rows.append(row)
         for c in a["cases"]:
             c["category_label"] = CATEGORY_LABELS.get(c["finding"].get("category"), "")
-            queue.append({"type": "case", "rank": 0, "row": row, "case": c})
-        for al in alerts:
-            rank = (1 if not al["acknowledged_at"] else 2) if al["kind"] == "watch" else 3
-            queue.append({"type": "alert", "rank": rank, "row": row, "alert": al})
-        if a["together"]:
-            queue.append({"type": "together", "rank": 1, "row": row})
-    queue.sort(key=lambda q: (q["rank"], q["row"]["name"]))
-    counts = {"cases": sum(1 for q in queue if q["type"] == "case"),
-              "todo": sum(1 for q in queue if q["type"] in ("alert", "together") and q["rank"] == 1),
-              "tracking": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 2),
-              "positive": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 3),
-              "insufficient": sum(1 for r in rows if r["insufficient"])}
-    if view == "positive":
-        shown = [q for q in queue if q["rank"] == 3]
-    elif view == "todo":
-        shown = [q for q in queue if q["rank"] < 3]
-    else:
-        shown = []
-    rows.sort(key=lambda r: (not r["alerts"] and not r["a"]["cases"], r["name"]))
+        row["watch"] = [al for al in alerts if al["kind"] == "watch"]
+        row["improve"] = [al for al in alerts if al["kind"] == "improve"]
+        row["main"] = [by_key[k] for k in ("requirements", "verification", "escape_rate", "bug_rate", "cycle_time")]
+        row["flag"] = _flag(row)
+        rows.append(row)
+    rows.sort(key=lambda r: (FLAG_ORDER[r["flag"]], r["name"]))
     windows = next(iter(analyses.values()))["windows"] if analyses else None
     for c in closed:
-        c["name"] = (people[c["person_id"]].name or people[c["person_id"]].username) if c["person_id"] in people else c["person_id"]
         c["label"] = tj.METRICS.get(c["metric"], {}).get("label", c["metric"])
-    return {"view": view, "rows": rows, "queue": shown, "counts": counts, "closed": closed if view == "closed" else [],
-            "windows": windows, "last_sync": last_sync, "person_filter": person, "as_of": as_of,
-            "analysis_as_of": analysis_as_of,
-            "all_people": sorted(((r["pid"], r["name"]) for r in rows), key=lambda x: x[1]) if not person else
-            sorted(((pid, (people[pid].name or people[pid].username) if pid in people else pid)
-                    for pid in set(analyses) | set(members)), key=lambda x: str(x[1]))}   # switch to anyone
+    current = next((r for r in rows if r["pid"] == person), None)
+    counts = {f: sum(1 for r in rows if r["flag"] == f) for f in FLAG_ORDER}
+    return {"rows": rows, "current": current, "person_filter": person, "closed": closed, "counts": counts,
+            "windows": windows, "last_sync": last_sync, "as_of": as_of, "analysis_as_of": analysis_as_of,
+            "flag_text": FLAG_TEXT, "flag_icon": FLAG_ICON, "short_label": SHORT_LABEL}
 
 
 def trajectory_ack(alert_id: int, actor: str, note: str = "") -> bool:
