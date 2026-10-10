@@ -131,3 +131,60 @@ def short_mr(mr):
     if not mr:
         return "—"
     return f"{str(mr.project).rsplit('/', 1)[-1]}!{mr.iid}"
+
+
+@register.filter
+def spark(metric):
+    """12 weekly raw values as an inline SVG: gaps stay gaps (no line across a
+    week without samples, never a zero), the last 4 weeks (the recent window)
+    on a tinted band; each point carries a <title> for hover / screen readers."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+    values = (metric or {}).get("weekly") or []
+    pts = [(i, v) for i, v in enumerate(values) if v is not None]
+    w, h, pad = 132, 32, 3
+    if len(pts) < 2:
+        return mark_safe('<span class="ms-spark-empty">資料太少</span>')
+    unit = metric.get("unit")
+    lo, hi = (1, 5) if unit == "分" else (0, 1) if unit == "%" else (min(v for _, v in pts), max(v for _, v in pts))
+    if hi == lo:
+        hi = lo + 1
+    x = lambda i: pad + i * (w - 2 * pad) / max(1, len(values) - 1)
+    y = lambda v: h - pad - (v - lo) * (h - 2 * pad) / (hi - lo)
+    segs, cur = [], []
+    for i, v in enumerate(values):
+        if v is None:
+            if cur:
+                segs.append(cur)
+            cur = []
+        else:
+            cur.append((x(i), y(v)))
+    if cur:
+        segs.append(cur)
+    band = x(len(values) - 4) - 2
+    out = [f'<svg class="ms-spark" viewBox="0 0 {w} {h}" preserveAspectRatio="none" role="img" '
+           f'aria-label="{escape(metric.get("label", ""))} 近 12 週走勢">',
+           f'<rect x="{band:.1f}" y="0" width="{w - band:.1f}" height="{h}" class="band"/>']
+    for seg in segs:
+        if len(seg) > 1:
+            out.append('<polyline points="' + " ".join(f"{a:.1f},{b:.1f}" for a, b in seg) + '"/>')
+    fmt = (lambda v: f"{v * 100:.0f}%") if unit == "%" else (lambda v: f"{v:g}")
+    for i, v in pts:
+        out.append(f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="2.2"><title>{12 - i} 週前:{fmt(v)}</title></circle>')
+    out.append("</svg>")
+    return mark_safe("".join(out))
+
+
+@register.filter
+def pct(value):
+    return "—" if value is None else f"{value * 100:.0f}%"
+
+
+@register.filter
+def grade_tag(value, unit):
+    """Colour of one evidence value: a grade (≤2 red, 3 gray, ≥4 green), an event (red / green)."""
+    if unit == "分":
+        return "c-red" if value is not None and value <= 2 else "c-green" if value and value >= 4 else "c-gray"
+    if unit == "%":
+        return "c-red" if value else "c-green"
+    return "c-gray"

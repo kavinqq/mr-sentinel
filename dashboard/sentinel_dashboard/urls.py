@@ -24,6 +24,9 @@ urlpatterns = [
     path("admin/review/members/<int:author_id>/role/", _admin(views.member_role), name="member_role"),
     path("admin/review/emails/", _admin(views.emails), name="emails"),
     path("admin/review/score-log/", _admin(views.score_log), name="score_log"),
+    path("admin/review/trajectory/", _admin(views.trajectory), name="trajectory"),
+    path("admin/review/trajectory/alerts/<int:alert_id>/", _admin(views.trajectory_alert),
+         name="trajectory_alert"),
     path("admin/review/sync/", _admin(views.sync_request), name="sync_request"),
     path("admin/", admin.site.urls),
 ]

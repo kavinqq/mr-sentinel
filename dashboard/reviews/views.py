@@ -215,3 +215,30 @@ def score_log(request):
     return _page(request, "reviews/score_log.html", "評分變動紀錄",
                  events=services.score_log(gitlab_id), person=gitlab_id,
                  people=services.Person.objects.all())
+
+
+@require_GET
+def trajectory(request):
+    view = request.GET.get("view", "todo")
+    if view not in ("todo", "all", "positive", "closed"):
+        view = "todo"
+    person = request.GET.get("person")
+    data = services.trajectory_page(view, int(person) if person and person.isdigit() else None)
+    return _page(request, "reviews/trajectory.html", "個人軌跡", **data)
+
+
+@require_POST
+def trajectory_alert(request, alert_id: int):
+    action = request.POST.get("action")
+    try:
+        if action == "ack":
+            services.trajectory_ack(alert_id, request.user.username, request.POST.get("note", ""))
+            messages.success(request, "已記錄你看過了,警示會繼續追蹤")
+        elif action == "end":
+            services.trajectory_end(alert_id, request.user.username, request.POST.get("reason", ""))
+            messages.success(request, "已結束追蹤;28 天內同一個指標不會再提醒")
+        else:
+            return HttpResponseBadRequest("unknown action")
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    return redirect(_back(request, reverse("trajectory")))

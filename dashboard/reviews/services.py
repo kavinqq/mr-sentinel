@@ -645,3 +645,139 @@ def kick_history_job() -> None:
         subprocess.Popen([sys.executable, "-m", "history", "run"], cwd=str(repo), env=env,
                          stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                          start_new_session=True)
+
+
+# ---------- 個人軌跡 ----------
+
+def _fmt(value, unit):
+    if value is None:
+        return "—"
+    if unit == "%":
+        return f"{value * 100:.0f}%"
+    if unit == "小時":
+        return f"{value:.1f} h"
+    if unit == "個/週":
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
+def _fmt_diff(m):
+    d, unit = m.get("diff"), m["unit"]
+    if d is None:
+        return "—"
+    if unit == "%":
+        return f"{d * 100:+.0f} pp"
+    if unit == "小時":
+        return f"{d * 100:+.0f}%"
+    if unit == "個/週":
+        return f"{d:+.1f}"
+    return f"{d:+.2f}"
+
+
+def _fmt_interval(m):
+    iv, unit = m.get("interval"), m["unit"]
+    if not iv:
+        return None
+    if unit == "%":
+        return f"{iv[0] * 100:+.0f} ~ {iv[1] * 100:+.0f} pp"
+    if unit == "小時":
+        return f"{iv[0] * 100:+.0f}% ~ {iv[1] * 100:+.0f}%"
+    return f"{iv[0]:+.2f} ~ {iv[1]:+.2f}"
+
+
+TONE = {"strong_worse": "watch", "observe_worse": "watch-soft", "worse": "down",
+        "strong_better": "improve", "observe_better": "improve-soft", "better": "up",
+        "uncertain": "flat", "insufficient": "none", "not_comparable": "none", "activity": "flat"}
+
+
+def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
+    """Everything the 個人軌跡 page shows, formatted; the numbers come from
+    history.trajectory, the alert states from its tables."""
+    from history import trajectory as tj
+    conn = history_conn()
+    try:
+        _, cfg = hdb.scoring_config(conn)
+        analyses = tj.analyze(conn, cfg)
+        open_ = tj.open_alerts(conn)
+        closed = [dict(r) for r in conn.execute(
+            "SELECT * FROM trajectory_alerts WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 50")]
+        last_sync = hdb.get_state(conn, "last_sync_at")
+    finally:
+        conn.close()
+    people = {p.gitlab_id: p for p in Person.objects.filter(gitlab_id__in=set(analyses) | {a["person_id"] for a in closed})}
+    rows, queue = [], []
+    for pid, a in analyses.items():
+        p = people.get(pid)
+        metrics = []
+        for m in a["metrics"]:
+            if m["unit"] == "%":          # a rate: the raw count, never the prior-pulled estimate
+                base_text = f"{m.get('x_base', 0)}/{m['n_base']}" if m["n_base"] else "—"
+                recent_text = f"{m.get('x_recent', 0)}/{m['n_recent']}" if m["n_recent"] else "—"
+            elif m["unit"] in ("分", "小時"):
+                base_text, recent_text = _fmt(m.get("raw_base"), m["unit"]), _fmt(m.get("raw_recent"), m["unit"])
+            else:
+                base_text, recent_text = _fmt(m.get("base"), m["unit"]), _fmt(m.get("recent"), m["unit"])
+            metrics.append({**m, "tone": TONE.get(m["state"], "flat"),
+                            "base_text": base_text, "recent_text": recent_text,
+                            "diff_text": _fmt_diff(m), "interval_text": _fmt_interval(m),
+                            "need_text": f"需 {m['need'][1]}/{m['need'][0]}" if m["need"][0] else ""})
+        by_key = {m["key"]: m for m in metrics}
+        alerts = []
+        for al in open_.get(pid, []):
+            m = by_key.get(al["metric"])
+            if m:
+                alerts.append({**al, "m": m, "snap": json.loads(al["snapshot"] or "{}")})
+        main_insufficient = all(by_key[k]["state"] == "insufficient"
+                                for k in ("requirements", "verification", "escape_rate", "bug_rate", "cycle_time"))
+        row = {"pid": pid, "person": p, "name": (p.name or p.username) if p else str(pid), "a": a,
+               "groups": [(g, [m for m in metrics if m["group"] == g]) for g in tj.GROUPS],
+               "alerts": alerts, "insufficient": main_insufficient}
+        rows.append(row)
+        for c in a["cases"]:
+            queue.append({"type": "case", "rank": 0, "row": row, "case": c})
+        for al in alerts:
+            rank = (1 if not al["acknowledged_at"] else 2) if al["kind"] == "watch" else 3
+            queue.append({"type": "alert", "rank": rank, "row": row, "alert": al})
+        if a["together"]:
+            queue.append({"type": "together", "rank": 1, "row": row})
+    queue.sort(key=lambda q: (q["rank"], q["row"]["name"]))
+    counts = {"cases": sum(1 for q in queue if q["type"] == "case"),
+              "todo": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 1),
+              "tracking": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 2),
+              "positive": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 3),
+              "insufficient": sum(1 for r in rows if r["insufficient"])}
+    if view == "positive":
+        shown = [q for q in queue if q["rank"] == 3]
+    elif view == "todo":
+        shown = [q for q in queue if q["rank"] < 3]
+    else:
+        shown = []
+    rows.sort(key=lambda r: (not r["alerts"] and not r["a"]["cases"], r["name"]))
+    if person:
+        rows = [r for r in rows if r["pid"] == person]
+    windows = next(iter(analyses.values()))["windows"] if analyses else None
+    for c in closed:
+        c["name"] = (people[c["person_id"]].name or people[c["person_id"]].username) if c["person_id"] in people else c["person_id"]
+        c["label"] = tj.METRICS.get(c["metric"], {}).get("label", c["metric"])
+    return {"view": view, "rows": rows, "queue": shown, "counts": counts, "closed": closed if view == "closed" else [],
+            "windows": windows, "last_sync": last_sync, "person_filter": person,
+            "all_people": sorted(((r["pid"], r["name"]) for r in rows), key=lambda x: x[1]) if not person else
+            sorted(((pid, (people[pid].name or people[pid].username) if pid in people else pid) for pid in analyses), key=lambda x: str(x[1]))}
+
+
+def trajectory_ack(alert_id: int, actor: str, note: str = "") -> None:
+    from history import trajectory as tj
+    conn = history_conn()
+    try:
+        tj.acknowledge(conn, alert_id, actor, note)
+    finally:
+        conn.close()
+
+
+def trajectory_end(alert_id: int, actor: str, reason: str) -> None:
+    from history import trajectory as tj
+    conn = history_conn()
+    try:
+        tj.end_tracking(conn, alert_id, actor, reason)
+    finally:
+        conn.close()

@@ -163,6 +163,7 @@ UNFOLD = {
         "navigation": [
             {"title": "Review 歷史", "separator": False, "items": [
                 _nav("團隊總覽", "monitoring", reverse_lazy("admin:index")),
+                _nav("個人軌跡", "insights", reverse_lazy("trajectory")),
                 _nav("評分變動紀錄", "timeline", reverse_lazy("score_log")),
             ]},
             {"title": "設定", "separator": True, "items": [

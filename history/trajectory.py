@@ -292,12 +292,14 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
         obs = _obs("R", (f"{m['mr_id']}{'s' if m['slice'] else ''}={g}" for m, g in r)) + \
             _obs("B", (f"{m['mr_id']}{'s' if m['slice'] else ''}={g}" for m, g in b))
         support = sorted(r, key=lambda x: x[1])
+        raw = {"raw_recent": round(statistics.mean(rv), 2) if rv else None,
+               "raw_base": round(statistics.mean(bv), 2) if bv else None}
         add(c, ch, len(r), len(b), MIN["rating"], obs,
             {"recent": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in support],
              "base": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(b, key=lambda x: -x[1])]},
             _weekly(mrs, now, lambda ms, c=c: round(statistics.mean(g), 2)
                     if (g := [m["grades"][c] for m in ms if m["grades"][c] is not None]) else None),
-            {"slices_recent": sum(1 for m, _ in r if m["slice"])})
+            {"slices_recent": sum(1 for m, _ in r if m["slice"]), **raw})
 
     rr = [m for m in R if m["reviewed"] and not m["slice"]]
     bb = [m for m in B if m["reviewed"] and not m["slice"]]
@@ -346,7 +348,9 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
                "base": sorted(({"mr": m, "value": round(m["cycle_hours"], 1)} for m in bc), key=lambda e: e["value"])},
               _weekly([m for m in mrs if m["cycle_hours"] is not None], now,
                       lambda ms: round(statistics.median(m["cycle_hours"] for m in ms), 1) if ms else None),
-              {"self_recent": sr, "self_base": sb})
+              {"self_recent": sr, "self_base": sb,
+               "raw_recent": round(statistics.median(rv), 1) if rv else None,
+               "raw_base": round(statistics.median(bv), 1) if bv else None})
     if row["state"] != "insufficient" and sr is not None and sb is not None and \
             (max(sr, sb) > SELF_MERGE_MAX or abs(sr - sb) >= 0.2):
         row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"], eligible=False,
