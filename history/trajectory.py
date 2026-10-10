@@ -479,6 +479,20 @@ def _fingerprint(m: dict) -> str:
                         .encode()).hexdigest()
 
 
+def _half(p) -> bool:
+    return p is not None and p >= 0.70
+
+
+def _same_judgment(last, m) -> bool:
+    """Same meaning as the stored judgment, whatever fingerprint format stored it:
+    state, eligibility, observations and the side of the close line. (A changed
+    fingerprint format alone — e.g. after an upgrade — is never a new judgment.)"""
+    return (last["state"] == m["state"] and (last["eligible"] or 0) == _bits(m["eligible"])
+            and json.loads(last["obs"] or "[]") == m["obs"]
+            and (_half(last["p_worse_half"]), _half(last["p_better_half"]))
+            == (_half(m.get("p_worse_half")), _half(m.get("p_better_half"))))
+
+
 def _basis(j) -> str | None:
     return next((o for o in json.loads(j["obs"] or "[]") if o.startswith("S:")), None)
 
@@ -490,12 +504,13 @@ def _ids(j) -> set[str]:
 
 def _judge(conn, pid, m, as_of) -> str:
     """'new' (stored), 'same' (nothing changed) or 'stale' (older than what we have)."""
-    last = conn.execute("SELECT evidence, as_of FROM trajectory_judgments WHERE person_id = ? AND metric = ? "
+    last = conn.execute("SELECT evidence, as_of, state, eligible, obs, p_worse_half, p_better_half "
+                        "FROM trajectory_judgments WHERE person_id = ? AND metric = ? "
                         "ORDER BY id DESC LIMIT 1", (pid, m["key"])).fetchone()
     if last and last["as_of"] > as_of:
         return "stale"                                   # an out-of-order update: never rewrite history
     ev = _fingerprint(m)
-    if last and last["evidence"] == ev:
+    if last and (last["evidence"] == ev or _same_judgment(last, m)):
         return "same"
     conn.execute("INSERT INTO trajectory_judgments(person_id, metric, as_of, evidence, n_recent, n_base, recent, "
                  "base, p_better, p_worse, p_better_half, p_worse_half, state, obs, eligible) "

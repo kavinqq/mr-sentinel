@@ -1133,6 +1133,25 @@ class TestTrajectory(DbCase):
                                  state="uncertain"))
         self.assertEqual(r["closed"], 0)                      # calm, not-calm, calm ≠ twice in a row
 
+    def legacy(self):
+        with self.conn:                                   # stored by an older fingerprint format
+            self.conn.execute("UPDATE trajectory_judgments SET evidence = 'old-' || id")
+
+    def test_an_upgrade_resync_does_not_close_on_a_fake_second_calm(self):
+        self.open_one()
+        calm = dict(p_worse=0.1, p_worse_half=0.3, state="uncertain")
+        self.step(3, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), **calm))
+        self.legacy()
+        r = self.step(16, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), **calm))
+        self.assertEqual((r["judged"], r["closed"]), (0, 0))
+
+    def test_an_upgrade_resync_does_not_open_by_stretching_the_gap(self):
+        self.step(0, self.m(recent_ids=(1, 2, 3, 4, 5)))
+        self.step(1, self.m(recent_ids=(1, 2, 3, 4, 5, 6)))           # 1 new, 1 day: not yet
+        self.legacy()
+        r = self.step(16, self.m(recent_ids=(1, 2, 3, 4, 5, 6)))
+        self.assertEqual((r["judged"], r["opened"]), (0, 0))
+
     def test_switching_the_comparison_basis_starts_a_new_streak(self):
         def on(basis, ids):
             m = self.m(recent_ids=ids)
