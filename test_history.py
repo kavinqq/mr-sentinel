@@ -493,6 +493,85 @@ class TestTeamReport(DbCase):
         self.assertIsNone(row["items"]["performance"]["score"])        # 未評估, not 5
 
 
+class TestReports(DbCase):
+    """每週週報 / 專案風險: plain counts on the core's own rules."""
+
+    def store(self, mid, merged, reviewed=True, high_open=False, by=None, author=DEV, project="g/app",
+              title="[feat] x"):
+        m = mr(mid=mid, iid=mid, author=author, merged=merged, created=merged, title=title)
+        if by is not None:
+            m["merged_by"] = {"id": by, "username": f"pk{by}", "name": "M"}
+        discussions = [{"id": f"d{mid}", "notes": [note(mid * 10, ME, ai_body("high" if high_open else "low", "x", "security"))]}] \
+            if reviewed else []
+        sync.store_mr(self.conn, project, m, discussions, [], ME, ["a.py"])
+
+    def test_week_counts_coverage_self_merge_and_open_findings(self):
+        from history import reports
+        with self.conn:
+            # week of Mon 2026-10-05 (Taipei): three personal merges, one unreviewed, one self-merged
+            self.store(1, "2026-10-05T02:00:00Z", by=DEV)
+            self.store(2, "2026-10-06T02:00:00Z", high_open=True, by=ME)
+            self.store(3, "2026-10-07T02:00:00Z", reviewed=False, by=ME)
+            self.store(4, "2026-09-29T02:00:00Z", by=ME)                      # last week
+            self.store(5, "2026-10-04T15:30:00Z", by=ME)                      # Sun 23:30 Taipei: last week
+        monday = reports.week_of(datetime(2026, 10, 8).date())
+        w = reports.week_report(self.conn, CFG, monday, now=NOW)
+        self.assertEqual(w["this"]["personal"], 3)
+        self.assertEqual((w["this"]["coverage"]["k"], w["this"]["coverage"]["n"]), (2, 3))
+        self.assertEqual((w["this"]["self_merge"]["k"], w["this"]["self_merge"]["n"]), (1, 3))
+        self.assertEqual(w["prev"]["personal"], 2)
+        self.assertEqual(w["this"]["escaped_high"], 1)
+        self.assertEqual(w["escaped"][0]["mr_id"], 2)                         # high first
+        self.assertEqual([(p, [m["mr_id"] for m in ms]) for p, ms in w["unreviewed"]], [("g/app", [3])])
+        self.assertEqual(len(w["trend"]), 12)
+        self.assertEqual(w["trend"][-1]["personal"], 3)
+
+    def test_pending_followups_drop_out_once_a_human_decides(self):
+        from history import reports
+        with self.conn:
+            self.store(1, "2026-10-01T00:00:00Z")
+            self.conn.execute("INSERT INTO followups VALUES (1, 'fix_mr', '99', 'a.py', 3.0)")
+        monday = reports.week_of(datetime(2026, 10, 8).date())
+        w = reports.week_report(self.conn, CFG, monday, now=NOW)
+        self.assertEqual([p["mr"]["mr_id"] for p in w["pending"]], [1])
+        self.assertFalse(w["pending"][0]["new"])                              # seen 10/04: last week, not new
+        with self.conn:
+            self.conn.execute("INSERT INTO followup_reviews(feature_mr_id, kind, source_ref, verdict, actor, created_at) "
+                              "VALUES (1, 'fix_mr', '99', 'unrelated', 'me', '2026-10-08T00:00:00Z')")
+        self.assertEqual(reports.week_report(self.conn, CFG, monday, now=NOW)["pending"], [])
+
+    def test_external_helpers_are_not_the_team_but_count_for_their_project(self):
+        from history import reports
+        with self.conn:
+            self.store(1, "2026-10-06T02:00:00Z", author=8, reviewed=False)
+            self.store(2, "2026-10-06T03:00:00Z")
+            self.conn.execute("INSERT INTO person_roles(gitlab_id, role, actor, created_at) "
+                              "VALUES (8, 'external', 'me', '2026-10-01T00:00:00Z')")
+        w = reports.week_report(self.conn, CFG, reports.week_of(datetime(2026, 10, 8).date()), now=NOW)
+        self.assertEqual(w["this"]["personal"], 1)
+        (p,) = reports.project_report(self.conn, CFG, NOW)
+        self.assertEqual(p["now"]["personal"], 2)
+
+    def test_project_flags_need_a_sample(self):
+        from history import reports
+        with self.conn:
+            for i in range(1, 4):
+                self.store(i, f"2026-10-0{i}T00:00:00Z", reviewed=False, by=DEV)
+            self.store(9, "2026-10-01T00:00:00Z", reviewed=False, project="g/small")
+        flags = {p["name"]: p["flags"] for p in reports.project_report(self.conn, CFG, NOW)}
+        self.assertEqual(flags["app"], ["coverage", "self_merge"])
+        self.assertEqual(flags["small"], [])                                   # one MR says nothing
+
+    def test_person_coverage_marks_the_thin_ones(self):
+        from history import reports
+        with self.conn:
+            self.store(1, "2026-10-01T00:00:00Z")
+            self.store(2, "2026-10-02T00:00:00Z", reviewed=False)
+            self.store(3, "2026-10-03T00:00:00Z", reviewed=False)
+        cov = reports.person_coverage(reports.mr_facts(self.conn, CFG), NOW - timedelta(days=30))
+        self.assertEqual((cov[DEV]["k"], cov[DEV]["n"], cov[DEV]["low"]), (1, 3, True))
+
+
 class TestRoles(DbCase):
     def seed(self):
         with self.conn:

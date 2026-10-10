@@ -1,0 +1,57 @@
+{% extends "admin/base_site.html" %}
+{% load sentinel %}
+{% block title %}專案風險 | {{ site_title }}{% endblock %}
+{% block content %}
+<div class="ms ms-projects">
+  <div class="ms-head">
+    <div>
+      <h1>專案風險</h1>
+      <p class="ms-sub">最近 {{ days }} 天和前 {{ days }} 天比 · 所有人的 MR(含外部支援)· {{ projects|length }} 個專案,{{ flagged }} 個有需要注意的地方</p>
+    </div>
+    <nav class="ms-seg" aria-label="期間">
+      <a href="?days=28"{% if days == 28 %} aria-current="page"{% endif %}>28 天</a>
+      <a href="?days=84"{% if days == 84 %} aria-current="page"{% endif %}>84 天</a>
+    </nav>
+  </div>
+
+  <ul class="ms-risk-legend" aria-label="風險條件">
+    <li><span class="ms-tag c-amber">review 覆蓋率低</span>個人 MR 至少 3 個,bot review 不到 {% widthratio coverage_min 1 100 %}%</li>
+    <li><span class="ms-tag c-red">有 high 可能沒處理就 merge</span></li>
+    <li><span class="ms-tag c-amber">自己 merge 的比例高</span>至少 3 個,60% 以上</li>
+    <li><span class="ms-tag c-amber">修 bug 的 MR 比例高</span>至少 5 個,40% 以上</li>
+    <li><span class="ms-tag c-orange">待確認的後續 bug 多</span>3 筆以上</li>
+  </ul>
+
+  {% if projects %}
+  <ul class="ms-proj-grid">
+    {% for p in projects %}
+    <li class="ms-proj{% if p.flags %} is-flagged{% endif %}">
+      <header>
+        <h2 title="{{ p.project }}">{{ p.name }}</h2>
+        <span class="who">{{ p.authors }} 人 · {{ p.now.merged }} 個 MR{% if p.now.releases %}(release {{ p.now.releases }}){% endif %}</span>
+      </header>
+      {% if p.flag_list %}<p class="ms-tags">{% for f in p.flag_list %}<span class="ms-tag {% if f.key == 'escaped_high' %}c-red{% elif f.key == 'pending' %}c-orange{% else %}c-amber{% endif %}">{{ f.text }}</span>{% endfor %}</p>
+      {% else %}<p class="ms-tags"><span class="ms-tag c-green">沒有需要注意的地方</span></p>{% endif %}
+      <div class="ms-proj-trend"><span class="k">每週 merge 數(近 12 週)</span>{% minibars p.weekly %}</div>
+      <ul class="ms-shifts">
+        <li><span class="k">bot review 覆蓋</span>{% shift_bar p.prev.coverage.share|pair:p.now.coverage.share "share" False %}</li>
+        <li><span class="k">自己 merge</span>{% shift_bar p.prev.self_merge.share|pair:p.now.self_merge.share "share" False %}</li>
+        <li><span class="k">修 bug 的 MR</span>{% shift_bar p.prev.fix.share|pair:p.now.fix.share "share" False %}</li>
+      </ul>
+      <dl class="ms-proj-nums">
+        <div><dt>high finding</dt><dd>{{ p.now.high }}</dd></div>
+        <div><dt>可能未處理就 merge</dt><dd{% if p.now.escaped_mrs %} class="bad"{% endif %}>{{ p.now.escaped_mrs }} 個 MR</dd></div>
+        <div><dt>後續 bug(已確認)</dt><dd>{{ p.now.confirmed }}<small>另有 {{ p.now.pending }} 筆待確認</small></dd></div>
+      </dl>
+      {% if p.escaped %}
+      <details class="ms-proj-more"><summary>可能未處理就 merge 的 MR({{ p.escaped|length }})</summary>
+        <ul>{% for m in p.escaped %}<li>{% person_tag m.author_id m.person.name|default:m.person.username|default:"—" %} <a class="ms-link" href="{{ m.web_url }}" target="_blank" rel="noopener">{{ m.short }}</a>{% if m.escaped_high %} <span class="ms-tag c-red">high {{ m.escaped_high|length }}</span>{% endif %} {{ m.title|truncatechars:48 }}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="ms-empty-block">這段期間沒有 merge 的 MR</p>{% endif %}
+  <p class="ms-sub ms-foot">覆蓋率、自己 merge、修 bug 的比例:<span class="dot-b"></span>前 {{ days }} 天 → <span class="dot-r"></span>最近 {{ days }} 天。這頁看的是專案和流程,不看個人。</p>
+</div>
+{% endblock %}

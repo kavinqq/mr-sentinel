@@ -1,0 +1,115 @@
+{% extends "admin/base_site.html" %}
+{% load sentinel %}
+{% block title %}每週週報 | {{ site_title }}{% endblock %}
+{% block content %}
+<div class="ms ms-weekly">
+  <div class="ms-head">
+    <div>
+      <h1>每週週報</h1>
+      <p class="ms-sub"><strong>{{ monday|date:"m/d" }}(一)–{{ sunday|date:"m/d" }}(日)</strong>{% if is_current %} · 本週還沒結束,數字會再變{% endif %} · 只算團隊成員的 MR(不含外部支援)</p>
+    </div>
+    <nav class="ms-seg" aria-label="切換週">
+      <a href="?week={{ prev_monday|date:'Y-m-d' }}"><span class="material-symbols-outlined" aria-hidden="true">chevron_left</span>上週</a>
+      <a href="?"{% if is_current %} aria-current="page"{% endif %}>本週</a>
+      {% if next_monday %}<a href="?week={{ next_monday|date:'Y-m-d' }}">下週<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></a>{% else %}<span class="is-disabled" aria-disabled="true">下週<span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></span>{% endif %}
+    </nav>
+  </div>
+
+  <ul class="ms-kpis" aria-label="這週和上週比">
+    {% for k in kpis %}
+    <li class="ms-kpi">
+      <p class="k">{{ k.label }}</p>
+      <p class="v">{{ k.now }}{% if k.sub %}<span class="sub">{{ k.sub }}</span>{% endif %}</p>
+      <p class="d tone-{{ k.tone }}">{% if k.tone == "up" %}<span class="material-symbols-outlined" aria-hidden="true">trending_up</span>比上週好{% elif k.tone == "down" %}<span class="material-symbols-outlined" aria-hidden="true">trending_down</span>比上週差{% else %}<span class="material-symbols-outlined" aria-hidden="true">trending_flat</span>{% if k.better %}和上週差不多{% else %}上週{% endif %}{% endif %} · 上週 {{ k.prev }}</p>
+      {% minibars k.series k.better k.fmt week_labels %}
+      {% if k.hint %}<p class="hint">{{ k.hint }}</p>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+
+  <section class="ms-todo" id="todo" aria-labelledby="todo-h">
+    <h2 id="todo-h">這週要處理的事</h2>
+
+    <article class="ms-todo-card" id="pending">
+      <header><span class="ms-todo-ic c-orange material-symbols-outlined" aria-hidden="true">pending_actions</span>
+        <div><h3>待確認的後續 bug <span class="count">{{ pending|length }}</span>{% if pending_new %}<span class="ms-tag c-orange">本週新增 {{ pending_new }}</span>{% endif %}</h3>
+          <p class="hint">系統猜的後續 bug(merge 後同檔案有 fix MR,或 AI 又抓到同一個問題),要人看過才算數 · 近 {{ window_days }} 天</p></div></header>
+      {% if pending %}
+      <ol class="ms-todo-list">
+        {% for p in pending %}
+        <li{% if forloop.counter > 12 %} class="is-more" hidden{% endif %}>
+          <div class="main">
+            <p class="t">{% person_tag p.mr.author_id p.mr.person.name|default:p.mr.person.username|default:"—" %}
+              <a class="ms-link" href="{{ p.mr.web_url }}" target="_blank" rel="noopener">{{ p.mr.short }}</a> {{ p.mr.title|truncatechars:60 }}
+              {% if p.new %}<span class="ms-tag c-orange">本週新增</span>{% endif %}</p>
+            <p class="meta"><span class="material-symbols-outlined" aria-hidden="true">{% if p.fu.kind == "fix_mr" %}build{% else %}manage_search{% endif %}</span>
+              {% if p.fix %}修 bug 的 MR <a class="ms-link" href="{{ p.fix.web_url }}" target="_blank" rel="noopener">{{ p.fix|short_mr }}</a> {{ p.fix.title|truncatechars:40 }}{% else %}AI 再次抓到 finding #{{ p.fu.source_ref }}{% endif %}
+              {% if p.fu.file %} · <code>{{ p.fu.file }}</code>{% endif %}{% if p.fu.days_after is not None %} · merge 後 {{ p.fu.days_after|floatformat:0 }} 天{% endif %}</p>
+          </div>
+          <form method="post" action="{% url 'review_followup' p.mr.author_id %}" class="acts">{% csrf_token %}
+            <input type="hidden" name="feature_mr_id" value="{{ p.mr.mr_id }}"><input type="hidden" name="kind" value="{{ p.fu.kind }}">
+            <input type="hidden" name="source_ref" value="{{ p.fu.source_ref }}"><input type="hidden" name="next" value="{{ request.get_full_path }}#pending">
+            <button type="submit" name="verdict" value="confirmed">確認是後續 bug</button>
+            <button type="submit" name="verdict" value="unrelated" class="ghost">不是同一個問題</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ol>
+      {% if pending|length > 12 %}<button type="button" class="ms-btn-secondary ms-more" data-more="pending">再顯示 {{ pending|length|add:"-12" }} 筆</button>{% endif %}
+      {% else %}<p class="ms-empty-block">沒有待確認的後續 bug</p>{% endif %}
+    </article>
+
+    <article class="ms-todo-card" id="escaped">
+      <header><span class="ms-todo-ic c-red material-symbols-outlined" aria-hidden="true">report</span>
+        <div><h3>merge 時可能還有未處理 finding <span class="count">{{ escaped|length }}</span></h3>
+          <p class="hint">這週 merge、但討論串還開著或 code 沒變的 MR · high 排在最前面 · 點進去確認是不是已經處理</p></div></header>
+      {% if escaped %}
+      <ol class="ms-todo-list">
+        {% for m in escaped %}
+        <li><div class="main">
+          <p class="t">{% person_tag m.author_id m.person.name|default:m.person.username|default:"—" %}
+            <a class="ms-link" href="{{ m.web_url }}" target="_blank" rel="noopener">{{ m.short }}</a> {{ m.title|truncatechars:60 }}</p>
+          <p class="meta">{% if m.escaped_high %}<span class="ms-tag c-red">high {{ m.escaped_high|length }}</span>{% endif %}<span class="ms-tag c-gray">{{ m.escaped|length }} 則可能未處理</span>{% if m.release %}<span class="ms-tag c-violet">release</span>{% endif %} · merge {{ m.merged|date:"m/d" }}</p>
+        </div></li>
+        {% endfor %}
+      </ol>
+      {% else %}<p class="ms-empty-block">這週 merge 的 MR 沒發現未處理的 finding</p>{% endif %}
+    </article>
+
+    <article class="ms-todo-card" id="unreviewed">
+      <header><span class="ms-todo-ic c-gray material-symbols-outlined" aria-hidden="true">visibility_off</span>
+        <div><h3>沒有經過 bot review 就 merge <span class="count">{{ unreviewed_total }}</span></h3>
+          <p class="hint">這週 merge 的個人 MR · 可能是專案還沒開 review,或在 review 前就 merge 了</p></div></header>
+      {% if unreviewed %}
+      <ul class="ms-todo-groups">
+        {% for project, ms in unreviewed %}
+        <li><p class="g">{{ project|cut:"developer/" }} <span class="count">{{ ms|length }}</span></p>
+          <ul>{% for m in ms %}<li>{% person_tag m.author_id m.person.name|default:m.person.username|default:"—" %} <a class="ms-link" href="{{ m.web_url }}" target="_blank" rel="noopener">{{ m.short }}</a> {{ m.title|truncatechars:56 }}</li>{% endfor %}</ul></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="ms-empty-block">這週的個人 MR 都有經過 bot review</p>{% endif %}
+    </article>
+  </section>
+
+  <section class="ms-group" aria-labelledby="ppl-h">
+    <div class="ms-group-head"><h2 id="ppl-h">每個人這週</h2><span class="hint">依名字排列,只看活動量與 review 覆蓋,不排名</span></div>
+    {% if people %}
+    <ul class="ms-week-people">
+      {% for p in people %}
+      <li><a href="{% url 'person' p.author_id %}">{% person_tag p.author_id p.name %}</a>
+        <span class="n">{{ p.personal }} 個 MR</span>
+        {% cov_bar p.coverage %}
+        {% if p.self_merge.n %}<span class="sm">自己 merge {{ p.self_merge.k }}/{{ p.self_merge.n }}</span>{% endif %}
+        {% if p.escaped_mrs %}<span class="ms-tag c-red">{{ p.escaped_mrs }} 個可能未處理</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="ms-empty-block">這週還沒有成員 merge 個人 MR</p>{% endif %}
+  </section>
+</div>
+<script>
+document.querySelectorAll(".ms-more").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(`#${b.dataset.more} .is-more`).forEach(li => { li.hidden = false; });
+  b.remove();
+}));
+</script>
+{% endblock %}

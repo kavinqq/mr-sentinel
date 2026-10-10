@@ -44,6 +44,8 @@ def sidebar(request):
     return [
         {"title": "Review 紀錄", "separator": False, "items": [
             _nav("團隊總覽", "monitoring", reverse_lazy("admin:index")),
+            _nav("每週週報", "event_note", reverse_lazy("weekly")),
+            _nav("專案風險", "folder_managed", reverse_lazy("projects")),
             _nav("評分變動紀錄", "timeline", reverse_lazy("score_log")),
         ]},
         {"title": "個人軌跡", "separator": True, "items": trajectory_items()},

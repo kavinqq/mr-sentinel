@@ -167,7 +167,7 @@ prose is not. The final message is used for nothing.
 | `reviewer.py` | orchestrate one MR review end to end (+ `spawn_detached`) |
 | `slack_bot.py` | poll Slack (or listen on Socket Mode) for mentions and clicks, dispatch commands (IO only) |
 | `socket_mode.py` | stdlib WebSocket client + Socket Mode envelope loop (ack-first, reconnect) |
-| `history/` | review history in SQLite: schema+migrations (`db`), GitLab sync, follow-ups, scoring, AI category backlog (`python3 -m history`) |
+| `history/` | review history in SQLite: schema+migrations (`db`), GitLab sync, follow-ups, scoring, AI category backlog (`python3 -m history`), 個人軌跡 (`trajectory`), team weekly / project risk numbers (`reports`) |
 | `appeal.py` | re-judge findings the developer disputed; verdict replies, resolve, summary |
 | `blocks.py` | Block Kit buttons: build, retire after a click, parse a click back to a Command (pure) |
 | `commands.py` | parse / authorize / render usage, settings, status (pure) |

@@ -492,3 +492,50 @@ def weekstrip(metric):
         out.append(f'<rect class="bar {_tone_class(w["tone"])}{thin}" x="{x:.1f}" y="{top:.1f}" width="{step * .6:.1f}" height="{max(hh, 1):.1f}" rx="1"/>')
     out.append("</svg>")
     return mark_safe("".join(out))
+
+
+@register.simple_tag
+def cov_bar(cov):
+    """Review coverage as a tiny bar under a name: k of n personal MRs the bot reviewed."""
+    from django.utils.safestring import mark_safe
+    if not cov or not cov.get("n"):
+        return ""
+    share = cov["k"] / cov["n"]
+    return mark_safe(f'<span class="ms-cov{" is-low" if cov.get("low") else ""}" title="近期個人 MR 中 bot review 過 {cov["k"]}/{cov["n"]} 個">'
+                     f'<span class="bar"><i style="width:{share * 100:.0f}%"></i></span>review {share * 100:.0f}%</span>')
+
+
+@register.simple_tag
+def minibars(series, better=None, fmt="n", labels=None):
+    """12 weeks of one number as small columns, this week (the last) in full colour;
+    an empty week is a gap, not a zero. Each column names its week and value."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+    vals = [v for v in series or [] if v is not None]
+    if not vals:
+        return mark_safe('<span class="ms-dim">—</span>')
+    W, H, n = 168, 40, len(series)
+    top = 1 if fmt == "share" else max(max(vals), 1)
+    step = W / n
+    out = [f'<svg class="ms-minibars" viewBox="0 0 {W} {H + 12}" role="img" aria-label="近 {n} 週:'
+           + escape("、".join("—" if v is None else (f"{v * 100:.0f}%" if fmt == "share" else f"{v:g}") for v in series))
+           + '">', f'<line class="base" x1="0" x2="{W}" y1="{H}" y2="{H}"/>']
+    for i, v in enumerate(series):
+        x = step * i + step * .18
+        if v is None:
+            continue
+        h = max(v / top * (H - 4), 1.5 if v else 0)
+        tip = f'{labels[i] if labels else ""} 那週:{f"{v * 100:.0f}%" if fmt == "share" else f"{v:g}"}'
+        out.append(f'<rect class="{"now" if i == n - 1 else "past"}" x="{x:.1f}" y="{H - h:.1f}" width="{step * .64:.1f}" height="{h:.1f}" rx="1.5">'
+                   f'<title>{escape(tip)}</title></rect>')
+    if labels:
+        out.append(f'<text x="0" y="{H + 11}">{escape(labels[0])}</text>'
+                   f'<text x="{W}" y="{H + 11}" text-anchor="end">{escape(labels[-1])}</text>')
+    out.append("</svg>")
+    return mark_safe("".join(out))
+
+
+@register.filter
+def pair(a, b):
+    """`x|pair:y` -> (x, y), for tags that take a before / after pair."""
+    return (a, b)

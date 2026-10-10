@@ -2,6 +2,7 @@
 every view is wrapped in admin.site.admin_view (urls.py) and renders with the
 admin's context. The overview *is* the admin index (DASHBOARD_CALLBACK)."""
 import json
+from datetime import timedelta
 
 from django.contrib import admin, messages
 from django.http import Http404, HttpResponseBadRequest
@@ -100,7 +101,7 @@ def review_followup(request, author_id: int):
     else:
         messages.success(request, f"已記錄:{services.FOLLOWUP_VERDICTS[request.POST['verdict']]},"
                                   f"分數已重新計算")
-    return redirect(f"{reverse('person', args=[author_id])}#followups")
+    return redirect(_back(request, f"{reverse('person', args=[author_id])}#followups"))
 
 
 @require_POST
@@ -226,6 +227,25 @@ def trajectory(request):
     title = f"個人軌跡 · {data['current']['name']}" if data["current"] else "個人軌跡"
     view = "compare" if request.GET.get("view") == "compare" else "week"   # how the overview cards draw a metric
     return _page(request, "reviews/trajectory.html", title, view=view, **data)
+
+
+@require_GET
+def weekly(request):
+    from datetime import date
+    try:
+        monday = date.fromisoformat(request.GET.get("week", ""))
+    except ValueError:
+        monday = None
+    if monday:
+        monday -= timedelta(days=monday.weekday())     # any day picks its week
+    data = services.weekly_page(monday)
+    return _page(request, "reviews/weekly.html", "每週週報", **data)
+
+
+@require_GET
+def projects(request):
+    days = 84 if request.GET.get("days") == "84" else 28
+    return _page(request, "reviews/projects.html", "專案風險", **services.projects_page(days))
 
 
 @require_POST

@@ -4,7 +4,7 @@ Scores come from history.score — the same code the CLI report and (later) the
 coding tutor use — so the dashboard can never show a number the core would not.
 """
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 import subprocess
 import sys
@@ -24,8 +24,8 @@ from .models import (EmailAlias, Finding, FindingReview, FollowupReview, MergeRe
 CATEGORY_LABELS = {**CATEGORIES, score.UNCATEGORIZED: "未分類", "needs_review": "待覆核"}
 RADAR_AXES = list(score.ITEMS)
 RADAR_LABELS = list(score.ITEMS.values())
-_SHORT = {"requirements": "需求", "compatibility": "相容", "operability": "營運",
-          "verification": "驗證", "maintainability": "維護"}
+_SHORT = {"requirements": "需求", "compatibility": "相容", "operability": "維運",
+          "verification": "測試", "maintainability": "維護"}
 ITEM_SHORT = {k: _SHORT.get(k, v) for k, v in score.ITEMS.items()}   # column headers
 SEVERITY_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 ROLES = hdb.ROLES
@@ -129,6 +129,17 @@ def overview() -> dict:
         r["evaluation"] = evals.get(r["author_id"])
         r["evaluation_stale"] = r["author_id"] in stale
         r["records"] = mr_records(r, attributed)
+    from history import reports
+    conn = history_conn()
+    try:
+        facts = reports.mr_facts(conn, cfg, attributed)
+    finally:
+        conn.close()
+    coverage = reports.person_coverage(facts, datetime.now(timezone.utc) - timedelta(days=cfg["window_days"]))
+    for r in rows:
+        r["review_cov"] = coverage.get(r["author_id"])
+    # by name, never by score: the overview is not a leaderboard
+    rows = sorted(rows, key=lambda r: (r["name"] or r["username"] or ""))
     ranked = [r for r in rows if r["ranked"]]
     leads = [r for r in rows if r["role"] == "lead"]
     departed = [r for r in rows if r["role"] == "departed"]
@@ -154,6 +165,7 @@ def overview() -> dict:
         "rating": {"rated": sum(r["rated_mrs"] for r in rows if r["role"] not in hdb.NOT_EVALUATED),
                    "total": sum(r["own_mrs"] for r in rows if r["role"] not in hdb.NOT_EVALUATED)},
         "max_total": score.max_total(cfg), "categories": CATEGORY_LABELS,
+        "coverage_min": reports.COVERAGE_MIN,
         "unattributed": len(attributed["unattributed"]),
         "via_release": sum(1 for f in attributed["findings"] if f["via_release"]),
     }
@@ -927,3 +939,97 @@ def trajectory_end(alert_id: int, actor: str, reason: str) -> bool:
         return tj.end_tracking(conn, alert_id, actor, reason)
     finally:
         conn.close()
+
+
+# ---------- 每週週報 / 專案風險 ----------
+
+
+def _pct_text(s):
+    return "—" if s["share"] is None else f"{s['share'] * 100:.0f}%"
+
+
+def _kpi(label, key, now, prev, trend, better, fmt="n", hint=""):
+    """One weekly number: this week, last week, which way it moved, and 12 weeks of it."""
+    val = (lambda s: s[key]["share"]) if fmt == "share" else (lambda s: s[key])
+    text = (lambda s: _pct_text(s[key])) if fmt == "share" else (lambda s: f"{s[key]}")
+    a, b = val(now), val(prev)
+    tone = "flat"
+    if a is not None and b is not None and a != b and better:
+        tone = "up" if (a > b) == (better == "higher") else "down"
+    sub = f"{now[key]['k']}/{now[key]['n']}" if fmt == "share" else ""
+    return {"label": label, "key": key, "now": text(now), "prev": text(prev), "sub": sub,
+            "tone": tone, "hint": hint, "series": [val(t) for t in trend],
+            "fmt": fmt, "better": better}
+
+
+def _decorate(m: dict, people: dict) -> dict:
+    m["person"] = people.get(m["author_id"])
+    m["short"] = f"{m['project'].rsplit('/', 1)[-1]}!{m['iid']}"
+    return m
+
+
+def weekly_page(monday=None) -> dict:
+    """每週週報: the team's week against the last, 12 weeks of each number, and the
+    leader's to-do (follow-ups to confirm, merges that may carry an open finding,
+    merges the bot never saw). Numbers from history.reports; this only adds names."""
+    from history import reports
+    conn = history_conn()
+    try:
+        conn.execute("BEGIN")                          # one consistent snapshot
+        _, cfg = hdb.scoring_config(conn)
+        current = reports.this_week()
+        monday = min(monday or current, current)
+        w = reports.week_report(conn, cfg, monday)
+        conn.rollback()
+    finally:
+        conn.close()
+    mrs = [p["mr"] for p in w["pending"]] + w["escaped"] + [m for _, ms in w["unreviewed"] for m in ms]
+    ids = {m["author_id"] for m in mrs} | {p["author_id"] for p in w["people"]}
+    people = {p.gitlab_id: p for p in Person.objects.filter(gitlab_id__in=ids)}
+    for m in mrs:
+        _decorate(m, people)
+    fix_ids = [int(p["fu"]["source_ref"]) for p in w["pending"] if p["fu"]["kind"] == "fix_mr"]
+    fixes = {m.mr_id: m for m in MergeRequest.objects.filter(mr_id__in=fix_ids)}
+    for p in w["pending"]:
+        p["fix"] = fixes.get(int(p["fu"]["source_ref"])) if p["fu"]["kind"] == "fix_mr" else None
+    for p in w["people"]:
+        p["person"] = people.get(p["author_id"])
+        p["name"] = (p["person"].name or p["person"].username) if p["person"] else str(p["author_id"])
+    w["people"].sort(key=lambda p: p["name"])
+    this, prev, trend = w["this"], w["prev"], w["trend"]
+    kpis = [
+        _kpi("已 merge 的 MR", "merged", this, prev, trend, None, hint="含 release MR"),
+        _kpi("bot review 覆蓋率", "coverage", this, prev, trend, "higher", "share", "個人 MR 中 bot 有 review 的比例"),
+        _kpi("自己 merge 的比例", "self_merge", this, prev, trend, "lower", "share", "個人 MR 由作者自己 merge"),
+        _kpi("merge 時可能有未處理 finding", "escaped_mrs", this, prev, trend, "lower", hint="MR 數"),
+        _kpi("新的 high finding", "high", this, prev, trend, "lower", hint="本週 merge 的 MR 上"),
+        _kpi("已確認的後續 bug", "confirmed", this, prev, trend, "lower", hint="本週 merge 的 MR 上"),
+    ]
+    week_labels = [f"{t['monday']:%m/%d}" for t in trend]
+    return {**w, "kpis": kpis, "week_labels": week_labels, "is_current": monday == current,
+            "prev_monday": monday - timedelta(days=7),
+            "next_monday": None if monday >= current else monday + timedelta(days=7),
+            "pending_new": sum(1 for p in w["pending"] if p["new"]),
+            "window_days": cfg["window_days"], "followup_verdicts": FOLLOWUP_VERDICTS,
+            "unreviewed_total": sum(len(ms) for _, ms in w["unreviewed"])}
+
+
+def projects_page(days: int = 28) -> dict:
+    """專案風險: each project's last `days` against the `days` before, with flags."""
+    from history import reports
+    conn = history_conn()
+    try:
+        conn.execute("BEGIN")
+        _, cfg = hdb.scoring_config(conn)
+        projects = reports.project_report(conn, cfg, days=days)
+        conn.rollback()
+    finally:
+        conn.close()
+    ids = {m["author_id"] for p in projects for m in p["escaped"]}
+    people = {p.gitlab_id: p for p in Person.objects.filter(gitlab_id__in=ids)}
+    for p in projects:
+        for m in p["escaped"]:
+            _decorate(m, people)
+        p["flag_list"] = [{"key": f, "text": reports.RISK[f]} for f in p["flags"]]
+    return {"projects": projects, "days": days, "risk": reports.RISK,
+            "flagged": sum(1 for p in projects if p["flags"]), "coverage_min": reports.COVERAGE_MIN}

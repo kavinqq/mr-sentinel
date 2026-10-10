@@ -495,3 +495,67 @@ class TestWeeklyChange(TransactionTestCase):
             self.assertIn("ms-week", weekchart(m))
             self.assertIn("ms-wstrip", weekstrip(m))
         self.assertEqual(week_summary({}), {})
+
+
+class TestWeeklyAndProjects(DashboardCase):
+    """每週週報 and 專案風險 render from history.reports; confirming a follow-up from
+    the weekly page goes back to it."""
+
+    def test_weekly_page_shows_the_week_and_the_queue(self):
+        conn = services.history_conn()
+        with conn:
+            conn.execute("INSERT INTO followups VALUES (100, 'ai_refind', '1', 'a.py', 2.0)")
+        conn.close()
+        resp = self.client.get(reverse("weekly") + "?week=2026-09-23")      # any day picks its Monday
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(str(resp.context["monday"]), "2026-09-21")
+        self.assertEqual(resp.context["this"]["personal"], 0)              # the fixture merged 09/20 (Sun, Taipei 08:00)
+        self.assertEqual(resp.context["prev"]["personal"], 5)
+        self.assertContains(resp, "待確認的後續 bug")
+        self.assertContains(resp, "每個人這週")
+
+    def test_confirming_a_follow_up_returns_to_the_weekly_page(self):
+        conn = services.history_conn()
+        with conn:
+            conn.execute("INSERT INTO followups VALUES (100, 'ai_refind', '1', 'a.py', 2.0)")
+        conn.close()
+        back = reverse("weekly") + "?week=2026-09-14#pending"
+        resp = self.client.post(reverse("review_followup", args=[7]), {
+            "feature_mr_id": 100, "kind": "ai_refind", "source_ref": "1", "verdict": "unrelated", "next": back})
+        self.assertEqual(resp["Location"], back)
+        self.assertEqual(self.client.get(back).context["pending"], [])
+
+    def test_a_future_week_falls_back_to_this_week(self):
+        resp = self.client.get(reverse("weekly") + "?week=2099-01-05")
+        self.assertTrue(resp.context["is_current"])
+        self.assertIsNone(resp.context["next_monday"])
+
+    def test_projects_page_lists_flags(self):
+        with mock.patch("history.reports.datetime") as dt:
+            from datetime import datetime as real, timezone as tz
+            dt.now.return_value = real(2026, 10, 1, tzinfo=tz.utc)
+            dt.fromisoformat = real.fromisoformat
+            dt.side_effect = lambda *a, **k: real(*a, **k)
+            resp = self.client.get(reverse("projects"))
+        self.assertEqual(resp.status_code, 200)
+        (p,) = resp.context["projects"]
+        self.assertEqual(p["name"], "app")
+        self.assertIn("escaped_high", p["flags"])                           # 5 high, merged unfixed
+        self.assertContains(resp, "有 high 可能沒處理就 merge")
+
+    def test_overview_lists_people_by_name_with_coverage(self):
+        resp = self.client.get(reverse("admin:index"))
+        (row,) = resp.context["ranked"]
+        self.assertEqual((row["review_cov"]["k"], row["review_cov"]["n"], row["review_cov"]["low"]), (5, 5, False))
+        self.assertNotContains(resp, "覆蓋不足")
+
+    def test_thin_review_coverage_marks_the_score(self):
+        conn = services.history_conn()
+        with conn:
+            for i in range(10, 16):                                         # 6 merges the bot never saw
+                sync.store_mr(conn, "g/app", mr(i, created="2026-09-21T00:00:00Z"), [], [], ME, ["a.py"])
+        conn.close()
+        resp = self.client.get(reverse("admin:index"))
+        (row,) = resp.context["ranked"]
+        self.assertEqual((row["review_cov"]["k"], row["review_cov"]["n"], row["review_cov"]["low"]), (5, 11, True))
+        self.assertContains(resp, "覆蓋不足")
