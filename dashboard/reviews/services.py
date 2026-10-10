@@ -706,10 +706,12 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
         closed = [dict(r) for r in conn.execute(
             "SELECT * FROM trajectory_alerts WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 50")]
         last_sync = hdb.get_state(conn, "last_sync_at")
+        members = [pid for pid, role in hdb.person_roles(conn).items() if role == "member"]
         conn.rollback()
     finally:
         conn.close()
-    people = {p.gitlab_id: p for p in Person.objects.filter(gitlab_id__in=set(analyses) | {a["person_id"] for a in closed})}
+    people = {p.gitlab_id: p for p in Person.objects.filter(
+        gitlab_id__in=set(analyses) | set(members) | {a["person_id"] for a in closed})}
     rows, queue = [], []
     for pid, a in analyses.items():
         p = people.get(pid)
@@ -776,7 +778,8 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
             "windows": windows, "last_sync": last_sync, "person_filter": person, "as_of": as_of,
             "analysis_as_of": analysis_as_of,
             "all_people": sorted(((r["pid"], r["name"]) for r in rows), key=lambda x: x[1]) if not person else
-            sorted(((pid, (people[pid].name or people[pid].username) if pid in people else pid) for pid in analyses), key=lambda x: str(x[1]))}
+            sorted(((pid, (people[pid].name or people[pid].username) if pid in people else pid)
+                    for pid in set(analyses) | set(members)), key=lambda x: str(x[1]))}   # switch to anyone
 
 
 def trajectory_ack(alert_id: int, actor: str, note: str = "") -> bool:

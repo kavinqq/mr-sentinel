@@ -1092,6 +1092,35 @@ class TestTrajectory(DbCase):
         b = tj.rating_change(rv[::-1], bv[::-1], team, 0.5, seed(rv[::-1], bv[::-1]))
         self.assertEqual(a, b)
 
+    def test_cycle_time_ignores_input_order_and_float_noise_below_the_obs_precision(self):
+        from history import trajectory as tj
+        def mk(i, hours, days_ago):
+            return {"mr_id": i, "project": "g/py_backend/x", "merged_at": NOW - timedelta(days=days_ago),
+                    "reviewed": True, "cycle_hours": hours, "self_merge": False,
+                    "grades": {c: None for c in CATEGORIES}, "reasons": {c: None for c in CATEGORIES},
+                    "escaped": False, "confirmed_bugs": 0, "bug_sources": [], "pending_bugs": 0,
+                    "is_fix": False, "files": 3, "track": "backend", "slice": False}
+        hours = [3.1, 9.7, 14.2, 5.5, 22.0, 7.3, 12.8]
+        mrs = [mk(i, h, 2 + i) for i, h in enumerate(hours)] + [mk(50 + i, 4.0 + i % 3, 40 + i) for i in range(10)]
+        cyc = lambda ms: next(x for x in tj.analyze_person(ms, [], NOW, 7)["metrics"] if x["key"] == "cycle_time")
+        a, b = cyc(mrs), cyc(mrs[::-1])
+        noisy = [dict(m, cycle_hours=m["cycle_hours"] + 0.000014) for m in mrs]
+        c = cyc(noisy)
+        self.assertEqual((a["p_worse"], a["state"]), (b["p_worse"], b["state"]))
+        self.assertEqual((a["p_worse"], a["state"], a["obs"]), (c["p_worse"], c["state"], c["obs"]))
+
+    def test_a_v14_alert_without_a_snapshot_needs_two_calm_judgments_after_it_opened(self):
+        self.step(0, self.m())
+        self.step(1, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))
+        with self.conn:                                           # what a v14 alert looks like after v15
+            self.conn.execute("UPDATE trajectory_judgments SET p_worse_half = NULL")
+            self.conn.execute("UPDATE trajectory_alerts SET snapshot = NULL")
+        calm = dict(p_worse=0.1, p_worse_half=0.3, state="uncertain")
+        r = self.step(16, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), **calm))
+        self.assertEqual(r["closed"], 0)                          # one calm only
+        r = self.step(17, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), **calm))
+        self.assertEqual(r["closed"], 1)
+
     def test_switching_the_comparison_basis_starts_a_new_streak(self):
         def on(basis, ids):
             m = self.m(recent_ids=ids)

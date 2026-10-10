@@ -362,8 +362,10 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
 
     rc = [m for m in R if m["cycle_hours"] is not None]
     bc = [m for m in B if m["cycle_hours"] is not None]
-    rv, bv = [m["cycle_hours"] for m in rc], [m["cycle_hours"] for m in bc]
-    ch = cycle_change(rv, bv, METRICS["cycle_time"]["threshold"], (pid, "cyc", sorted(rv), sorted(bv))) \
+    # canonical: the same values (as the obs record them), the same order → the same posterior
+    rv = sorted(round(m["cycle_hours"], 2) for m in rc)
+    bv = sorted(round(m["cycle_hours"], 2) for m in bc)
+    ch = cycle_change(rv, bv, METRICS["cycle_time"]["threshold"], (pid, "cyc", rv, bv)) \
         if len(rc) >= 2 and len(bc) >= 2 else None
 
     def self_share(ms):
@@ -542,17 +544,20 @@ def _lifecycle(conn, pid, m, now, as_of) -> tuple[int, int]:
                          "AND closed_at IS NULL", (pid, key)).fetchone()
     if alert:
         snap = json.loads(alert["snapshot"] or "{}")
-        since_open = _after(conn, pid, key, max(snap.get("judgments") or [0]))[:2]
+        # judgments after the opening one; an alert from before snapshots (v14) uses its open time
+        floor = max(snap["judgments"]) if snap.get("judgments") else _last_id_by(conn, pid, key, alert["opened_at"])
+        since_open = _after(conn, pid, key, floor)[:2]
         stale = int(m["state"] in ("insufficient", "not_comparable"))
         if stale != (alert["stale"] or 0):
             conn.execute("UPDATE trajectory_alerts SET stale = ? WHERE id = ?", (stale, alert["id"]))
         held = now - _ts(alert["opened_at"]) >= timedelta(days=HOLD_DAYS)
         side = "p_worse_half" if alert["kind"] == "watch" else "p_better_half"
         calm = [j for j in since_open if j["state"] not in ("insufficient", "not_comparable")
-                and (j[side] or 0) < 0.70]
+                and j[side] is not None and j[side] < 0.70]        # unknown is not calm
         flipped = bool(since_open) and since_open[0]["state"] == (
             "strong_better" if alert["kind"] == "watch" else "strong_worse")
-        now_calm = m["state"] not in ("insufficient", "not_comparable") and (m.get(side) or 0) < 0.70
+        now_calm = m["state"] not in ("insufficient", "not_comparable") and m.get(side) is not None \
+            and m[side] < 0.70
         if held and ((len(since_open) == 2 and len(calm) == 2 and now_calm) or flipped):
             _close(conn, alert["id"], as_of, "data", "方向反轉" if flipped else "連續兩次未再超過一半門檻")
             return 0, 1

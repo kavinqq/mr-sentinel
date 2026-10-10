@@ -19,7 +19,7 @@
           <li>樣本是 merge 的 MR(與 release 中本人的 commit 切片);一個 MR 的 8 項評分只算一個樣本。</li>
           <li>只有變化超過實際門檻才算:評分 0.5 分、比例 15 個百分點、時間 25% 且至少 1 小時。</li>
           <li>顯示的百分比是「變化超過門檻的估計機率」,不是 p-value。</li>
-          <li><strong>要關注 / 明顯改善</strong>只在主要指標、連續兩次都看到新的 MR 時才出現,至少保留 14 天,關閉後 28 天內不重複提醒。</li>
+          <li><strong>要關注 / 明顯改善</strong>只在主要指標出現:同一比較基礎下連續兩次強烈判定,且這段期間累積新增至少 2 個 MR(或 1 個、兩次判定相隔 14 天以上),至少保留 14 天,關閉後 28 天內不重複提醒。</li>
           <li>high finding 未處理就 merge 會立刻列為個案,不當成趨勢。</li>
           <li>MR 數、commit 數只當活動量;merge 不等於上線。</li>
         </ul>
@@ -198,7 +198,7 @@
                     <div><h4>最近 {{ m.n_recent }} 筆{% if m.n_recent > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由長到短{% else %}有事件的在前{% endif %}</h4>
                       <ul>{% for e in m.evidence.recent|slice:":10" %}<li><span class="ms-tag {{ e.value|grade_tag:m.unit }}">{% if m.unit == "%" %}{% if m.key == "bug_rate" %}{% if e.value %}{{ e.value }} 個 bug{% else %}沒有{% endif %}{% elif e.value %}推定未處理{% else %}未觀察到未處理{% endif %}{% elif m.unit == "小時" %}{{ e.value }} h{% else %}{{ e.value }} 分{% endif %}</span> <a class="ms-link" href="{{ e.mr.web_url }}" target="_blank" rel="noopener">{{ e.mr.project|cut:"developer/" }}!{{ e.mr.iid }}</a>{% if e.mr.slice %}<span class="ms-tag c-violet">release 切片</span>{% endif %}
                         {% if e.why %}<p>{{ e.why }}</p>{% endif %}</li>{% empty %}<li class="ms-dim">沒有樣本</li>{% endfor %}</ul></div>
-                    <div><h4>基線 {{ m.n_base }} 筆{% if m.n_base > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由短到長{% else %}有事件的在前{% endif %}</h4>
+                    <div><h4>基線 {{ m.n_base }} 筆{% if m.n_base > 10 %},顯示前 10{% endif %} · {% if m.kind == "rating" %}分數由低到高{% elif m.kind == "cycle" %}時間由長到短{% else %}有事件的在前{% endif %}</h4>
                       <ul>{% for e in m.evidence.base|slice:":10" %}<li><span class="ms-tag {{ e.value|grade_tag:m.unit }}">{% if m.unit == "%" %}{% if m.key == "bug_rate" %}{% if e.value %}{{ e.value }} 個 bug{% else %}沒有{% endif %}{% elif e.value %}推定未處理{% else %}未觀察到未處理{% endif %}{% elif m.unit == "小時" %}{{ e.value }} h{% else %}{{ e.value }} 分{% endif %}</span> <a class="ms-link" href="{{ e.mr.web_url }}" target="_blank" rel="noopener">{{ e.mr.project|cut:"developer/" }}!{{ e.mr.iid }}</a>{% if e.mr.slice %}<span class="ms-tag c-violet">release 切片</span>{% endif %}
                         {% if e.why %}<p>{{ e.why }}</p>{% endif %}</li>{% empty %}<li class="ms-dim">沒有樣本</li>{% endfor %}</ul></div>
                   </div>
