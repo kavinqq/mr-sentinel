@@ -311,15 +311,16 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
         t = [m["grades"][c] for m in T if m["grades"][c] is not None
              and (stratum == "混合" or m["slice"] == (stratum == "release 切片"))]
         rv, bv = [g for _, g in r], [g for _, g in b]
-        ch = rating_change(rv, bv, t, METRICS[c]["threshold"], (pid, c, rv, bv)) if r and b else None
-        obs = _obs("R", (f"{m['mr_id']}{'s' if m['slice'] else ''}={g}" for m, g in r)) + \
+        ch = rating_change(rv, bv, t, METRICS[c]["threshold"], (pid, c, sorted(rv), sorted(bv))) if r and b else None
+        obs = [f"S:{stratum}"] + _obs("R", (f"{m['mr_id']}{'s' if m['slice'] else ''}={g}" for m, g in r)) + \
             _obs("B", (f"{m['mr_id']}{'s' if m['slice'] else ''}={g}" for m, g in b))
+        basis = mrs if stratum == "混合" else [m for m in mrs if m["slice"] == (stratum == "release 切片")]
         raw = {"raw_recent": round(statistics.mean(rv), 2) if rv else None,
                "raw_base": round(statistics.mean(bv), 2) if bv else None, "stratum": stratum}
         row = add(c, ch, len(r), len(b), MIN["rating"], obs,
                   {"recent": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(r, key=lambda x: x[1])],
                    "base": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(b, key=lambda x: x[1])]},
-                  _weekly(mrs, now, lambda ms, c=c: round(statistics.mean(g), 2)
+                  _weekly(basis, now, lambda ms, c=c: round(statistics.mean(g), 2)
                           if (g := [m["grades"][c] for m in ms if m["grades"][c] is not None]) else None),
                   {"slices_recent": sum(1 for m, _ in r if m["slice"]), **raw})
         if not comparable and row["state"] != "insufficient":
@@ -331,7 +332,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     bb = [m for m in B if m["reviewed"] and not m["slice"]]
     tt = [m["escaped"] for m in T if m["reviewed"] and not m["slice"]]
     rv, bv = [m["escaped"] for m in rr], [m["escaped"] for m in bb]
-    ch = rate_change(rv, bv, tt, METRICS["escape_rate"]["threshold"], (pid, "esc", rv, bv)) if rr and bb else None
+    ch = rate_change(rv, bv, tt, METRICS["escape_rate"]["threshold"], (pid, "esc", sorted(rv), sorted(bv))) if rr and bb else None
     add("escape_rate", ch, len(rr), len(bb), MIN["rate"],
         _obs("R", (f"{m['mr_id']}={int(m['escaped'])}" for m in rr)) +
         _obs("B", (f"{m['mr_id']}={int(m['escaped'])}" for m in bb)),
@@ -346,7 +347,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     tb = [m["confirmed_bugs"] > 0 for m in team if _bug_eligible(m)
           and (in_rb(m["merged_at"]) or in_bb(m["merged_at"]))]
     rv, bv = [m["confirmed_bugs"] > 0 for m in mr_], [m["confirmed_bugs"] > 0 for m in mb_]
-    ch = rate_change(rv, bv, tb, METRICS["bug_rate"]["threshold"], (pid, "bug", rv, bv)) if mr_ and mb_ else None
+    ch = rate_change(rv, bv, tb, METRICS["bug_rate"]["threshold"], (pid, "bug", sorted(rv), sorted(bv))) if mr_ and mb_ else None
     row = add("bug_rate", ch, len(mr_), len(mb_), MIN["bug"],
               _obs("R", (f"{m['mr_id']}={m['confirmed_bugs']}" for m in mr_)) +
               _obs("B", (f"{m['mr_id']}={m['confirmed_bugs']}" for m in mb_)),
@@ -362,7 +363,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     rc = [m for m in R if m["cycle_hours"] is not None]
     bc = [m for m in B if m["cycle_hours"] is not None]
     rv, bv = [m["cycle_hours"] for m in rc], [m["cycle_hours"] for m in bc]
-    ch = cycle_change(rv, bv, METRICS["cycle_time"]["threshold"], (pid, "cyc", rv, bv)) \
+    ch = cycle_change(rv, bv, METRICS["cycle_time"]["threshold"], (pid, "cyc", sorted(rv), sorted(bv))) \
         if len(rc) >= 2 and len(bc) >= 2 else None
 
     def self_share(ms):
@@ -373,7 +374,7 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
               _obs("R", (f"{m['mr_id']}={m['cycle_hours']:.2f}" for m in rc)) +
               _obs("B", (f"{m['mr_id']}={m['cycle_hours']:.2f}" for m in bc)),
               {"recent": sorted(({"mr": m, "value": round(m["cycle_hours"], 1)} for m in rc), key=lambda e: -e["value"]),
-               "base": sorted(({"mr": m, "value": round(m["cycle_hours"], 1)} for m in bc), key=lambda e: e["value"])},
+               "base": sorted(({"mr": m, "value": round(m["cycle_hours"], 1)} for m in bc), key=lambda e: -e["value"])},
               _weekly([m for m in mrs if m["cycle_hours"] is not None], now,
                       lambda ms: round(statistics.median(m["cycle_hours"] for m in ms), 1) if ms else None),
               {"self_recent": sr, "self_base": sb,
@@ -432,19 +433,20 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
             my_cases.append({"finding": f, "mr": mr, "when": when})
     my_cases.sort(key=lambda c: c["when"], reverse=True)
     return {"metrics": metrics, "context": context, "shifted": shifted, "together": together,
-            "cases": my_cases, "n_recent": len(R), "n_base": len(B),
+            "cases": my_cases, "n_recent": len(R), "n_base": len(B), "as_of": now,
             "windows": {"base": (b0, r0), "recent": (r0, end), "bug": bug_bounds}}
 
 
-def analyze(conn, cfg: dict, now: datetime | None = None) -> dict:
-    """{person_id: analysis} for every member being evaluated."""
+def analyze(conn, cfg: dict, now: datetime | None = None, only: int | None = None) -> dict:
+    """{person_id: analysis} for every member being evaluated (or just `only`;
+    the team prior still comes from everyone else)."""
     now = now or datetime.now(timezone.utc)
     data = _samples(conn, cfg, now)
     roles = db.person_roles(conn)
     members = [pid for pid in set(data["by_person"]) | {p for p in data["cases"] if p is not None}
                if roles.get(pid, "member") == "member"]
     out = {}
-    for pid in members:
+    for pid in members if only is None else [p for p in members if p == only]:
         team = [m for other in members if other != pid for m in data["by_person"].get(other, [])]
         out[pid] = analyze_person(data["by_person"].get(pid, []), team, now, pid,
                                   data["cases"].get(pid, []), data["mrs"])
@@ -461,11 +463,16 @@ def _bits(eligible: dict) -> int:
 
 
 def _fingerprint(m: dict) -> str:
-    """Everything the judgment rests on: model, state, eligibility, the
-    observations (identity *and* value) and the probabilities the lifecycle reads."""
-    probs = [round(m.get(k) or 0, 2) for k in ("p_better", "p_worse", "p_better_half", "p_worse_half")]
-    return hashlib.sha1(json.dumps([MODEL_VERSION, m["state"], _bits(m["eligible"]), m["obs"], probs])
+    """What the judgment was computed from: model, comparison basis and the
+    observations (identity *and* value), plus the eligibility rules applied.
+    Same inputs → same seeded posterior, so a re-sync is never a new judgment;
+    the lifecycle reads the *current* exact probabilities, never a rounded copy."""
+    return hashlib.sha1(json.dumps([MODEL_VERSION, m["state"], _bits(m["eligible"]), m["obs"]])
                         .encode()).hexdigest()
+
+
+def _basis(j) -> str | None:
+    return next((o for o in json.loads(j["obs"] or "[]") if o.startswith("S:")), None)
 
 
 def _ids(j) -> set[str]:
@@ -502,6 +509,32 @@ def _last_id_by(conn, pid, key, as_of: str) -> int:
     return row[0] or 0
 
 
+def _closed_floor(conn, pid, key) -> int:
+    """The last judgment id when the latest alert of this metric closed: a new
+    episode may only use judgments made after it (an id, not a timestamp)."""
+    row = conn.execute("SELECT snapshot, closed_at FROM trajectory_alerts WHERE person_id = ? AND metric = ? "
+                       "AND closed_at IS NOT NULL ORDER BY closed_at DESC, id DESC LIMIT 1", (pid, key)).fetchone()
+    snap = json.loads(row["snapshot"] or "{}") if row else {}
+    if "closed_after_judgment" in snap:
+        return snap["closed_after_judgment"]
+    return _last_id_by(conn, pid, key, row["closed_at"]) if row else 0
+
+
+def _close(conn, alert_id: int, as_of: str, by: str, reason: str) -> bool:
+    row = conn.execute("SELECT person_id, metric, snapshot FROM trajectory_alerts WHERE id = ? AND closed_at IS NULL",
+                       (alert_id,)).fetchone()
+    if row is None:
+        return False
+    snap = json.loads(row["snapshot"] or "{}")
+    snap["closed_after_judgment"] = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM trajectory_judgments WHERE person_id = ? AND metric = ?",
+        (row["person_id"], row["metric"])).fetchone()[0]
+    conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = ?, close_reason = ?, snapshot = ? "
+                 "WHERE id = ? AND closed_at IS NULL",
+                 (as_of, by, reason, json.dumps(snap, default=str), alert_id))
+    return True
+
+
 def _lifecycle(conn, pid, m, now, as_of) -> tuple[int, int]:
     """Open / close / mark stale — on every update, new judgment or not."""
     key = m["key"]
@@ -519,10 +552,9 @@ def _lifecycle(conn, pid, m, now, as_of) -> tuple[int, int]:
                 and (j[side] or 0) < 0.70]
         flipped = bool(since_open) and since_open[0]["state"] == (
             "strong_better" if alert["kind"] == "watch" else "strong_worse")
-        if held and ((len(since_open) == 2 and len(calm) == 2) or flipped):
-            conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = 'data', close_reason = ? "
-                         "WHERE id = ?", (as_of, "方向反轉" if flipped else "連續兩次未再超過一半門檻",
-                                          alert["id"]))
+        now_calm = m["state"] not in ("insufficient", "not_comparable") and (m.get(side) or 0) < 0.70
+        if held and ((len(since_open) == 2 and len(calm) == 2 and now_calm) or flipped):
+            _close(conn, alert["id"], as_of, "data", "方向反轉" if flipped else "連續兩次未再超過一半門檻")
             return 0, 1
         return 0, 0
     if not m["alert"]:
@@ -533,14 +565,16 @@ def _lifecycle(conn, pid, m, now, as_of) -> tuple[int, int]:
         return 0, 0
     # the current streak: judgments since the last close, newest first, while they keep
     # the same strong state and that direction stays eligible
-    floor = _last_id_by(conn, pid, key, last_closed[0]) if last_closed else 0
+    floor = _closed_floor(conn, pid, key) if last_closed else 0
     history = _after(conn, pid, key, floor)
-    if not history or history[0]["state"] not in ("strong_worse", "strong_better"):
+    if not history or history[0]["state"] not in ("strong_worse", "strong_better") \
+            or m["state"] != history[0]["state"]:
         return 0, 0
     kind = "watch" if history[0]["state"] == "strong_worse" else "improve"
     streak = []
     for j in history:
-        if j["state"] != history[0]["state"] or not ((j["eligible"] or 0) & BIT[kind]):
+        if j["state"] != history[0]["state"] or not ((j["eligible"] or 0) & BIT[kind]) \
+                or _basis(j) != _basis(history[0]):
             break
         streak.append(j)
     if len(streak) < 2:
@@ -570,6 +604,9 @@ def update(conn, cfg: dict, now: datetime | None = None, analyses: dict | None =
     """Judge every metric whose evidence changed, then run every alert's lifecycle."""
     now = now or datetime.now(timezone.utc)
     as_of = db.utc(now)
+    last = db.get_state(conn, "trajectory_as_of")
+    if last and as_of < last:
+        return {"judged": 0, "opened": 0, "closed": 0, "skipped": "older than the last update"}
     analyses = analyses if analyses is not None else analyze(conn, cfg, now)
     judged = opened = closed = 0
     with conn:
@@ -586,9 +623,7 @@ def update(conn, cfg: dict, now: datetime | None = None, analyses: dict | None =
         # people no longer evaluated (left, other team): their alerts end, the record stays
         for row in conn.execute("SELECT id, person_id FROM trajectory_alerts WHERE closed_at IS NULL").fetchall():
             if row["person_id"] not in analyses:
-                conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = 'data', "
-                             "close_reason = '不再評估此人' WHERE id = ?", (as_of, row["id"]))
-                closed += 1
+                closed += _close(conn, row["id"], as_of, "data", "不再評估此人")
         db.set_state(conn, "trajectory_as_of", as_of)
     return {"judged": judged, "opened": opened, "closed": closed}
 
@@ -615,7 +650,4 @@ def end_tracking(conn, alert_id: int, actor: str, reason: str, now: datetime | N
     if not reason.strip():
         raise ValueError("結束追蹤要寫原因")
     with conn:
-        cur = conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = ?, close_reason = ? "
-                           "WHERE id = ? AND closed_at IS NULL",
-                           (db.utc(now) if now else db.now_iso(), actor, reason.strip(), alert_id))
-    return cur.rowcount == 1
+        return _close(conn, alert_id, db.utc(now) if now else db.now_iso(), actor, reason.strip())

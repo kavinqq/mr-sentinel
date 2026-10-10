@@ -346,6 +346,25 @@ class TestTrajectoryPage(DashboardCase):
         self.assertContains(resp, "目前無法重新評估")
         self.assertContains(resp, "3.20 → 2.40")                      # what it was opened on
 
+    def test_current_state_not_the_saved_flag_decides_what_the_card_says(self):
+        self.open_alert(stale=0)                          # saved as evaluable, but the data is thin now
+        resp = self.client.get(reverse("trajectory"), {"view": "todo"})
+        self.assertContains(resp, "目前無法重新評估")
+        self.assertNotContains(resp, "下降訊號")
+        self.assertContains(resp, "惡化訊號")
+
+    def test_the_closed_view_keeps_the_real_counts(self):
+        self.open_alert(stale=0)
+        resp = self.client.get(reverse("trajectory"), {"view": "closed"})
+        self.assertEqual(resp.context["counts"]["todo"], 1)
+
+    def test_one_person_analyses_only_that_person(self):
+        from history import trajectory as tj
+        real = tj.analyze
+        with mock.patch.object(tj, "analyze", side_effect=lambda *a, **k: real(*a, **k)) as spy:
+            self.client.get(reverse("trajectory"), {"view": "all", "person": 7})
+        self.assertEqual(spy.call_args.kwargs["only"], 7)
+
     def test_ack_then_end_and_an_ended_alert_cannot_be_acknowledged(self):
         aid = self.open_alert(stale=0)
         url = reverse("trajectory_alert", args=[aid])

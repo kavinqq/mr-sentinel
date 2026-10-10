@@ -637,3 +637,14 @@ td.path code { word-break: break-all; }
 .ms .ms-state.tone-improve-soft, .ms .ms-state.tone-up { color: #006556; }
 .ms .ms-context li.is-shifted::after { content: "有變動"; margin-left: 6px; font-size: .78rem; font-weight: 700; color: #7A4500; }
 .ms .ms-mtable .ms-state { white-space: normal; text-align: left; }
+
+/* 個人軌跡: high cases listed on the person, a legend for the recent band */
+.ms .ms-cases { margin: 10px 0 12px; padding: 12px 14px; border: 1px solid var(--ms-red-border, #f3b0a2); border-radius: 10px; background: var(--ms-red-bg, #fff7f6); }
+.ms .ms-cases h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 1rem; color: #b42318; }
+.ms .ms-cases h3 .material-symbols-outlined { font-size: 20px; }
+.ms .ms-cases ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ms .ms-cases li + li { border-top: 1px solid #f6d3cc; padding-top: 8px; }
+.ms .ms-case-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ms .ms-case-meta { margin: 4px 0 0; font-size: .92rem; color: var(--ms-muted); overflow-wrap: anywhere; }
+.ms .ms-spark-legend { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; color: var(--ms-muted); }
+.ms .ms-spark-legend i { display: inline-block; width: 18px; height: 10px; border-radius: 2px; background: #EEF0FB; border: 1px solid #C7CCEF; }

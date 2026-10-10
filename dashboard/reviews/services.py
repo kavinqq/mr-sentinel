@@ -4,6 +4,7 @@ Scores come from history.score — the same code the CLI report and (later) the
 coding tutor use — so the dashboard can never show a number the core would not.
 """
 import json
+from datetime import datetime, timezone
 import os
 import subprocess
 import sys
@@ -695,14 +696,17 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
     history.trajectory, the alert states from its tables."""
     from history import trajectory as tj
     conn = history_conn()
+    analysis_as_of = datetime.now(timezone.utc)
     try:
+        conn.execute("BEGIN")                          # one consistent snapshot for every read below
         _, cfg = hdb.scoring_config(conn)
-        analyses = {} if view == "closed" else tj.analyze(conn, cfg)     # closed: history only
+        analyses = tj.analyze(conn, cfg, analysis_as_of, only=person)
         open_ = tj.open_alerts(conn)
         as_of = hdb.get_state(conn, "trajectory_as_of")
         closed = [dict(r) for r in conn.execute(
             "SELECT * FROM trajectory_alerts WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 50")]
         last_sync = hdb.get_state(conn, "last_sync_at")
+        conn.rollback()
     finally:
         conn.close()
     people = {p.gitlab_id: p for p in Person.objects.filter(gitlab_id__in=set(analyses) | {a["person_id"] for a in closed})}
@@ -718,7 +722,7 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
                 base_text, recent_text = _fmt(m.get("raw_base"), m["unit"]), _fmt(m.get("raw_recent"), m["unit"])
             else:
                 base_text, recent_text = _fmt(m.get("base"), m["unit"]), _fmt(m.get("recent"), m["unit"])
-            metrics.append({**m, "tone": TONE.get(m["state"], "flat"),
+            metrics.append({**m, "tone": TONE.get(m["state"], "flat"), "as_of": a["as_of"],
                             "base_text": base_text, "recent_text": recent_text,
                             "diff_text": _fmt_diff(m), "interval_text": _fmt_interval(m),
                             "need_text": f"需 {m['need'][1]}/{m['need'][0]}" if m["need"][0] else ""})
@@ -735,6 +739,7 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
                     opened = f"{_fmt(snap.get('raw_base', snap.get('base')), fmt_unit)} → {_fmt(snap.get('raw_recent', snap.get('recent')), fmt_unit)}"
                 p_open = snap.get("p_worse") if al["kind"] == "watch" else snap.get("p_better")
                 alerts.append({**al, "m": m, "snap": snap, "opened_text": opened, "p_open": p_open,
+                               "now_unknown": m["state"] in ("insufficient", "not_comparable"),   # from now, not the saved flag
                                "now_matches": m["state"] == ("strong_worse" if al["kind"] == "watch" else "strong_better")})
         main_insufficient = all(by_key[k]["state"] == "insufficient"
                                 for k in ("requirements", "verification", "escape_rate", "bug_rate", "cycle_time"))
@@ -743,6 +748,7 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
                "alerts": alerts, "insufficient": main_insufficient}
         rows.append(row)
         for c in a["cases"]:
+            c["category_label"] = CATEGORY_LABELS.get(c["finding"].get("category"), "")
             queue.append({"type": "case", "rank": 0, "row": row, "case": c})
         for al in alerts:
             rank = (1 if not al["acknowledged_at"] else 2) if al["kind"] == "watch" else 3
@@ -762,14 +768,13 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
     else:
         shown = []
     rows.sort(key=lambda r: (not r["alerts"] and not r["a"]["cases"], r["name"]))
-    if person:
-        rows = [r for r in rows if r["pid"] == person]
     windows = next(iter(analyses.values()))["windows"] if analyses else None
     for c in closed:
         c["name"] = (people[c["person_id"]].name or people[c["person_id"]].username) if c["person_id"] in people else c["person_id"]
         c["label"] = tj.METRICS.get(c["metric"], {}).get("label", c["metric"])
     return {"view": view, "rows": rows, "queue": shown, "counts": counts, "closed": closed if view == "closed" else [],
             "windows": windows, "last_sync": last_sync, "person_filter": person, "as_of": as_of,
+            "analysis_as_of": analysis_as_of,
             "all_people": sorted(((r["pid"], r["name"]) for r in rows), key=lambda x: x[1]) if not person else
             sorted(((pid, (people[pid].name or people[pid].username) if pid in people else pid) for pid in analyses), key=lambda x: str(x[1]))}
 

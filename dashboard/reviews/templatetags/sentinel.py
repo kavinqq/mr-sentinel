@@ -166,14 +166,14 @@ def spark(metric):
     band = x(len(values) - 4) - 2
     summary = "、".join("無" if v is None else (f"{v * 100:.0f}%" if unit == "%" else f"{v:g}") for v in values)
     out = [f'<svg class="ms-spark" viewBox="0 0 {w} {h}" preserveAspectRatio="none" role="img" '
-           f'aria-label="{escape(metric.get("label", ""))} 近 12 週每週原始值(舊到新):{escape(summary)}">',
+           f'aria-label="{escape(metric.get("label", ""))} 近 12 週每週原始值(舊到新,底色為最近 28 天):{escape(summary)}">',
            f'<rect x="{band:.1f}" y="0" width="{w - band:.1f}" height="{h}" class="band"/>']
     for seg in segs:
         if len(seg) > 1:
             out.append('<polyline points="' + " ".join(f"{a:.1f},{b:.1f}" for a, b in seg) + '"/>')
     from datetime import datetime, timedelta, timezone
     fmt = (lambda v: f"{v * 100:.0f}%") if unit == "%" else (lambda v: f"{v:g}")
-    today = datetime.now(timezone.utc).date()
+    today = (metric.get("as_of") or datetime.now(timezone.utc)).date()   # the bins end at the analysis time
     def span(i):
         end = today - timedelta(days=7 * (len(values) - 1 - i))
         return f"{(end - timedelta(days=6)):%m/%d}–{end:%m/%d}"

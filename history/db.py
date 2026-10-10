@@ -469,6 +469,8 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 def migrate(conn: sqlite3.Connection) -> int:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for number, script in enumerate(MIGRATIONS[version:], start=version + 1):
+        if number == 15:
+            _one_active_alert(conn)
         with conn:
             conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {number};\nCOMMIT;")
         if number == 1:
@@ -485,6 +487,19 @@ def migrate(conn: sqlite3.Connection) -> int:
         if number == 11:
             _add_tracks(conn)
     return len(MIGRATIONS)
+
+
+def _one_active_alert(conn) -> None:
+    """Before migration 15's unique index: keep the newest active alert per
+    person / metric and close the rest (v14 has no close_reason yet, so the
+    reason goes in closed_by), so the index can build."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'trajectory_alerts'").fetchone():
+        return
+    with conn:
+        conn.execute("""UPDATE trajectory_alerts SET closed_at = opened_at, closed_by = 'data:升級時合併重複的提醒'
+                        WHERE closed_at IS NULL AND id NOT IN (
+                            SELECT MAX(id) FROM trajectory_alerts WHERE closed_at IS NULL
+                            GROUP BY person_id, metric)""")
 
 
 def _to_ten_point_scale(conn) -> None:

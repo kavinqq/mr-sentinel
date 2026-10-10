@@ -1068,6 +1068,75 @@ class TestTrajectory(DbCase):
         self.assertEqual((r["judged"], r["opened"]), (0, 0))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM trajectory_judgments").fetchone()[0], 1)
 
+    def open_one(self, **kw):
+        self.step(0, self.m(**kw))
+        self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7), **kw))
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_a_posterior_just_over_the_half_threshold_never_closes_on_old_calm(self):
+        self.open_one()
+        calm = dict(p_worse=0.2, p_worse_half=0.699, state="uncertain")
+        self.step(3, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), **calm))
+        self.step(4, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), **calm))
+        # day 20: same observations and state, exact probability now 0.701
+        r = self.step(20, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), p_worse=0.2, p_worse_half=0.701,
+                                 state="uncertain"))
+        self.assertEqual(r["closed"], 0)
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_the_same_samples_in_another_order_give_the_same_posterior(self):
+        from history import trajectory as tj
+        rv, bv, team = [2, 3, 2, 1, 3, 2], [4, 3, 4, 4, 3, 4, 4, 3], [3] * 30
+        seed = lambda r, b: ("p", "c", sorted(r), sorted(b))
+        a = tj.rating_change(rv, bv, team, 0.5, seed(rv, bv))
+        b = tj.rating_change(rv[::-1], bv[::-1], team, 0.5, seed(rv[::-1], bv[::-1]))
+        self.assertEqual(a, b)
+
+    def test_switching_the_comparison_basis_starts_a_new_streak(self):
+        def on(basis, ids):
+            m = self.m(recent_ids=ids)
+            m["obs"] = [f"S:{basis}"] + m["obs"]
+            return m
+        self.step(0, on("release 切片", tuple(range(1, 21))))
+        self.step(2, on("個人 MR", (1, 2, 3, 4, 21)))              # one new MR, a different basis
+        self.assertEqual(self.alerts(), [])
+        self.step(4, on("個人 MR", (1, 2, 3, 4, 21, 22, 23)))
+        self.assertEqual(len(self.alerts()), 1)                    # two on the same basis
+
+    def test_an_older_update_neither_closes_alerts_nor_moves_the_clock_back(self):
+        from history import trajectory as tj
+        self.open_one()
+        r = tj.update(self.conn, CFG, NOW + timedelta(days=1), {})
+        self.assertEqual(r["closed"], 0)
+        self.assertEqual(len(self.alerts()), 1)
+        self.assertEqual(db.get_state(self.conn, 'trajectory_as_of'),
+                         db.utc(NOW + timedelta(days=2)))
+
+    def test_a_judgment_in_the_same_second_as_a_manual_close_starts_the_next_episode(self):
+        from history import trajectory as tj
+        self.open_one()
+        closed_at = NOW + timedelta(days=3)
+        tj.end_tracking(self.conn, self.alerts()[0]["id"], "lead", "ok", closed_at)
+        self.step(3, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9)))          # same second as the close
+        self.step(35, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)))  # after cool-down
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_duplicate_active_alerts_from_v14_do_not_block_the_upgrade(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        full = db.MIGRATIONS
+        try:
+            db.MIGRATIONS = full[:14]
+            db.migrate(conn)
+        finally:
+            db.MIGRATIONS = full
+        for _ in range(2):
+            conn.execute("INSERT INTO trajectory_alerts(person_id, metric, kind, opened_at) VALUES (7, 'bug_rate', 'watch', '2026-01-01T00:00:00Z')")
+        conn.commit()
+        db.migrate(conn)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM trajectory_alerts WHERE closed_at IS NULL").fetchone()[0], 1)
+
     def test_ack_on_a_closed_alert_reports_failure(self):
         from history import trajectory as tj
         self.assertFalse(tj.acknowledge(self.conn, 999, "lead"))
