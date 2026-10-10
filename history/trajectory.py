@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import random
+import sqlite3
 import statistics
 from datetime import datetime, timedelta, timezone
 
@@ -54,7 +55,7 @@ METRICS = {
     "verification": {"label": "驗證有效性", "group": "主要品質訊號", "better": "higher", "alert": True,
                      "threshold": 0.5, "unit": "分", "kind": "rating",
                      "note": "把關:測試能不能抓到問題"},
-    "escape_rate": {"label": "merge 時未處理 finding 的比例", "group": "merge 與後續問題", "better": "lower",
+    "escape_rate": {"label": "merge 時未處理 finding 的比例(推定)", "group": "merge 與後續問題", "better": "lower",
                     "alert": True, "threshold": 0.15, "unit": "%", "kind": "rate",
                     "note": "bot review 過的 MR 中,merge 時仍有 finding 沒處理的比例(依目前討論串狀態推定)"},
     "bug_rate": {"label": "merge 後 30 天確認的後續 bug", "group": "merge 與後續問題", "better": "lower",
@@ -194,11 +195,13 @@ def _samples(conn, cfg: dict, now: datetime) -> dict:
     attributed = score.attribution(conn, cfg, now)
     ratings = score.latest_ratings(conn)
     followups = score.annotated_followups(conn, attributed["findings"] + attributed["unattributed"])
-    confirmed, pending = {}, {}
+    confirmed, pending, sources = {}, {}, {}
     for fu in followups:
         within = (fu.get("days_after") or 0) <= BUG_MATURITY
         if fu.get("verdict") == "confirmed" and within:
             confirmed[fu["feature_mr_id"]] = confirmed.get(fu["feature_mr_id"], 0) + 1
+            # one fix MR / one re-found finding = one cause, however many MRs it touches
+            sources.setdefault(fu["feature_mr_id"], set()).add(f"{fu['kind']}:{fu['source_ref']}")
         elif fu.get("verdict") is None and within:
             pending[fu["feature_mr_id"]] = pending.get(fu["feature_mr_id"], 0) + 1
     escaped, cases = {}, {}
@@ -222,7 +225,7 @@ def _samples(conn, cfg: dict, now: datetime) -> dict:
             "web_url": m["web_url"], "merged_at": _ts(m["merged_at"]), "reviewed": False,
             "cycle_hours": None, "self_merge": None, "grades": grades,
             "reasons": {c: (cats.get(c) or {}).get("reason") for c in CATEGORIES},
-            "escaped": False, "confirmed_bugs": 0, "pending_bugs": 0, "is_fix": None,
+            "escaped": False, "confirmed_bugs": 0, "bug_sources": [], "pending_bugs": 0, "is_fix": None,
             "files": None, "track": score.track_of(m["project"], cfg), "slice": True})
     for m in mrs.values():
         if m.get("release") or m["state"] != "merged" or not m["merged_at"] or m["author_id"] is None:
@@ -237,6 +240,7 @@ def _samples(conn, cfg: dict, now: datetime) -> dict:
             "grades": {c: (ratings.get(m["mr_id"], {}).get(c) or {}).get("score") for c in CATEGORIES},
             "reasons": {c: (ratings.get(m["mr_id"], {}).get(c) or {}).get("reason") for c in CATEGORIES},
             "escaped": escaped.get(m["mr_id"], False), "confirmed_bugs": confirmed.get(m["mr_id"], 0),
+            "bug_sources": sorted(sources.get(m["mr_id"], ())),
             "pending_bugs": pending.get(m["mr_id"], 0), "is_fix": bool(m["is_fix"]),
             "files": files.get(m["mr_id"]), "track": score.track_of(m["project"], cfg), "slice": False})
     return {"by_person": out, "cases": cases, "mrs": mrs}
@@ -264,7 +268,23 @@ def _obs(tag: str, items) -> list[str]:
     return sorted(f"{tag}:{i}" for i in items)
 
 
-def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=()) -> dict:
+def _stratum(r_all, b_all, need):
+    """Compare like with like: personal MRs when there are enough of them,
+    else release slices, else both — and then only if the mix did not move."""
+    rp = [x for x in r_all if not x[0]["slice"]]
+    bp = [x for x in b_all if not x[0]["slice"]]
+    rs = [x for x in r_all if x[0]["slice"]]
+    bs = [x for x in b_all if x[0]["slice"]]
+    if len(rp) >= need[0] and len(bp) >= need[1]:
+        return "個人 MR", rp, bp, True
+    if len(rs) >= need[0] and len(bs) >= need[1]:
+        return "release 切片", rs, bs, True
+    share = lambda xs, ys: len(ys) / len(xs) if xs else 0.0
+    moved = abs(share(r_all, rs) - share(b_all, bs)) >= 0.2
+    return "混合", r_all, b_all, not moved
+
+
+def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=(), all_mrs=None) -> dict:
     in_r, in_b, (b0, r0, end) = _windows(now)
     in_rb, in_bb, bug_bounds = _windows(now, BUG_MATURITY)
     R = [m for m in mrs if in_r(m["merged_at"])]
@@ -277,29 +297,35 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
         enough = n_r >= need[0] and n_b >= need[1]
         state = state_of(change) if enough and change else "insufficient"
         row = {"key": key, **meta, "n_recent": n_r, "n_base": n_b, "need": need, "state": state,
-               "obs": obs, "eligible": True, "blocked": None, **(change or {}), "weekly": weekly,
+               "obs": obs, "eligible": {"watch": True, "improve": True}, "blocked": None,
+               **(change or {}), "weekly": weekly,
                "evidence": evidence, **(extra or {})}
         row["state_text"] = STATE_TEXT.get(state, state)
         metrics.append(row)
         return row
 
     for c in CATEGORIES:
-        r = [(m, m["grades"][c]) for m in R if m["grades"][c] is not None]
-        b = [(m, m["grades"][c]) for m in B if m["grades"][c] is not None]
-        t = [m["grades"][c] for m in T if m["grades"][c] is not None]
+        r_all = [(m, m["grades"][c]) for m in R if m["grades"][c] is not None]
+        b_all = [(m, m["grades"][c]) for m in B if m["grades"][c] is not None]
+        stratum, r, b, comparable = _stratum(r_all, b_all, MIN["rating"])
+        t = [m["grades"][c] for m in T if m["grades"][c] is not None
+             and (stratum == "混合" or m["slice"] == (stratum == "release 切片"))]
         rv, bv = [g for _, g in r], [g for _, g in b]
         ch = rating_change(rv, bv, t, METRICS[c]["threshold"], (pid, c, rv, bv)) if r and b else None
         obs = _obs("R", (f"{m['mr_id']}{'s' if m['slice'] else ''}={g}" for m, g in r)) + \
             _obs("B", (f"{m['mr_id']}{'s' if m['slice'] else ''}={g}" for m, g in b))
-        support = sorted(r, key=lambda x: x[1])
         raw = {"raw_recent": round(statistics.mean(rv), 2) if rv else None,
-               "raw_base": round(statistics.mean(bv), 2) if bv else None}
-        add(c, ch, len(r), len(b), MIN["rating"], obs,
-            {"recent": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in support],
-             "base": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(b, key=lambda x: -x[1])]},
-            _weekly(mrs, now, lambda ms, c=c: round(statistics.mean(g), 2)
-                    if (g := [m["grades"][c] for m in ms if m["grades"][c] is not None]) else None),
-            {"slices_recent": sum(1 for m, _ in r if m["slice"]), **raw})
+               "raw_base": round(statistics.mean(bv), 2) if bv else None, "stratum": stratum}
+        row = add(c, ch, len(r), len(b), MIN["rating"], obs,
+                  {"recent": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(r, key=lambda x: x[1])],
+                   "base": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(b, key=lambda x: x[1])]},
+                  _weekly(mrs, now, lambda ms, c=c: round(statistics.mean(g), 2)
+                          if (g := [m["grades"][c] for m in ms if m["grades"][c] is not None]) else None),
+                  {"slices_recent": sum(1 for m, _ in r if m["slice"]), **raw})
+        if not comparable and row["state"] != "insufficient":
+            row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"],
+                       eligible={"watch": False, "improve": False},
+                       blocked="個人 MR 與 release 切片的比例差太多,不能直接比")
 
     rr = [m for m in R if m["reviewed"] and not m["slice"]]
     bb = [m for m in B if m["reviewed"] and not m["slice"]]
@@ -328,8 +354,10 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
                "base": sorted(({"mr": m, "value": m["confirmed_bugs"]} for m in mb_), key=lambda e: -e["value"])},
               [], {"x_recent": sum(rv), "x_base": sum(bv), "pending": sum(m["pending_bugs"] for m in mr_ + mb_),
                    "cohort": [d.strftime("%m-%d") for d in bug_bounds]})
-    if sum(rv) < 2:                       # a rate alert needs two affected MRs, not one
-        row.update(eligible=False, blocked="最近 cohort 確認的後續 bug 不到 2 個 MR")
+    causes = {src for m in mr_ if m["confirmed_bugs"] for src in m.get("bug_sources", [])}
+    if len(causes) < 2:                   # a worsening needs two independent causes; improving does not
+        row["eligible"] = {"watch": False, "improve": True}
+        row["blocked"] = f"最近 cohort 確認的獨立後續 bug 只有 {len(causes)} 個(要 2 個才提醒變差)"
 
     rc = [m for m in R if m["cycle_hours"] is not None]
     bc = [m for m in B if m["cycle_hours"] is not None]
@@ -353,8 +381,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
                "raw_base": round(statistics.median(bv), 1) if bv else None})
     if row["state"] != "insufficient" and sr is not None and sb is not None and \
             (max(sr, sb) > SELF_MERGE_MAX or abs(sr - sb) >= 0.2):
-        row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"], eligible=False,
-                   blocked=f"self-merge 比例 {sb:.0%} → {sr:.0%}")
+        row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"],
+                   eligible={"watch": False, "improve": False}, blocked=f"self-merge 比例 {sb:.0%} → {sr:.0%}")
 
     pr = [m for m in R if not m["slice"]]
     pb = [m for m in B if not m["slice"]]
@@ -398,10 +426,11 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
     case_cut = now - timedelta(days=CASE_DAYS)
     my_cases = []
     for f in cases:
-        mr = next((m for m in mrs if m["mr_id"] == f["mr_id"]), None)
-        when = _ts(f.get("created_at"))
+        mr = (all_mrs or {}).get(f["mr_id"])      # the MR the comment sits on (maybe a release)
+        when = _ts(mr["merged_at"]) if mr and mr.get("merged_at") else _ts(f.get("created_at"))
         if when and when > case_cut:
-            my_cases.append({"finding": f, "mr": mr})
+            my_cases.append({"finding": f, "mr": mr, "when": when})
+    my_cases.sort(key=lambda c: c["when"], reverse=True)
     return {"metrics": metrics, "context": context, "shifted": shifted, "together": together,
             "cases": my_cases, "n_recent": len(R), "n_base": len(B),
             "windows": {"base": (b0, r0), "recent": (r0, end), "bug": bug_bounds}}
@@ -412,52 +441,75 @@ def analyze(conn, cfg: dict, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     data = _samples(conn, cfg, now)
     roles = db.person_roles(conn)
-    members = [pid for pid in data["by_person"] if roles.get(pid, "member") == "member"]
+    members = [pid for pid in set(data["by_person"]) | {p for p in data["cases"] if p is not None}
+               if roles.get(pid, "member") == "member"]
     out = {}
     for pid in members:
-        team = [m for other in members if other != pid for m in data["by_person"][other]]
-        out[pid] = analyze_person(data["by_person"][pid], team, now, pid, data["cases"].get(pid, []))
+        team = [m for other in members if other != pid for m in data["by_person"].get(other, [])]
+        out[pid] = analyze_person(data["by_person"].get(pid, []), team, now, pid,
+                                  data["cases"].get(pid, []), data["mrs"])
     return out
 
 
 # ---------- judgments and alerts ----------
 
+BIT = {"watch": 1, "improve": 2}
+
+
+def _bits(eligible: dict) -> int:
+    return sum(b for k, b in BIT.items() if eligible.get(k))
+
+
 def _fingerprint(m: dict) -> str:
-    return hashlib.sha1(json.dumps([MODEL_VERSION, m["state"], m["obs"]]).encode()).hexdigest()
+    """Everything the judgment rests on: model, state, eligibility, the
+    observations (identity *and* value) and the probabilities the lifecycle reads."""
+    probs = [round(m.get(k) or 0, 2) for k in ("p_better", "p_worse", "p_better_half", "p_worse_half")]
+    return hashlib.sha1(json.dumps([MODEL_VERSION, m["state"], _bits(m["eligible"]), m["obs"], probs])
+                        .encode()).hexdigest()
 
 
-def _new_obs(a: dict, b: dict) -> int:
-    """Observations of the recent window in judgment `a` that judgment `b` had not seen."""
-    seen = set(json.loads(b["obs"] or "[]"))
-    return sum(1 for o in json.loads(a["obs"] or "[]") if o.startswith("R:") and o not in seen)
+def _ids(j) -> set[str]:
+    """Recent-window MR identities of a judgment — a re-grade of the same MR is not a new MR."""
+    return {o.split("=")[0] for o in json.loads(j["obs"] or "[]") if o.startswith("R:")}
 
 
-def _judge(conn, pid, m, as_of) -> bool:
-    """Store a judgment when what it saw changed; True if a new one was written."""
+def _judge(conn, pid, m, as_of) -> str:
+    """'new' (stored), 'same' (nothing changed) or 'stale' (older than what we have)."""
+    last = conn.execute("SELECT evidence, as_of FROM trajectory_judgments WHERE person_id = ? AND metric = ? "
+                        "ORDER BY id DESC LIMIT 1", (pid, m["key"])).fetchone()
+    if last and last["as_of"] > as_of:
+        return "stale"                                   # an out-of-order update: never rewrite history
     ev = _fingerprint(m)
-    last = conn.execute("SELECT evidence FROM trajectory_judgments WHERE person_id = ? AND metric = ? "
-                        "ORDER BY as_of DESC, id DESC LIMIT 1", (pid, m["key"])).fetchone()
     if last and last["evidence"] == ev:
-        return False
+        return "same"
     conn.execute("INSERT INTO trajectory_judgments(person_id, metric, as_of, evidence, n_recent, n_base, recent, "
                  "base, p_better, p_worse, p_better_half, p_worse_half, state, obs, eligible) "
                  "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  (pid, m["key"], as_of, ev, m["n_recent"], m["n_base"], m.get("recent"), m.get("base"),
                   m.get("p_better"), m.get("p_worse"), m.get("p_better_half"), m.get("p_worse_half"),
-                  m["state"], json.dumps(m["obs"]), int(m["eligible"])))
-    return True
+                  m["state"], json.dumps(m["obs"]), _bits(m["eligible"])))
+    return "new"
+
+
+def _after(conn, pid, key, judgment_id: int) -> list:
+    return conn.execute("SELECT * FROM trajectory_judgments WHERE person_id = ? AND metric = ? AND id > ? "
+                        "ORDER BY id DESC", (pid, key, judgment_id)).fetchall()
+
+
+def _last_id_by(conn, pid, key, as_of: str) -> int:
+    row = conn.execute("SELECT MAX(id) FROM trajectory_judgments WHERE person_id = ? AND metric = ? "
+                       "AND as_of <= ?", (pid, key, as_of)).fetchone()
+    return row[0] or 0
 
 
 def _lifecycle(conn, pid, m, now, as_of) -> tuple[int, int]:
-    """Open / close / mark stale — runs on every update, new judgment or not."""
-    opened = closed = 0
+    """Open / close / mark stale — on every update, new judgment or not."""
     key = m["key"]
     alert = conn.execute("SELECT * FROM trajectory_alerts WHERE person_id = ? AND metric = ? "
                          "AND closed_at IS NULL", (pid, key)).fetchone()
     if alert:
-        since_open = conn.execute("SELECT * FROM trajectory_judgments WHERE person_id = ? AND metric = ? "
-                                  "AND as_of > ? ORDER BY as_of DESC, id DESC LIMIT 2",
-                                  (pid, key, alert["opened_at"])).fetchall()
+        snap = json.loads(alert["snapshot"] or "{}")
+        since_open = _after(conn, pid, key, max(snap.get("judgments") or [0]))[:2]
         stale = int(m["state"] in ("insufficient", "not_comparable"))
         if stale != (alert["stale"] or 0):
             conn.execute("UPDATE trajectory_alerts SET stale = ? WHERE id = ?", (stale, alert["id"]))
@@ -465,43 +517,57 @@ def _lifecycle(conn, pid, m, now, as_of) -> tuple[int, int]:
         side = "p_worse_half" if alert["kind"] == "watch" else "p_better_half"
         calm = [j for j in since_open if j["state"] not in ("insufficient", "not_comparable")
                 and (j[side] or 0) < 0.70]
-        flipped = since_open and since_open[0]["state"] == ("strong_better" if alert["kind"] == "watch"
-                                                             else "strong_worse")
-        if held and (len(calm) == 2 and len(since_open) == 2 or flipped):
+        flipped = bool(since_open) and since_open[0]["state"] == (
+            "strong_better" if alert["kind"] == "watch" else "strong_worse")
+        if held and ((len(since_open) == 2 and len(calm) == 2) or flipped):
             conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = 'data', close_reason = ? "
                          "WHERE id = ?", (as_of, "方向反轉" if flipped else "連續兩次未再超過一半門檻",
                                           alert["id"]))
-            closed += 1
-        return opened, closed
+            return 0, 1
+        return 0, 0
     if not m["alert"]:
-        return opened, closed
+        return 0, 0
     last_closed = conn.execute("SELECT closed_at FROM trajectory_alerts WHERE person_id = ? AND metric = ? "
                                "AND closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 1", (pid, key)).fetchone()
-    after = last_closed[0] if last_closed else ""
     if last_closed and now - _ts(last_closed[0]) < timedelta(days=COOLDOWN_DAYS):
-        return opened, closed
-    two = conn.execute("SELECT * FROM trajectory_judgments WHERE person_id = ? AND metric = ? AND as_of > ? "
-                       "ORDER BY as_of DESC, id DESC LIMIT 2", (pid, key, after)).fetchall()
-    if len(two) < 2 or two[0]["state"] != two[1]["state"] or \
-            two[0]["state"] not in ("strong_worse", "strong_better") or not (two[0]["eligible"] and two[1]["eligible"]):
-        return opened, closed
-    fresh = _new_obs(two[0], two[1])
-    apart = _ts(two[0]["as_of"]) - _ts(two[1]["as_of"])
+        return 0, 0
+    # the current streak: judgments since the last close, newest first, while they keep
+    # the same strong state and that direction stays eligible
+    floor = _last_id_by(conn, pid, key, last_closed[0]) if last_closed else 0
+    history = _after(conn, pid, key, floor)
+    if not history or history[0]["state"] not in ("strong_worse", "strong_better"):
+        return 0, 0
+    kind = "watch" if history[0]["state"] == "strong_worse" else "improve"
+    streak = []
+    for j in history:
+        if j["state"] != history[0]["state"] or not ((j["eligible"] or 0) & BIT[kind]):
+            break
+        streak.append(j)
+    if len(streak) < 2:
+        return 0, 0
+    anchor, latest = streak[-1], streak[0]
+    fresh = len(_ids(latest) - _ids(anchor))            # new MRs since the streak began
+    apart = _ts(latest["as_of"]) - _ts(anchor["as_of"])
     if fresh < 2 and not (fresh >= 1 and apart >= timedelta(days=14)):
-        return opened, closed                         # not enough *new* evidence yet
-    kind = "watch" if two[0]["state"] == "strong_worse" else "improve"
-    snap = {k: m.get(k) for k in ("base", "recent", "diff", "interval", "p_better", "p_worse",
-                                  "n_base", "n_recent", "threshold")}
-    snap.update(model=MODEL_VERSION, judgments=[two[1]["id"], two[0]["id"]], new_obs=fresh)
-    conn.execute("INSERT INTO trajectory_alerts(person_id, metric, kind, opened_at, summary, snapshot) "
-                 "VALUES (?, ?, ?, ?, ?, ?)",
-                 (pid, key, kind, as_of, f"{m['label']} {m.get('base')} → {m.get('recent')}",
-                  json.dumps(snap, default=str)))
-    return opened + 1, closed
+        return 0, 0
+    snap = {k: m.get(k) for k in ("base", "recent", "raw_base", "raw_recent", "diff", "interval",
+                                  "p_better", "p_worse", "n_base", "n_recent", "threshold",
+                                  "x_base", "x_recent", "stratum")}
+    snap.update(model=MODEL_VERSION, judgments=[anchor["id"], latest["id"]], new_mrs=fresh,
+                streak=len(streak))
+    try:
+        conn.execute("INSERT INTO trajectory_alerts(person_id, metric, kind, opened_at, summary, snapshot) "
+                     "VALUES (?, ?, ?, ?, ?, ?)",
+                     (pid, key, kind, as_of, f"{m['label']} {m.get('raw_base', m.get('base'))} → "
+                                             f"{m.get('raw_recent', m.get('recent'))}",
+                      json.dumps(snap, default=str)))
+    except sqlite3.IntegrityError:
+        return 0, 0                                      # another update opened it first
+    return 1, 0
 
 
 def update(conn, cfg: dict, now: datetime | None = None, analyses: dict | None = None) -> dict:
-    """Judge every metric whose observations changed, then run every alert's lifecycle."""
+    """Judge every metric whose evidence changed, then run every alert's lifecycle."""
     now = now or datetime.now(timezone.utc)
     as_of = db.utc(now)
     analyses = analyses if analyses is not None else analyze(conn, cfg, now)
@@ -511,7 +577,10 @@ def update(conn, cfg: dict, now: datetime | None = None, analyses: dict | None =
             for m in a["metrics"]:
                 if m["state"] == "activity":
                     continue
-                judged += _judge(conn, pid, m, as_of)      # insufficient too: it breaks a streak
+                result = _judge(conn, pid, m, as_of)     # insufficient too: it breaks a streak
+                if result == "stale":
+                    continue
+                judged += result == "new"
                 o, c = _lifecycle(conn, pid, m, now, as_of)
                 opened, closed = opened + o, closed + c
         # people no longer evaluated (left, other team): their alerts end, the record stays
@@ -520,6 +589,7 @@ def update(conn, cfg: dict, now: datetime | None = None, analyses: dict | None =
                 conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = 'data', "
                              "close_reason = '不再評估此人' WHERE id = ?", (as_of, row["id"]))
                 closed += 1
+        db.set_state(conn, "trajectory_as_of", as_of)
     return {"judged": judged, "opened": opened, "closed": closed}
 
 
@@ -530,19 +600,22 @@ def open_alerts(conn) -> dict[int, list[dict]]:
     return out
 
 
-def acknowledge(conn, alert_id: int, actor: str, note: str = "", now: datetime | None = None) -> None:
-    """已檢視: a human looked. The alert keeps being tracked; nothing is closed."""
+def acknowledge(conn, alert_id: int, actor: str, note: str = "", now: datetime | None = None) -> bool:
+    """已檢視: a human looked. The alert keeps being tracked; nothing is closed.
+    False when the alert no longer exists or was already closed."""
     with conn:
-        conn.execute("UPDATE trajectory_alerts SET acknowledged_at = ?, acknowledged_by = ?, note = ? "
-                     "WHERE id = ? AND closed_at IS NULL",
-                     (db.utc(now) if now else db.now_iso(), actor, note.strip() or None, alert_id))
+        cur = conn.execute("UPDATE trajectory_alerts SET acknowledged_at = ?, acknowledged_by = ?, note = ? "
+                           "WHERE id = ? AND closed_at IS NULL",
+                           (db.utc(now) if now else db.now_iso(), actor, note.strip() or None, alert_id))
+    return cur.rowcount == 1
 
 
-def end_tracking(conn, alert_id: int, actor: str, reason: str, now: datetime | None = None) -> None:
+def end_tracking(conn, alert_id: int, actor: str, reason: str, now: datetime | None = None) -> bool:
     """結束追蹤: a human closes it, with a reason; the 28-day cool-down starts."""
     if not reason.strip():
         raise ValueError("結束追蹤要寫原因")
     with conn:
-        conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = ?, close_reason = ? "
-                     "WHERE id = ? AND closed_at IS NULL",
-                     (db.utc(now) if now else db.now_iso(), actor, reason.strip(), alert_id))
+        cur = conn.execute("UPDATE trajectory_alerts SET closed_at = ?, closed_by = ?, close_reason = ? "
+                           "WHERE id = ? AND closed_at IS NULL",
+                           (db.utc(now) if now else db.now_iso(), actor, reason.strip(), alert_id))
+    return cur.rowcount == 1

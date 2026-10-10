@@ -697,8 +697,9 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
     conn = history_conn()
     try:
         _, cfg = hdb.scoring_config(conn)
-        analyses = tj.analyze(conn, cfg)
+        analyses = {} if view == "closed" else tj.analyze(conn, cfg)     # closed: history only
         open_ = tj.open_alerts(conn)
+        as_of = hdb.get_state(conn, "trajectory_as_of")
         closed = [dict(r) for r in conn.execute(
             "SELECT * FROM trajectory_alerts WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 50")]
         last_sync = hdb.get_state(conn, "last_sync_at")
@@ -726,7 +727,15 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
         for al in open_.get(pid, []):
             m = by_key.get(al["metric"])
             if m:
-                alerts.append({**al, "m": m, "snap": json.loads(al["snapshot"] or "{}")})
+                snap = json.loads(al["snapshot"] or "{}")
+                fmt_unit = m["unit"]
+                if fmt_unit == "%":
+                    opened = f"{snap.get('x_base', 0)}/{snap.get('n_base', 0)} → {snap.get('x_recent', 0)}/{snap.get('n_recent', 0)}"
+                else:
+                    opened = f"{_fmt(snap.get('raw_base', snap.get('base')), fmt_unit)} → {_fmt(snap.get('raw_recent', snap.get('recent')), fmt_unit)}"
+                p_open = snap.get("p_worse") if al["kind"] == "watch" else snap.get("p_better")
+                alerts.append({**al, "m": m, "snap": snap, "opened_text": opened, "p_open": p_open,
+                               "now_matches": m["state"] == ("strong_worse" if al["kind"] == "watch" else "strong_better")})
         main_insufficient = all(by_key[k]["state"] == "insufficient"
                                 for k in ("requirements", "verification", "escape_rate", "bug_rate", "cycle_time"))
         row = {"pid": pid, "person": p, "name": (p.name or p.username) if p else str(pid), "a": a,
@@ -742,7 +751,7 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
             queue.append({"type": "together", "rank": 1, "row": row})
     queue.sort(key=lambda q: (q["rank"], q["row"]["name"]))
     counts = {"cases": sum(1 for q in queue if q["type"] == "case"),
-              "todo": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 1),
+              "todo": sum(1 for q in queue if q["type"] in ("alert", "together") and q["rank"] == 1),
               "tracking": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 2),
               "positive": sum(1 for q in queue if q["type"] == "alert" and q["rank"] == 3),
               "insufficient": sum(1 for r in rows if r["insufficient"])}
@@ -760,24 +769,24 @@ def trajectory_page(view: str = "todo", person: int | None = None) -> dict:
         c["name"] = (people[c["person_id"]].name or people[c["person_id"]].username) if c["person_id"] in people else c["person_id"]
         c["label"] = tj.METRICS.get(c["metric"], {}).get("label", c["metric"])
     return {"view": view, "rows": rows, "queue": shown, "counts": counts, "closed": closed if view == "closed" else [],
-            "windows": windows, "last_sync": last_sync, "person_filter": person,
+            "windows": windows, "last_sync": last_sync, "person_filter": person, "as_of": as_of,
             "all_people": sorted(((r["pid"], r["name"]) for r in rows), key=lambda x: x[1]) if not person else
             sorted(((pid, (people[pid].name or people[pid].username) if pid in people else pid) for pid in analyses), key=lambda x: str(x[1]))}
 
 
-def trajectory_ack(alert_id: int, actor: str, note: str = "") -> None:
+def trajectory_ack(alert_id: int, actor: str, note: str = "") -> bool:
     from history import trajectory as tj
     conn = history_conn()
     try:
-        tj.acknowledge(conn, alert_id, actor, note)
+        return tj.acknowledge(conn, alert_id, actor, note)
     finally:
         conn.close()
 
 
-def trajectory_end(alert_id: int, actor: str, reason: str) -> None:
+def trajectory_end(alert_id: int, actor: str, reason: str) -> bool:
     from history import trajectory as tj
     conn = history_conn()
     try:
-        tj.end_tracking(conn, alert_id, actor, reason)
+        return tj.end_tracking(conn, alert_id, actor, reason)
     finally:
         conn.close()

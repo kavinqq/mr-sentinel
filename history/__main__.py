@@ -61,6 +61,7 @@ def run(conn, config: dict, full: bool = False) -> dict:
         if scan.needed(conn):         # a new db / machine: the whole window first
             result.update(scan.scan(conn, config, progress=log.info))
             _evaluate(conn, config, result, force=False)
+            result["trajectory"] = trajectory.update(conn, db.scoring_config(conn)[1])
             return result
         try:                          # where the team works, beyond the reviewed projects
             _, cfg0 = db.scoring_config(conn)

@@ -143,6 +143,8 @@ def spark(metric):
     values = (metric or {}).get("weekly") or []
     pts = [(i, v) for i, v in enumerate(values) if v is not None]
     w, h, pad = 132, 32, 3
+    if not values:
+        return mark_safe('<span class="ms-spark-empty">不提供週走勢</span>')
     if len(pts) < 2:
         return mark_safe('<span class="ms-spark-empty">資料太少</span>')
     unit = metric.get("unit")
@@ -162,22 +164,29 @@ def spark(metric):
     if cur:
         segs.append(cur)
     band = x(len(values) - 4) - 2
+    summary = "、".join("無" if v is None else (f"{v * 100:.0f}%" if unit == "%" else f"{v:g}") for v in values)
     out = [f'<svg class="ms-spark" viewBox="0 0 {w} {h}" preserveAspectRatio="none" role="img" '
-           f'aria-label="{escape(metric.get("label", ""))} 近 12 週走勢">',
+           f'aria-label="{escape(metric.get("label", ""))} 近 12 週每週原始值(舊到新):{escape(summary)}">',
            f'<rect x="{band:.1f}" y="0" width="{w - band:.1f}" height="{h}" class="band"/>']
     for seg in segs:
         if len(seg) > 1:
             out.append('<polyline points="' + " ".join(f"{a:.1f},{b:.1f}" for a, b in seg) + '"/>')
+    from datetime import datetime, timedelta, timezone
     fmt = (lambda v: f"{v * 100:.0f}%") if unit == "%" else (lambda v: f"{v:g}")
+    today = datetime.now(timezone.utc).date()
+    def span(i):
+        end = today - timedelta(days=7 * (len(values) - 1 - i))
+        return f"{(end - timedelta(days=6)):%m/%d}–{end:%m/%d}"
     for i, v in pts:
-        out.append(f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="2.2"><title>{12 - i} 週前:{fmt(v)}</title></circle>')
+        out.append(f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="2.2"><title>{span(i)}:{fmt(v)}</title></circle>')
     out.append("</svg>")
     return mark_safe("".join(out))
 
 
 @register.filter
 def pct(value):
-    return "—" if value is None else f"{value * 100:.0f}%"
+    """A probability / share as a percentage; anything missing or not a number is —."""
+    return f"{value * 100:.0f}%" if isinstance(value, (int, float)) and not isinstance(value, bool) else "—"
 
 
 @register.filter

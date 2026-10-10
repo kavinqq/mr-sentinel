@@ -928,12 +928,13 @@ class TestTrajectory(DbCase):
     """The 個人軌跡 rules, including the edges the Codex review listed."""
 
     def m(self, state="strong_worse", recent_ids=(1, 2, 3, 4, 5), p_worse=0.97, p_worse_half=0.99,
-          eligible=True, key="escape_rate"):
+          eligible=True, key="escape_rate", value=1):
         from history import trajectory as tj
-        obs = [f"R:{i}=1" for i in recent_ids] + [f"B:{i}=0" for i in range(100, 110)]
+        obs = [f"R:{i}={value}" for i in recent_ids] + [f"B:{i}=0" for i in range(100, 110)]
         return {"key": key, **tj.METRICS[key], "n_recent": len(recent_ids), "n_base": 10, "recent": 0.5,
                 "base": 0.1, "p_better": 0.0, "p_worse": p_worse, "p_better_half": 0.0,
-                "p_worse_half": p_worse_half, "state": state, "obs": sorted(obs), "eligible": eligible}
+                "p_worse_half": p_worse_half, "state": state, "obs": sorted(obs),
+                "eligible": {"watch": eligible, "improve": eligible}}
 
     def step(self, when, metric):
         from history import trajectory as tj
@@ -1035,6 +1036,64 @@ class TestTrajectory(DbCase):
         row = self.conn.execute("SELECT close_reason FROM trajectory_alerts").fetchone()
         self.assertEqual(row[0], "不再評估此人")
 
+    def test_a_regrade_of_the_same_mrs_is_not_new_evidence(self):
+        self.step(0, self.m(value=1))
+        self.step(2, self.m(value=2))                                   # same 5 MRs, values changed
+        self.assertEqual(self.alerts(), [])
+
+    def test_one_new_mr_every_day_accumulates_from_the_streak_start(self):
+        ids = [1, 2, 3, 4, 5]
+        self.step(0, self.m(recent_ids=tuple(ids)))
+        ids.append(6)
+        self.step(1, self.m(recent_ids=tuple(ids)))                     # +1 since the start
+        self.assertEqual(self.alerts(), [])
+        ids.append(7)
+        self.step(2, self.m(recent_ids=tuple(ids)))                     # +2 since the start
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_current_probabilities_count_not_a_deduplicated_old_calm(self):
+        self.step(0, self.m())
+        self.step(2, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7)))
+        calm = dict(p_worse=0.1, p_worse_half=0.3, state="uncertain")
+        self.step(3, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8), **calm))
+        self.step(4, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), **calm))
+        # day 20: same MRs but the posterior moved back above the half threshold
+        self.step(20, self.m(recent_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9), p_worse=0.5, p_worse_half=0.74,
+                             state="worse"))
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_an_out_of_order_update_is_ignored(self):
+        self.step(10, self.m())
+        r = self.step(8, self.m(recent_ids=(1, 2, 3)))
+        self.assertEqual((r["judged"], r["opened"]), (0, 0))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM trajectory_judgments").fetchone()[0], 1)
+
+    def test_ack_on_a_closed_alert_reports_failure(self):
+        from history import trajectory as tj
+        self.assertFalse(tj.acknowledge(self.conn, 999, "lead"))
+        self.assertFalse(tj.end_tracking(self.conn, 999, "lead", "x"))
+
+    def test_a_shift_between_personal_mrs_and_slices_is_not_a_quality_change(self):
+        from history import trajectory as tj
+        def mk(i, slice_, grade, days_ago):
+            return {"mr_id": i, "project": "g/frontend/x", "merged_at": NOW - timedelta(days=days_ago),
+                    "reviewed": not slice_, "cycle_hours": None, "self_merge": None,
+                    "grades": {c: grade for c in CATEGORIES}, "reasons": {c: "" for c in CATEGORIES},
+                    "escaped": False, "confirmed_bugs": 0, "bug_sources": [], "pending_bugs": 0,
+                    "is_fix": None if slice_ else False, "files": 3, "track": "frontend", "slice": slice_}
+        base = [mk(i, False, 5, 40 + i % 30) for i in range(4)] + [mk(100 + i, True, 1, 40 + i % 30) for i in range(10)]
+        recent = [mk(200 + i, False, 5, 2 + i % 20) for i in range(4)] + [mk(300 + i, True, 1, 2 + i % 20) for i in range(4)] \
+            + [mk(400 + i, True, 1, 2) for i in range(0)]
+        # personal stays 5, slices stay 1 — only the mix moved (4/14 personal → 4/8)
+        a = tj.analyze_person(base + recent, [], NOW, 7)
+        req = next(x for x in a["metrics"] if x["key"] == "requirements")
+        # neither stratum has enough on its own and the mix moved (10/14 → 4/8 slices)
+        self.assertEqual((req["stratum"], req["state"]), ("混合", "not_comparable"))
+        more = recent + [mk(500 + i, True, 1, 3) for i in range(2)]   # now 6 recent slices
+        req = next(x for x in tj.analyze_person(base + more, [], NOW, 7)["metrics"] if x["key"] == "requirements")
+        self.assertEqual(req["stratum"], "release 切片")              # compared like with like
+        self.assertNotIn(req["state"], ("strong_worse", "strong_better"))
+
     def test_bug_cohort_excludes_slices_from_the_team_prior_and_gates_on_two(self):
         from history import trajectory as tj
         base = NOW - timedelta(days=80)
@@ -1048,8 +1107,8 @@ class TestTrajectory(DbCase):
         team = [mr(100 + i, sl=True) for i in range(50)]                 # slices: never a bug cohort
         a = tj.analyze_person(me, team, NOW, 7)
         bug = next(x for x in a["metrics"] if x["key"] == "bug_rate")
-        self.assertFalse(bug["eligible"])
-        self.assertIn("不到 2", bug["blocked"])
+        self.assertEqual(bug["eligible"], {"watch": False, "improve": True})   # improving is never blocked
+        self.assertIn("要 2 個", bug["blocked"])
 
 
 class TestScoreLog(DbCase):

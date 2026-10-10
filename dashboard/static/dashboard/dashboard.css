@@ -628,3 +628,12 @@ td.path code { word-break: break-all; }
 .ms .ms-why-row td::before { content: none !important; }
 .ms .ms-context li.wide { display: block; }
 .ms .ms-context li.wide span { margin-right: 6px; white-space: nowrap; }
+
+/* review fixes: hidden must win over the mobile display:block; 4.5:1 text on the state chips */
+.ms [hidden] { display: none !important; }
+.ms .ms-state.tone-watch, .ms .ms-state.tone-watch-soft { color: #7A4500; }
+.ms .ms-state.tone-down { color: #9A3A00; }
+.ms .ms-state.tone-improve { color: #17633F; }
+.ms .ms-state.tone-improve-soft, .ms .ms-state.tone-up { color: #006556; }
+.ms .ms-context li.is-shifted::after { content: "有變動"; margin-left: 6px; font-size: .78rem; font-weight: 700; color: #7A4500; }
+.ms .ms-mtable .ms-state { white-space: normal; text-align: left; }

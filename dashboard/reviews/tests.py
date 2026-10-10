@@ -16,7 +16,7 @@ from .models import Finding, FindingReview, ScoringConfig, SyncRequest
 
 ME = 42
 TABLES = ("score_events", "score_state", "email_aliases", "roster_additions", "finding_blame",
-          "mr_commits", "person_roles", "finding_reviews", "followup_reviews", "person_evaluations", "followups", "findings", "mr_files", "mrs", "people",
+          "mr_commits", "person_roles", "finding_reviews", "followup_reviews", "person_evaluations", "trajectory_alerts", "trajectory_judgments", "followups", "findings", "mr_files", "mrs", "people",
           "sync_requests", "sync_state")
 
 
@@ -323,6 +323,40 @@ class TestEvaluation(DashboardCase):
                                     {"kind": "evaluate", "next": reverse("person", args=[7])})
         self.assertEqual(resp["Location"], reverse("person", args=[7]))
         self.assertEqual(services.SyncRequest.objects.get().kind, "evaluate")
+
+
+class TestTrajectoryPage(DashboardCase):
+    def open_alert(self, stale=1):
+        conn = services.history_conn()
+        with conn:
+            conn.execute("INSERT INTO trajectory_alerts(person_id, metric, kind, opened_at, summary, snapshot, stale) "
+                         "VALUES (7, 'requirements', 'watch', '2026-10-01T00:00:00Z', 's', "
+                         "'{\"raw_base\": 3.2, \"raw_recent\": 2.4, \"p_worse\": 0.97, \"streak\": 2, \"new_mrs\": 3}', ?)",
+                         (stale,))
+            aid = conn.execute("SELECT id FROM trajectory_alerts").fetchone()[0]
+        conn.close()
+        return aid
+
+    def test_every_view_renders_even_with_a_stale_alert_on_thin_data(self):
+        self.open_alert()
+        for view in ("todo", "all", "positive", "closed"):
+            resp = self.client.get(reverse("trajectory"), {"view": view})
+            self.assertEqual(resp.status_code, 200, view)
+        resp = self.client.get(reverse("trajectory"), {"view": "todo"})
+        self.assertContains(resp, "目前無法重新評估")
+        self.assertContains(resp, "3.20 → 2.40")                      # what it was opened on
+
+    def test_ack_then_end_and_an_ended_alert_cannot_be_acknowledged(self):
+        aid = self.open_alert(stale=0)
+        url = reverse("trajectory_alert", args=[aid])
+        self.client.post(url, {"action": "ack", "note": "聊過"})
+        resp = self.client.post(url, {"action": "end", "reason": ""}, follow=True)
+        self.assertContains(resp, "要寫原因")
+        self.client.post(url, {"action": "end", "reason": "接手難的專案"})
+        resp = self.client.post(url, {"action": "ack"}, follow=True)
+        self.assertContains(resp, "已經結束或不存在")
+        resp = self.client.post(url, {"action": "ack", "next": "https://evil.example/"})
+        self.assertEqual(resp["Location"], reverse("trajectory"))       # never off-site
 
 
 class TestCrossAuthorFollowup(DashboardCase):

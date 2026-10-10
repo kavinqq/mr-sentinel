@@ -51,9 +51,11 @@ def person(request, author_id: int):
 
 
 def _back(request, fallback: str) -> str:
+    """Only a path on this site (never another host, never a bare URL name)."""
     back = request.POST.get("next", "")
-    if not url_has_allowed_host_and_scheme(back, allowed_hosts={request.get_host()}):
-        back = fallback                                     # never redirect off-site
+    if not back.startswith("/") or back.startswith("//") or not url_has_allowed_host_and_scheme(
+            back, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
+        back = fallback
     return back
 
 
@@ -232,11 +234,13 @@ def trajectory_alert(request, alert_id: int):
     action = request.POST.get("action")
     try:
         if action == "ack":
-            services.trajectory_ack(alert_id, request.user.username, request.POST.get("note", ""))
-            messages.success(request, "已記錄你看過了,警示會繼續追蹤")
+            ok = services.trajectory_ack(alert_id, request.user.username, request.POST.get("note", ""))
+            (messages.success if ok else messages.error)(
+                request, "已記錄你看過了,提醒會繼續追蹤" if ok else "這則提醒已經結束或不存在,沒有記錄")
         elif action == "end":
-            services.trajectory_end(alert_id, request.user.username, request.POST.get("reason", ""))
-            messages.success(request, "已結束追蹤;28 天內同一個指標不會再提醒")
+            ok = services.trajectory_end(alert_id, request.user.username, request.POST.get("reason", ""))
+            (messages.success if ok else messages.error)(
+                request, "已結束追蹤;28 天內同一個指標不會再提醒" if ok else "這則提醒已經結束或不存在")
         else:
             return HttpResponseBadRequest("unknown action")
     except ValueError as exc:
