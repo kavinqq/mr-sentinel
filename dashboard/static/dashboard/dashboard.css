@@ -768,7 +768,7 @@ td.path code { word-break: break-all; }
 .ms .ms-profile .b { fill: #fff; stroke: #8A8F98; stroke-width: 2; }
 .ms .ms-profile .r { fill: var(--g); stroke: #fff; stroke-width: 1.5; }
 .ms .ms-shifts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.ms .ms-shifts li { display: grid; grid-template-columns: 7.5em 1fr; align-items: center; gap: 10px; font-size: .92rem; }
+.ms .ms-shifts li { display: grid; grid-template-columns: 10em 1fr; align-items: center; gap: 10px; font-size: .92rem; }
 .ms .ms-shifts .k { color: var(--ms-muted); white-space: nowrap; }
 .ms .ms-shift { display: flex; align-items: center; gap: 10px; padding: 2px 6px; border-radius: 6px; }
 .ms .ms-shift svg { width: 140px; height: 18px; flex: none; }
@@ -819,3 +819,44 @@ a:hover .ms-ptag { box-shadow: inset 0 0 0 1.5px var(--pd); }
 .pc9 { --pb: #F6EDEA; --pt: #6E4D41; --pl: #E8D7D0; --pd: #A18072; }   /* bronze */
 .ms-nav-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--pd);
               margin-right: 6px; vertical-align: 1px; flex: none; }
+
+/* ---------- 每週變化 ---------- */
+.ms .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+.ms .key.up { background: #30A46C; } .ms .key.down { background: #E5484D; }
+.ms .ms-seg { display: inline-flex; border: 1px solid var(--ms-line-strong); border-radius: 8px; overflow: hidden; margin-right: 14px; vertical-align: middle; }
+.ms .ms-seg a { padding: 6px 14px; font-size: .92rem; color: var(--ms-muted); background: var(--ms-bg); min-height: 34px; display: inline-flex; align-items: center; }
+.ms .ms-seg a + a { border-left: 1px solid var(--ms-line-strong); }
+.ms .ms-seg a[aria-current="page"] { background: var(--ms-accent-soft); color: var(--ms-accent); font-weight: 600; }
+.ms .ms-legend-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ms .ms-weeks { margin: 16px 0 8px; }
+.ms .ms-weeks-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 8px; }
+.ms .ms-weeks-head h3 { margin: 0; font-size: 1.05rem; }
+.ms .ms-weeks-head .ms-panel-key { margin: 0; }
+.ms .ms-week-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.ms .ms-week-card { border: 1px solid var(--ms-line); border-radius: 12px; padding: 12px 14px 8px; background: var(--ms-bg); min-width: 0; }
+.ms .ms-week-card h4 { margin: 0; font-size: .98rem; }
+.ms .ms-week-now { margin: 2px 0 6px; font-size: .88rem; color: var(--ms-muted); font-variant-numeric: tabular-nums; }
+.ms .ms-week-now strong { color: var(--ms-text); }
+.ms .ms-week-now .d.tone-up-strong, .ms .ms-week-now .d.tone-up { color: #17633F; font-weight: 600; }
+.ms .ms-week-now .d.tone-down-strong, .ms .ms-week-now .d.tone-down { color: #B42318; font-weight: 600; }
+.ms .ms-week-empty { margin: 8px 0 12px; font-size: .88rem; color: var(--ms-muted); }
+.ms .ms-week { display: block; width: 100%; height: auto; overflow: visible; }
+.ms .ms-week .this, .ms .ms-wstrip .this { fill: #EEF0FB; }
+.ms .ms-week .grid { stroke: #ECECF0; }
+.ms .ms-week .zero, .ms .ms-wstrip .zero { stroke: #B4B7BF; stroke-width: 1; }
+.ms .ms-week .thr { stroke: #A0A4AB; stroke-dasharray: 2 3; }
+.ms .ms-week .axis { font-size: 9.5px; fill: #6B7079; }
+.ms .ms-week .n { font-size: 9px; fill: #6B7079; }
+.ms .ms-week .date { font-size: 9.5px; fill: #55595F; }
+.ms .ms-week .vline { fill: none; stroke: #5E6AD2; stroke-width: 1.5; opacity: .5; }
+.ms .ms-week circle.v { fill: #5E6AD2; stroke: #fff; stroke-width: 1; }
+.ms .ms-week circle.v.thin { fill: #fff; stroke: #5E6AD2; stroke-width: 1.4; }
+.ms .ms-week .bar, .ms .ms-wstrip .bar { fill: #B4B7BF; }
+.ms .bar.up { fill: #8FD1AE; } .ms .bar.up.s { fill: #218358; }
+.ms .bar.down { fill: #F4A8A9; } .ms .bar.down.s { fill: #CE2C31; }
+.ms .bar.act { fill: #A5ACE6; }
+.ms .bar.thin { opacity: .45; }
+.ms .ms-wstrip { display: block; width: 100%; height: auto; }
+.ms .ms-wstrip .dot { fill: #B4B7BF; }
+.ms .ms-wstrip.is-empty text { font-size: 10px; fill: #55595F; }
+.ms .ms-wstrip.is-empty .zero { opacity: .4; }

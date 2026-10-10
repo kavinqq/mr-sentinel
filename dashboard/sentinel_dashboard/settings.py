@@ -125,7 +125,7 @@ from django.templatetags.static import static  # noqa: E402
 UNFOLD = {
     "SITE_TITLE": "mr-sentinel",
     "SITE_HEADER": "mr-sentinel",
-    "SITE_SUBHEADER": "Review 歷史",
+    "SITE_SUBHEADER": "Review 紀錄",
     "SITE_SYMBOL": "shield_person",
     "SITE_URL": None,
     "THEME": "light",               # light only, no switcher

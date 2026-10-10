@@ -224,7 +224,8 @@ def trajectory(request):
     person = request.GET.get("person")
     data = services.trajectory_page(int(person) if person and person.isdigit() else None)
     title = f"個人軌跡 · {data['current']['name']}" if data["current"] else "個人軌跡"
-    return _page(request, "reviews/trajectory.html", title, **data)
+    view = "compare" if request.GET.get("view") == "compare" else "week"   # how the overview cards draw a metric
+    return _page(request, "reviews/trajectory.html", title, view=view, **data)
 
 
 @require_POST

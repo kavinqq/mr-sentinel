@@ -455,3 +455,43 @@ class TestRouter(DashboardCase):
         self.assertFalse(router.allow_migrate("history", "auth"))
         self.assertFalse(router.allow_migrate("default", "reviews"))
         self.assertIsNone(router.allow_migrate("default", "auth"))
+
+
+class TestWeeklyChange(TransactionTestCase):
+    """The week-by-week view: each week against the last earlier week with data, in
+    thresholds and turned so + is better."""
+
+    def deltas(self, **m):
+        from .templatetags.sentinel import week_deltas
+        return week_deltas(m)
+
+    def test_compares_with_the_last_week_that_had_data(self):
+        weeks = self.deltas(weekly=[3.0, None, 4.0], weekly_n=[2, 0, 3], unit="分", threshold=0.5, better="higher")
+        self.assertIsNone(weeks[0]["delta"])
+        self.assertIsNone(weeks[1]["delta"])
+        self.assertEqual(weeks[2]["prev"]["i"], 0)
+        self.assertAlmostEqual(weeks[2]["norm"], 2.0)          # +1 分 = two thresholds, better
+        self.assertEqual(weeks[2]["tone"], "up-strong")
+
+    def test_lower_is_better_turns_the_sign(self):
+        weeks = self.deltas(weekly=[0.2, 0.3], weekly_n=[5, 5], unit="%", threshold=0.15, better="lower")
+        self.assertLess(weeks[1]["norm"], 0)                    # +10 pp of escapes is worse
+        self.assertEqual(weeks[1]["tone"], "down")              # but under the threshold: light
+
+    def test_time_is_a_ratio_and_needs_an_hour(self):
+        weeks = self.deltas(weekly=[0.2, 0.4], weekly_n=[3, 3], unit="小時", threshold=0.25, better="lower")
+        self.assertEqual(weeks[1]["tone"], "down")              # twice as slow, but only 12 minutes
+        weeks = self.deltas(weekly=[2.0, 4.0], weekly_n=[3, 3], unit="小時", threshold=0.25, better="lower")
+        self.assertEqual(weeks[1]["tone"], "down-strong")
+
+    def test_activity_has_no_direction(self):
+        weeks = self.deltas(weekly=[1, 4], weekly_n=[1, 4], unit="個/週", threshold=None, better=None)
+        self.assertIsNone(weeks[1]["norm"])
+        self.assertEqual(weeks[1]["tone"], "act")
+
+    def test_charts_render_without_data(self):
+        from .templatetags.sentinel import weekchart, weekstrip, week_summary
+        for m in ({}, {"weekly": [None] * 12, "weekly_n": [0] * 12, "unit": "分", "threshold": 0.5, "better": "higher"}):
+            self.assertIn("ms-week", weekchart(m))
+            self.assertIn("ms-wstrip", weekstrip(m))
+        self.assertEqual(week_summary({}), {})

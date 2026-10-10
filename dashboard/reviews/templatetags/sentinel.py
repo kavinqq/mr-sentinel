@@ -330,3 +330,165 @@ def person_tag(pid, name, size=""):
     from ..services import person_color
     return mark_safe(f'<span class="ms-ptag pc{person_color(pid)}{" is-" + size if size else ""}">'
                      f'<i aria-hidden="true"></i>{escape(name)}</span>')
+
+
+def _week_span(metric, i, total):
+    from datetime import timedelta
+    today = (metric.get("as_of") or datetime.now(timezone.utc)).date()   # the bins end at the analysis time
+    end = today - timedelta(days=7 * (total - 1 - i))
+    return f"{(end - timedelta(days=6)):%m/%d}–{end:%m/%d}"
+
+
+def _fmt_value(v, unit):
+    return (f"{v * 100:.0f}%" if unit == "%" else f"{v:.2f} 分" if unit == "分"
+            else f"{v:g} 小時" if unit == "小時" else f"{v:g} 個")
+
+
+def week_deltas(metric) -> list[dict]:
+    """Each week against the last earlier week that had data: the raw change, and the
+    change in thresholds turned so + is better (time: the ratio; activity: no direction)."""
+    m = metric or {}
+    values, counts = m.get("weekly") or [], m.get("weekly_n") or []
+    unit, t = m.get("unit"), m.get("threshold")
+    sign = 1 if m.get("better") == "higher" else -1 if m.get("better") == "lower" else 0
+    out, prev = [], None
+    for i, v in enumerate(values):
+        n = counts[i] if i < len(counts) else None
+        d = {"i": i, "value": v, "n": n, "prev": prev, "delta": None, "norm": None, "tone": "none"}
+        if v is not None and prev is not None:
+            pv = prev["value"]
+            if unit == "小時":
+                raw = (max(v, .01) / max(pv, .01)) - 1
+                strong = abs(raw) >= t and abs(v - pv) >= 1
+            else:
+                raw = v - pv
+                strong = t is not None and abs(raw) >= t - 1e-9
+            d["delta"] = raw
+            if sign and t:
+                d["norm"] = sign * raw / t
+                d["tone"] = ("up" if d["norm"] > 0 else "down" if d["norm"] < 0 else "flat") + ("-strong" if strong else "")
+            else:
+                d["tone"] = "act"
+        out.append(d)
+        if v is not None:
+            prev = d
+    return out
+
+
+def _fmt_delta(d, unit):
+    raw = d["delta"]
+    return (f"{raw * 100:+.0f} 個百分點" if unit == "%" else f"{raw:+.2f} 分" if unit == "分"
+            else f"{raw * 100:+.0f}%" if unit == "小時" else f"{raw:+g} 個")
+
+
+@register.filter
+def week_summary(metric):
+    """This week in words: its value, how many samples, and the change from the last week with data."""
+    m = metric or {}
+    weeks = week_deltas(m)
+    if not weeks:
+        return {}
+    last = weeks[-1]
+    return {"value": None if last["value"] is None else _fmt_value(last["value"], m.get("unit")),
+            "n": last["n"], "tone": last["tone"],
+            "delta": None if last["delta"] is None else _fmt_delta(last, m.get("unit")),
+            "prev_span": _week_span(m, last["prev"]["i"], len(weeks)) if last["prev"] else None}
+
+
+def _tone_class(tone):
+    return {"up-strong": "up s", "up": "up", "down-strong": "down s", "down": "down", "flat": "flat", "act": "act"}.get(tone, "none")
+
+
+@register.filter
+def weekchart(metric):
+    """12 weeks, two panels: each week's raw value (dots), and under it the change from
+    the previous week with data — bars in thresholds, up = better, dashed = threshold;
+    a faded bar is a week with one sample. The figure under each bar is its sample count."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+    m = metric or {}
+    weeks = week_deltas(m)
+    if not weeks:
+        return mark_safe('<p class="ms-week-empty">不提供每週數字(要等 merge 滿 30 天才能確認後續 bug)</p>')
+    if sum(1 for w in weeks if w["value"] is not None) < 2:
+        return mark_safe('<p class="ms-week-empty">這 12 週有資料的週數太少,還畫不出每週變化</p>')
+    unit, total = m.get("unit"), len(weeks)
+    W, padl, padr = 320, 8, 8
+    step = (W - padl - padr) / total
+    cx = lambda i: padl + step * (i + .5)
+    vals = [w["value"] for w in weeks if w["value"] is not None]
+    lo, hi = (1, 5) if unit == "分" else (0, 1) if unit == "%" else (0, max(vals) * 1.15 or 1)
+    vy = lambda v: 60 - (v - lo) / (hi - lo) * 50          # value panel: y 10..60
+    base, unit_h = 104, 11                                   # change panel: 0 at y=104, threshold = 11 px
+    norms = [abs(w["norm"]) for w in weeks if w["norm"] is not None]
+    act_top = max([abs(w["delta"]) for w in weeks if w["delta"] is not None] or [1]) or 1
+    label = escape(m.get("label", ""))
+    out = [f'<svg class="ms-week" viewBox="0 0 {W} 150" role="img" aria-label="{label}:最近 12 週每週的數字,以及和前一個有資料的週相比的變化">',
+           f'<rect class="this" x="{cx(total - 1) - step / 2:.1f}" y="2" width="{step:.1f}" height="134" rx="4"/>',
+           f'<line class="grid" x1="{padl}" x2="{W - padr}" y1="{vy(lo):.1f}" y2="{vy(lo):.1f}"/>',
+           f'<line class="zero" x1="{padl}" x2="{W - padr}" y1="{base}" y2="{base}"/>']
+    if m.get("threshold"):
+        for s in (-1, 1):
+            out.append(f'<line class="thr" x1="{padl}" x2="{W - padr}" y1="{base - s * unit_h}" y2="{base - s * unit_h}"/>')
+    out.append(f'<text class="axis" x="{padl}" y="8">每週數字</text>'
+               f'<text class="axis" x="{padl}" y="78">比前一週{"(上 = 變好)" if m.get("threshold") else ""}</text>')
+    pts = [(cx(w["i"]), vy(w["value"])) for w in weeks if w["value"] is not None]
+    out.append('<polyline class="vline" points="' + " ".join(f"{x:.1f},{y:.1f}" for x, y in pts) + '"/>')
+    for w in weeks:
+        x, span = cx(w["i"]), _week_span(m, w["i"], total)
+        thin = " thin" if (w["n"] or 0) <= 1 else ""
+        if w["value"] is not None:
+            tip = f'{span}:{_fmt_value(w["value"], unit)}({w["n"]} 筆)'
+            if w["delta"] is not None:
+                tip += f',比 {_week_span(m, w["prev"]["i"], total)} {_fmt_delta(w, unit)}'
+            out.append(f'<g class="wk"><title>{escape(tip)}</title>'
+                       f'<circle class="v{thin}" cx="{x:.1f}" cy="{vy(w["value"]):.1f}" r="3.2"/>')
+            if w["delta"] is not None:
+                if w["norm"] is not None:
+                    h = max(-2.2, min(2.2, w["norm"])) * unit_h
+                else:
+                    h = w["delta"] / act_top * 2 * unit_h
+                top, hh = (base - h, h) if h >= 0 else (base, -h)
+                out.append(f'<rect class="bar {_tone_class(w["tone"])}{thin}" x="{x - step * .3:.1f}" y="{top:.1f}" '
+                           f'width="{step * .6:.1f}" height="{max(hh, 1.2):.1f}" rx="1.5"/>')
+            out.append("</g>")
+        out.append(f'<text class="n" x="{x:.1f}" y="{base + 32}" text-anchor="middle">{"" if not w["n"] else w["n"]}</text>')
+    for i in (0, total // 2, total - 1):
+        txt = "本週" if i == total - 1 else _week_span(m, i, total).split("–")[0]
+        out.append(f'<text class="date" x="{cx(i):.1f}" y="148" text-anchor="middle">{txt}</text>')
+    out.append("</svg>")
+    return mark_safe("".join(out))
+
+
+@register.filter
+def weekstrip(metric):
+    """The weekly change, small, for a card: 12 bars around a zero line, up = better."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+    m = metric or {}
+    weeks = week_deltas(m)
+    W, H, mid, u = 200, 26, 13, 5
+    if not weeks or sum(1 for w in weeks if w["delta"] is not None) == 0:
+        why = "不提供每週數字" if not weeks else "每週資料不足"
+        return mark_safe(f'<svg class="ms-wstrip is-empty" viewBox="0 0 {W} {H}" role="img" aria-label="{escape(m.get("label", ""))}:{why}">'
+                         f'<line class="zero" x1="2" x2="{W - 2}" y1="{mid}" y2="{mid}"/>'
+                         f'<text x="{W / 2:.0f}" y="{mid + 4}" text-anchor="middle">{why}</text></svg>')
+    step = (W - 4) / len(weeks)
+    act_top = max([abs(w["delta"]) for w in weeks if w["delta"] is not None] or [1]) or 1
+    s = week_summary(m)
+    name = f'{escape(m.get("label", ""))}:每週變化(上 = 變好);本週 {s.get("value") or "沒有資料"}' + (f',比前一週 {s["delta"]}' if s.get("delta") else "")
+    out = [f'<svg class="ms-wstrip" viewBox="0 0 {W} {H}" role="img" aria-label="{name}"><title>{name}</title>',
+           f'<rect class="this" x="{2 + step * (len(weeks) - 1):.1f}" y="0" width="{step:.1f}" height="{H}" rx="2"/>',
+           f'<line class="zero" x1="2" x2="{W - 2}" y1="{mid}" y2="{mid}"/>']
+    for w in weeks:
+        x = 2 + step * w["i"] + step * .2
+        if w["delta"] is None:
+            if w["value"] is not None:
+                out.append(f'<circle class="dot" cx="{x + step * .3:.1f}" cy="{mid}" r="1.6"/>')
+            continue
+        h = (max(-2.2, min(2.2, w["norm"])) if w["norm"] is not None else w["delta"] / act_top * 2) * u
+        top, hh = (mid - h, h) if h >= 0 else (mid, -h)
+        thin = " thin" if (w["n"] or 0) <= 1 else ""
+        out.append(f'<rect class="bar {_tone_class(w["tone"])}{thin}" x="{x:.1f}" y="{top:.1f}" width="{step * .6:.1f}" height="{max(hh, 1):.1f}" rx="1"/>')
+    out.append("</svg>")
+    return mark_safe("".join(out))

@@ -282,14 +282,17 @@ def _windows(now: datetime, shift: int = 0):
     return (lambda t: r0 < t <= end), (lambda t: b0 < t <= r0), (b0, r0, end)
 
 
-def _weekly(mrs: list[dict], now: datetime, fn) -> list:
-    """12 seven-day bins ending now — raw values, None where there is no sample."""
-    out = []
+def _weekly(mrs: list[dict], now: datetime, fn, keep=None) -> tuple[list, list]:
+    """12 seven-day bins ending now — raw values (None where there is no sample) and
+    how many samples each bin had (`keep` picks the ones the value is made of)."""
+    values, counts = [], []
     for w in range(11, -1, -1):
         end = now - timedelta(days=7 * w)
         start = end - timedelta(days=7)
-        out.append(fn([m for m in mrs if start < m["merged_at"] <= end]))
-    return out
+        ms = [m for m in mrs if start < m["merged_at"] <= end]
+        values.append(fn(ms))
+        counts.append(sum(1 for m in ms if keep is None or keep(m)))
+    return values, counts
 
 
 def _obs(tag: str, items) -> list[str]:
@@ -327,7 +330,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
         state = state_of(change) if enough and change else "insufficient"
         row = {"key": key, **meta, "n_recent": n_r, "n_base": n_b, "need": need, "state": state,
                "obs": obs, "eligible": {"watch": True, "improve": True}, "blocked": None,
-               **(change or {}), "weekly": weekly,
+               **(change or {}), "weekly": weekly[0] if weekly else [],
+               "weekly_n": weekly[1] if weekly else [],
                "evidence": evidence, **(extra or {})}
         row["state_text"] = STATE_TEXT.get(state, state)
         metrics.append(row)
@@ -350,7 +354,8 @@ def analyze_person(mrs: list[dict], team: list[dict], now: datetime, pid, cases=
                   {"recent": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(r, key=lambda x: x[1])],
                    "base": [{"mr": m, "value": g, "why": m["reasons"][c]} for m, g in sorted(b, key=lambda x: x[1])]},
                   _weekly(basis, now, lambda ms, c=c: round(statistics.mean(g), 2)
-                          if (g := [m["grades"][c] for m in ms if m["grades"][c] is not None]) else None),
+                          if (g := [m["grades"][c] for m in ms if m["grades"][c] is not None]) else None,
+                          lambda m, c=c: m["grades"][c] is not None),
                   {"slices_recent": sum(1 for m, _ in r if m["slice"]), **raw})
         if not comparable and row["state"] != "insufficient":
             row.update(state="not_comparable", state_text=STATE_TEXT["not_comparable"],

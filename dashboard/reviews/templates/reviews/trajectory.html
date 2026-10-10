@@ -140,6 +140,20 @@
       </ol>
     </section>
     {% endif %}
+    <section class="ms-weeks" aria-labelledby="wk{{ r.pid }}">
+      <div class="ms-weeks-head"><h3 id="wk{{ r.pid }}">每週變化</h3>
+        <p class="ms-panel-key">每一週和前一個有資料的週比 · <span class="key up"></span>變好 <span class="key down"></span>變差 · 深色 = 超過門檻 · 淡色 = 那週只有 1 筆 · 長條下的數字 = 筆數</p></div>
+      <ul class="ms-week-grid">
+        {% for m in r.weekly_metrics %}{% with s=m|week_summary %}
+        <li class="ms-week-card">
+          <h4>{{ short_label|get:m.key|default:m.label }}</h4>
+          {% if s.value %}<p class="ms-week-now">本週 <strong>{{ s.value }}</strong>{% if s.n %} · {{ s.n }} 筆{% endif %}{% if s.delta %} · <span class="d tone-{{ s.tone }}">比 {{ s.prev_span }} {{ s.delta }}</span>{% endif %}</p>
+          {% elif s %}<p class="ms-week-now ms-dim">本週沒有資料</p>{% endif %}
+          {{ m|weekchart }}
+        </li>
+        {% endwith %}{% endfor %}
+      </ul>
+    </section>
     <div class="ms-overview">
       <section class="ms-panel" aria-labelledby="pf{{ r.pid }}">
         <h3 id="pf{{ r.pid }}">八面向評分</h3>
@@ -228,7 +242,13 @@
   {% elif person_filter %}
   <p class="ms-empty-block">這位成員目前不在個人軌跡的分析範圍(非成員、已離職或還沒有資料)。<a class="ms-link" href="{% url 'trajectory' %}">回到全員一覽 →</a></p>
   {% else %}
-  <div class="ms-legend-row">{% gauge_key %}</div>
+  <div class="ms-legend-row">
+    <nav class="ms-seg" aria-label="卡片顯示方式">
+      <a href="?view=week"{% if view != "compare" %} aria-current="page"{% endif %}>每週變化</a>
+      <a href="?view=compare"{% if view == "compare" %} aria-current="page"{% endif %}>最近 28 天 vs 前 56 天</a>
+    </nav>
+    {% if view == "compare" %}{% gauge_key %}{% else %}<span class="ms-gauge-key"><span class="key up"></span>比前一週變好 <span class="key down"></span>變差 · 深色 = 超過門檻 · 最右邊 = 本週</span>{% endif %}
+  </div>
   <ul class="ms-flag-legend" aria-label="圖示說明">
     {% for f in "case watch together improve"|split %}<li>{% include "reviews/_traj_flag.html" with flag=f %}<span class="n">{% for k, v in counts.items %}{% if k == f %}{{ v }} 人{% endif %}{% endfor %}</span></li>{% endfor %}
   </ul>
@@ -245,7 +265,7 @@
       {% endif %}
       <ul class="ms-pcard-metrics">
         {% for m in r.main %}
-        <li class="tone-{{ m.tone }}"><span class="name" title="{{ m.label }}">{{ short_label|get:m.key }}</span>{{ m|gauge }}
+        <li class="tone-{{ m.tone }}"><span class="name" title="{{ m.label }}">{{ short_label|get:m.key }}</span>{% if view == "compare" %}{{ m|gauge }}{% else %}{{ m|weekstrip }}{% endif %}
           <span class="ms-state-ic tone-{{ m.tone }}" title="{{ m.state_text }}"><span class="material-symbols-outlined" aria-hidden="true">{% if m.tone == "watch" or m.tone == "watch-soft" %}priority_high{% elif m.tone == "improve" or m.tone == "improve-soft" %}star{% elif m.tone == "down" %}south_east{% elif m.tone == "up" %}north_east{% elif m.tone == "none" %}help{% else %}remove{% endif %}</span><span class="sr-only">{{ m.state_text }}</span></span></li>
         {% endfor %}
       </ul>

@@ -763,7 +763,7 @@ def _cached_analysis(conn, cfg):
 FLAG_ORDER = {"case": 0, "watch": 1, "together": 2, "improve": 3, "ok": 4, "thin": 5}
 FLAG_TEXT = {"case": "嚴重問題待確認", "watch": "需留意", "together": "一起查看", "improve": "明顯改善",
              "ok": "目前無提醒", "thin": "資料不足"}
-SHORT_LABEL = {"requirements": "需求符合度", "verification": "測試把關", "escape_rate": "未處理問題",
+SHORT_LABEL = {"activity": "MR 數", "requirements": "需求符合度", "verification": "測試把關", "escape_rate": "未處理問題",
                "bug_rate": "後續 bug", "cycle_time": "MR 處理時間"}
 FLAG_ICON = {"case": "error", "watch": "priority_high", "together": "join_inner", "improve": "trending_up",
              "ok": "", "thin": ""}
@@ -890,6 +890,7 @@ def trajectory_page(person: int | None = None) -> dict:
         row["main"] = [by_key[k] for k in ("requirements", "verification", "escape_rate", "bug_rate", "cycle_time")]
         row["flag"] = _flag(row)
         row["metrics_all"] = metrics
+        row["weekly_metrics"] = row["main"] + [by_key["activity"]]
         text = " ".join(a["shifted"])
         row["shift"] = {"frontend": "前端比例" in text, "fix": "修 bug" in text,
                         "self_merge": "自己 merge" in text, "files": "改幾個檔案" in text}
