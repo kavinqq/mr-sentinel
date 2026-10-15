@@ -27,18 +27,25 @@ def config(**review):
                        "claude": {"model": "opus"}, **review}}
 
 
+CLEAN = {"findings": []}
+
+
 class Harness:
     """Runs appeal.run_appeal with a scripted engine verdict and a GitLab whose
     discussions reflect the replies posted during the run."""
 
     def __init__(self, discussions, verdicts, engine_rc=0, meta=None, during_run=None,
-                 resolve_error=None, **review):
+                 resolve_error=None, deep=CLEAN, deep_rc=0, ctx_head="head2", **review):
         self.discussions = discussions
         self.during_run = during_run          # mutate GitLab while the "model" runs
         self.resolve_error = resolve_error
         self.verdicts = verdicts
         self.engine_rc = engine_rc
         self.meta = meta
+        self.deep = deep
+        self.deep_rc = deep_rc
+        self.ctx_head = ctx_head
+        self.deep_modes = []
         self.cfg = config(**review)
         self.replies, self.resolved, self.said = [], [], []
 
@@ -66,6 +73,12 @@ class Harness:
             out_path.write_text(json.dumps({"verdicts": self.verdicts}))
         return self.engine_rc
 
+    def run_deep(self, work, ctx_path, out_path, wt, cfg, mode):
+        self.deep_modes.append(mode)
+        if self.deep_rc == 0:
+            out_path.write_text(json.dumps(self.deep))
+        return self.deep_rc
+
     def run(self):
         with tempfile.TemporaryDirectory() as d:
             reviews = Path(d)
@@ -73,7 +86,7 @@ class Harness:
                 (reviews / "100").mkdir()
                 (reviews / "100" / "review_meta.json").write_text(json.dumps(self.meta))
             gl = appeal.gitlab_client
-            engine = mock.Mock(run_appeal=self.run_engine)
+            engine = mock.Mock(run_appeal=self.run_engine, run_review=self.run_deep)
             with mock.patch.object(appeal, "REVIEWS_DIR", reviews), \
                  mock.patch.object(gl, "get_current_user", return_value={"id": ME}), \
                  mock.patch.object(gl, "list_discussions",
@@ -87,6 +100,9 @@ class Harness:
                                    side_effect=lambda cfg, text, ts, b=None: self.said.append((text, b))), \
                  mock.patch.object(appeal.reviewer, "_maybe_auto_merge") as self.merge, \
                  mock.patch.object(appeal.history_sync, "sync_mr") as self.history, \
+                 mock.patch.object(appeal.fetch_mr, "build_context", return_value={
+                     "diff_refs": {"head_sha": self.ctx_head}}), \
+                 mock.patch.object(appeal.fetch_mr, "write_context"), \
                  mock.patch.object(appeal.engines, "get_engine", return_value=engine):
                 self.rc = appeal.run_appeal("g/app", "5", "100", self.cfg, {})
         return self
@@ -141,11 +157,56 @@ class TestRunAppeal(unittest.TestCase):
         self.assertEqual(h.merge.call_args.kwargs["reviewed_sha"], "h1")
         self.assertIsNone(h.said[-1][1])                      # nothing open -> no buttons
 
-    def test_all_accepted_after_lite_review_does_not_merge(self):
-        h = Harness([disputed("d1")], [{"id": "d1", "verdict": "accept", "reason": "ok"}],
-                    auto_merge_on_clean=True, meta={"mode": "lite", "head_sha": "h1"}).run()
+    ACCEPT = [{"id": "d1", "verdict": "accept", "reason": "ok"}]
+    LITE = {"mode": "lite", "head_sha": "h1"}
+
+    def test_all_accepted_after_lite_review_merges_only_once_a_deep_pass_is_clean(self):
+        h = Harness([disputed("d1")], self.ACCEPT, auto_merge_on_clean=True, meta=self.LITE).run()
+        self.assertEqual(h.deep_modes, ["deep"])
+        h.merge.assert_called_once()
+        # the deep pass covered the head it was run on, and that is what may merge
+        self.assertEqual(h.merge.call_args.kwargs["reviewed_sha"], "head2")
+
+    def test_deep_pass_with_findings_blocks_the_merge_and_posts_nothing(self):
+        """The model never saw the appeals: whatever it finds is reported, not commented
+        on the MR (that would stack a second round on threads the developer settled)."""
+        found = {"findings": [{"severity": "medium", "title": "仍會 None", "file": "a.py", "line": 3}]}
+        h = Harness([disputed("d1")], self.ACCEPT, deep=found,
+                    auto_merge_on_clean=True, meta=self.LITE).run()
         h.merge.assert_not_called()
-        self.assertIn("deep review 才自動合併", h.said[-1][0])
+        self.assertEqual([d for d, _ in h.replies], ["d1"])   # only the appeal verdict
+        text, buttons = h.said[-1]
+        self.assertIn("deep 確認發現 1 個問題", text)
+        self.assertIn("仍會 None", text)
+        self.assertEqual([json.loads(b["value"])["verb"] for b in buttons], ["rerun"])
+
+    def test_failed_deep_pass_never_merges(self):
+        h = Harness([disputed("d1")], self.ACCEPT, deep_rc=1,
+                    auto_merge_on_clean=True, meta=self.LITE).run()
+        h.merge.assert_not_called()
+        self.assertIn("deep 確認沒跑完", h.said[-1][0])
+
+    def test_malformed_deep_output_is_not_clean(self):
+        for bad in ({"oops": 1}, {"findings": "none"}, [], None, "clean"):
+            with self.subTest(bad=bad):
+                h = Harness([disputed("d1")], self.ACCEPT, deep=bad,
+                            auto_merge_on_clean=True, meta=self.LITE).run()
+                self.assertEqual(h.rc, 0)                       # a warning, not a crash
+                h.merge.assert_not_called()
+                self.assertIn("deep 確認沒跑完", h.said[-1][0])   # not "found 0 problems"
+
+    def test_head_moved_since_the_appeal_was_judged_skips_the_deep_pass(self):
+        h = Harness([disputed("d1")], self.ACCEPT, ctx_head="head3",
+                    auto_merge_on_clean=True, meta=self.LITE).run()
+        self.assertEqual(h.deep_modes, [])
+        h.merge.assert_not_called()
+        self.assertIn("請手動合併", h.said[-1][0])
+
+    def test_unknown_mode_still_asks_for_a_manual_merge(self):
+        h = Harness([disputed("d1")], self.ACCEPT, auto_merge_on_clean=True).run()
+        self.assertEqual(h.deep_modes, [])
+        h.merge.assert_not_called()
+        self.assertIn("請手動合併", h.said[-1][0])
 
     def test_auto_merge_off_never_merges(self):
         h = Harness([disputed("d1")], [{"id": "d1", "verdict": "accept", "reason": "ok"}],

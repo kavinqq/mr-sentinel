@@ -23,6 +23,7 @@ from logging.handlers import RotatingFileHandler
 
 import blocks
 import engines
+import fetch_mr
 import gitlab_client
 import review_common
 import reviewer
@@ -106,7 +107,8 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict) -> int:
                                            review_common.appeal_reply_body(verdict, reason, label))
             if verdict == "accept":
                 _resolve(base, token, project, iid, discussion_id)
-        return _finish(config, project, iid, web_url, verdicts, me, thread_ts, work)
+        return _finish(config, project, iid, web_url, verdicts, me, thread_ts, work,
+                       deep_gate=lambda: _deep_gate(config, project, iid, work, wt, mr["sha"]))
     finally:
         reviewer._run_git(["git", "-C", local, "worktree", "remove", "--force", str(wt)])
 
@@ -120,8 +122,36 @@ def _resolve(base, token, project, iid, discussion_id) -> None:
         log.warning("could not resolve %s on !%s: %s", discussion_id, iid, exc)
 
 
-def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work) -> int:
-    """Report from what GitLab says *now*, not from what we asked it to do."""
+DEEP_GATE_CONTEXT, DEEP_GATE_FINDINGS = "confirm_context.json", "confirm_findings.json"
+
+
+def _deep_gate(config, project, iid, work, wt, wt_sha) -> tuple[str, dict] | None:
+    """A deep pass over the MR as it is now: (head sha it covered, engine result).
+
+    None when it did not run to completion, or when the head moved since `wt` was
+    checked out (the pass would then cover code other than what the appeals judged).
+    Nothing is posted: the model has not seen the appeals, so a finding it repeats
+    would only stack a second round on threads the developer already settled."""
+    base, token, review_cfg = config["gitlab_url"], config["gitlab_token"], config["review"]
+    ctx = fetch_mr.build_context(base, token, project, iid)
+    head_sha = ctx["diff_refs"]["head_sha"]
+    if head_sha != wt_sha:
+        return None
+    ctx_path, out_path = work / DEEP_GATE_CONTEXT, work / DEEP_GATE_FINDINGS
+    fetch_mr.write_context(ctx_path, ctx)
+    if out_path.exists():
+        out_path.unlink()
+    engine = engines.get_engine(review_cfg["engine"])
+    if engine.run_review(work, ctx_path, out_path, wt, review_cfg, "deep") != 0:
+        return None
+    return head_sha, json.loads(out_path.read_text())
+
+
+def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_gate=None) -> int:
+    """Report from what GitLab says *now*, not from what we asked it to do.
+
+    `deep_gate` runs the confirmation a lite review needs before it may merge; None
+    (no worktree at hand) leaves such an MR for a manual merge."""
     base, token, review_cfg = config["gitlab_url"], config["gitlab_token"], config["review"]
     say = lambda text, buttons=None: reviewer._slack_say(config, text, thread_ts, buttons)
     # accepted appeals stop counting: re-record the MR and re-score everyone
@@ -140,11 +170,44 @@ def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work) -> int
         if meta.get("mode") == "deep" and meta.get("head_sha"):
             reviewer._maybe_auto_merge(config, base, token, project, iid, web_url, thread_ts,
                                        reviewed_sha=meta["head_sha"])
+        elif meta.get("mode") == "lite" and deep_gate:
+            _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts,
+                                   deep_gate, say)
         else:
             say(f":information_source: `{project}` !{iid}: 理由都成立,但上次是 "
                 f"{meta.get('mode') or '未知'} review,依規則只有 deep review 才自動合併 — "
                 f"請手動合併\n{web_url or ''}")
     return 0
+
+
+def _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts,
+                           deep_gate, say) -> None:
+    """Appeals cleared a lite review's findings. Lite is one gate, so the same rule as a
+    clean lite review applies: a deep pass must agree before anything merges."""
+    try:
+        gate = deep_gate()
+    except Exception:
+        log.exception("deep confirmation for !%s crashed", iid)
+        gate = None
+    retry = blocks.rerun_buttons(project, iid, label="🔁 重審")
+    if gate is not None and not (isinstance(gate[1], dict)
+                                 and isinstance(gate[1].get("findings"), list)):
+        gate = None                       # malformed output: neither clean nor a list to show
+    if gate is None:
+        say(f":warning: `{project}` !{iid}: 理由都成立,但 deep 確認沒跑完"
+            f"(或 MR 又有新 commit),不自動合併 — 請手動合併\n{web_url or ''}", retry)
+        return
+    head_sha, result = gate
+    if not review_common.is_clean_result(result):
+        found = [f for f in result["findings"] if isinstance(f, dict)]
+        listing = "\n".join(f"• {review_common.SEVERITY_EMOJI.get(f.get('severity'), '')} "
+                             f"{f.get('title', '?')} ({f.get('file', '?')}:{f.get('line') or '?'})"
+                             for f in found[:5])
+        say(f":warning: `{project}` !{iid}: 理由都成立,但 deep 確認發現 {len(found)} 個問題"
+            f",不自動合併 — 請確認後手動處理\n{listing}\n{web_url or ''}", retry)
+        return
+    reviewer._maybe_auto_merge(config, base, token, project, iid, web_url, thread_ts,
+                               reviewed_sha=head_sha)
 
 
 def spawn_detached(project: str, iid, mr_id) -> None:
