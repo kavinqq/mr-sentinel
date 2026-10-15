@@ -17,7 +17,6 @@ import logging
 import subprocess
 import sys
 import time
-import urllib.error
 from collections import Counter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -235,6 +234,15 @@ def prepare_worktree(project_path: str, iid, sha: str, wt: Path,
     return local, None
 
 
+def _remove_worktree(local: str, wt: Path) -> None:
+    """Cleanup runs after the completion message, so a git timeout here must not
+    turn a finished review into a crash (main() would redo it)."""
+    try:
+        _run_git(["git", "-C", local, "worktree", "remove", "--force", str(wt)])
+    except Exception:
+        log.exception("worktree cleanup failed: %s", wt)
+
+
 REVIEW_META = "review_meta.json"
 
 
@@ -254,7 +262,7 @@ def read_review_meta(work: Path) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-def spawn_detached(project_path: str, iid, mr_id, mode: str = "auto") -> None:
+def spawn_detached(project_path: str, iid, mr_id, mode: str = "auto", attempt: int = 0) -> None:
     """Launch one review in its own session.
 
     Shared by the poller (must not block its 60s loop) and the Slack listener
@@ -268,7 +276,7 @@ def spawn_detached(project_path: str, iid, mr_id, mode: str = "auto") -> None:
         subprocess.Popen(
             [sys.executable, str(SCRIPT_DIR / "reviewer.py"),
              "--project", project_path, "--iid", str(iid), "--mr-id", str(mr_id),
-             "--mode", mode],
+             "--mode", mode, "--attempt", str(attempt)],
             stdout=spawn_log, stderr=subprocess.STDOUT,
             start_new_session=True, cwd=str(SCRIPT_DIR),
         )
@@ -396,18 +404,101 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                                        label="🔁 修好了，重審" if findings else "🔁 重審")
         if posted:
             buttons += blocks.appeal_buttons(project_path, iid)
-        _slack_say_verdict(config, completion_text(project_path, iid, ctx.get("web_url"),
-                                                   findings, posted, language, mode),
-                           findings, thread_ts, buttons)
+        text = completion_text(project_path, iid, ctx.get("web_url"),
+                               findings, posted, language, mode)
+        if posted < len(findings):
+            text += (f"\n:warning: {len(findings) - posted} 則留言沒發成功"
+                     f"(GitLab 回錯誤),可以按重審補上")
+        _slack_say_verdict(config, text, findings, thread_ts, buttons)
         log.info("MR !%s reviewed: %s comment(s) posted", iid, posted)
 
-        # 9. auto-merge on a clean deep review (opt-in; hard-railed)
-        if auto_merge and review_common.auto_merge_eligible(mode, result):
-            _maybe_auto_merge(config, base, token, project_path, iid, ctx.get("web_url"),
-                              thread_ts, reviewed_sha=ctx["diff_refs"]["head_sha"])
+        # 9. auto-merge on a clean deep review (opt-in; hard-railed). The review is
+        #    announced by now: a crash here must not read as a failed review, which
+        #    main() would answer by deleting the comments and reviewing again.
+        try:
+            if auto_merge and review_common.auto_merge_eligible(mode, result):
+                _maybe_auto_merge(config, base, token, project_path, iid, ctx.get("web_url"),
+                                  thread_ts, reviewed_sha=ctx["diff_refs"]["head_sha"])
+        except Exception:
+            log.exception("auto-merge step of MR !%s crashed after the review was announced", iid)
         return 0
     finally:
-        _run_git(["git", "-C", local, "worktree", "remove", "--force", str(wt)])
+        _remove_worktree(local, wt)
+
+
+AUTO_RETRY_LIMIT = 1
+
+
+def reset_for_rerun(config: dict, project_path: str, iid) -> bool:
+    """Give a claimed MR back to the reviewer: drop our :eyes: and our unanswered
+    comments (a rerun would otherwise stack a second round on the first).
+
+    Same steps as slack_bot's rerun, minus Slack. Comments are deleted only once the
+    history db has them. Without that record nothing is touched and False comes
+    back: keeping the comments but rerunning would post a second round on top.
+    """
+    base, token = config["gitlab_url"], config["gitlab_token"]
+    me = gitlab_client.get_current_user(base, token)["id"]
+    if not history_sync.sync_mr(config, project_path, iid,
+                                trigger=f"自動重試前紀錄 {project_path.rsplit('/', 1)[-1]}!{iid}"):
+        return False
+    for emoji in gitlab_client.get_award_emojis(base, token, project_path, iid):
+        if emoji.get("name") == "eyes" and (emoji.get("user") or {}).get("id") == me:
+            gitlab_client.delete_award_emoji(base, token, project_path, iid, emoji["id"])
+    discussions = gitlab_client.list_discussions(base, token, project_path, iid)
+    for note_id in review_common.deletable_ai_notes(discussions, me):
+        gitlab_client.delete_note(base, token, project_path, iid, note_id)
+    return True
+
+
+def _retry_automatically(config: dict, state: dict, project_path: str, iid, mr_id,
+                         attempt: int, exc: Exception, mode: str = "auto") -> bool:
+    """One more try for a crash, so a transient GitLab/network error does not wait
+    for a human. Returns False when out of attempts or the reset itself failed;
+    the caller then reports the crash with a manual retry button."""
+    if attempt >= AUTO_RETRY_LIMIT:
+        return False
+    try:
+        if not reset_for_rerun(config, project_path, iid):
+            log.error("automatic retry of MR !%s skipped: review history could not be written", iid)
+            return False
+        spawn_detached(project_path, iid, mr_id, mode, attempt=attempt + 1)
+    except Exception:
+        log.exception("automatic retry of MR !%s could not start", iid)
+        return False
+    _slack_say(config, f":repeat: {project_path} MR !{iid} review 中途失敗 "
+                       f"({type(exc).__name__}: {str(exc)[:120]}),自動重試中",
+               review_common.slack_ts_for(state, mr_id))
+    return True
+
+
+SPAWN_LOCK_WAIT = 10
+RETRY_LOCK_WAIT = 60
+
+
+def take_lock(lock_file, wait: float = 0) -> bool:
+    """Take the per-MR lock, polling for up to `wait` seconds.
+
+    A review is spawned while its spawner (the Slack rerun, or a crashed review's
+    automatic retry) still holds the lock around its reset, so the child waits for
+    that to end instead of mistaking the spawner for a review already running."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
+
+
+def _report_crash(config: dict, state: dict, project_path: str, iid, mr_id, exc: Exception) -> None:
+    _slack_say(config, f":boom: {project_path} MR !{iid} review 中途失敗 "
+                       f"({type(exc).__name__}: {str(exc)[:120]}),已完成的部分保留在 GitLab;"
+                       f"可以按重審再試",
+               review_common.slack_ts_for(state, mr_id),
+               blocks.rerun_buttons(project_path, iid, label="🔁 再試一次"))
 
 
 def main() -> int:
@@ -417,6 +508,8 @@ def main() -> int:
     ap.add_argument("--mr-id", required=True)
     ap.add_argument("--mode", choices=("auto", "lite", "deep"), default="auto",
                     help="force review depth (default: pick by MR size)")
+    ap.add_argument("--attempt", type=lambda v: max(int(v), 0), default=0,
+                    help="automatic retries already spent on this MR (set by the reviewer itself)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -430,24 +523,37 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
 
-    config = load_config()
-    state = load_state() or {}
+    try:
+        config = load_config()
+    except (Exception, SystemExit):
+        # without a usable config there is no Slack token either; reviewer.log is the only trace
+        log.exception("config unusable, review of MR !%s not started", args.iid)
+        return 1
+    try:
+        state = load_state() or {}
+    except (OSError, ValueError):
+        # only costs us the Slack thread; the crash warning below must still reach someone
+        log.exception("state.json unreadable; replying top-level")
+        state = {}
 
     lock_path = REVIEWS_DIR / f".lock-{args.mr_id}"
     with open(lock_path, "w") as lock_file:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        if not take_lock(lock_file, RETRY_LOCK_WAIT if args.attempt > 0 else SPAWN_LOCK_WAIT):
             log.info("review for MR !%s already running, skipping", args.iid)
             return 0
         try:
             return run_review(args.project, args.iid, args.mr_id, config, state, args.dry_run,
                               force_mode=args.mode)
-        except urllib.error.HTTPError as exc:
-            log.error("API error (token scope?): %s", exc)
-            return 1
-        except Exception:
-            log.exception("unexpected error for MR !%s", args.iid)
+        except Exception as exc:
+            # the MR may already carry our :eyes: (claimed = never retried by the
+            # poller), so a log-only failure would leave it silently unreviewed
+            log.exception("review of MR !%s failed", args.iid)
+            if args.dry_run:
+                return 1
+            # reset + spawn stay under the lock; a Slack rerun refuses while it is held
+            if not _retry_automatically(config, state, args.project, args.iid, args.mr_id,
+                                        args.attempt, exc, args.mode):
+                _report_crash(config, state, args.project, args.iid, args.mr_id, exc)
             return 1
 
 

@@ -454,6 +454,42 @@ class TestButtons(unittest.TestCase):
                 h.bot.on_socket_event("interactive", click_payload(["g/app!481"]))
             spawn.assert_not_called()
 
+    def test_press_while_a_review_runs_keeps_the_buttons_and_touches_nothing(self):
+        import fcntl
+        with BotHarness() as h, tempfile.TemporaryDirectory() as reviews, \
+             mock.patch.object(slack_bot.reviewer, "REVIEWS_DIR", Path(reviews)), \
+             open(Path(reviews) / ".lock-100", "w") as running, \
+             mock.patch.object(slack_bot.gitlab_client, "delete_note") as delete_note:
+            fcntl.flock(running, fcntl.LOCK_EX)           # a reviewer holds the MR's lock
+            spawn, update, _ = self.press(h, click_payload(["g/app!481"]))
+        spawn.assert_not_called()
+        delete_note.assert_not_called()
+        update.assert_not_called()
+        self.assertIn("正在 review", h.last)
+
+    def test_rerun_holds_the_lock_while_it_resets_and_spawns(self):
+        """No gap between "is a review running?" and the reset, or a review could start
+        in it and have its claim and comments deleted underneath."""
+        import fcntl
+        held_during_spawn = []
+        with BotHarness() as h, tempfile.TemporaryDirectory() as reviews, \
+             mock.patch.object(slack_bot.reviewer, "REVIEWS_DIR", Path(reviews)):
+            def spawn(*_):
+                with open(Path(reviews) / ".lock-100", "w") as probe:
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        held_during_spawn.append(False)
+                    except BlockingIOError:
+                        held_during_spawn.append(True)
+            gl = slack_bot.gitlab_client
+            with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
+                 mock.patch.object(gl, "get_award_emojis", return_value=[]), \
+                 mock.patch.object(gl, "list_discussions", return_value=[]), \
+                 mock.patch.object(slack_bot.reviewer, "spawn_detached", side_effect=spawn), \
+                 mock.patch.object(slack_bot.slack_client, "chat_update"):
+                h.bot.on_socket_event("interactive", click_payload(["g/app!481"]))
+        self.assertEqual(held_during_spawn, [True])
+
     def test_second_press_of_the_same_message_is_ignored(self):
         with BotHarness() as h:
             self.press(h, click_payload(["g/app!481"]))

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import blocks
 import gitlab_client
 import overrides
 import review_common
@@ -134,8 +135,11 @@ def notify_slack(config: dict, text: str) -> str | None:
     return None
 
 
-def maybe_spawn_review(config: dict, mr: dict, project_path: str) -> None:
-    """Detached spawn so a multi-minute review never blocks the 60s poll loop."""
+def maybe_spawn_review(config: dict, mr: dict, project_path: str, thread_ts: str | None = None) -> None:
+    """Detached spawn so a multi-minute review never blocks the 60s poll loop.
+
+    The MR is already marked seen, so a failed spawn is never retried by the poller:
+    it is surfaced in Slack with a rerun button instead."""
     if not review_common.is_review_target(project_path, config.get("review", {})):
         return
     try:
@@ -143,6 +147,9 @@ def maybe_spawn_review(config: dict, mr: dict, project_path: str) -> None:
         log.info("spawned review: %s !%s", project_path, mr["iid"])
     except Exception:
         log.exception("failed to spawn review (notification unaffected): !%s", mr["iid"])
+        reviewer._slack_say(config, f":warning: {project_path} MR !{mr['iid']} 沒能啟動 review,"
+                                    f"可以按重審再試", thread_ts,
+                            blocks.rerun_buttons(project_path, mr["iid"], label="🔁 重審"))
 
 
 # ---------- main flow ----------
@@ -241,7 +248,7 @@ def run_once(config: dict, state_path: Path, dry_run: bool) -> int:
             if ts:
                 state["slack_ts"][str(mr["id"])] = ts
             save_state(state, state_path)
-            maybe_spawn_review(config, mr, project_path)
+            maybe_spawn_review(config, mr, project_path, ts)
 
     if dry_run:
         return 0

@@ -1,5 +1,7 @@
 """Tests for reviewer pure helpers."""
+import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -300,3 +302,179 @@ class TestAutoMergeCiDetection(unittest.TestCase):
 
     def test_ci_lookup_failure_blocks(self):
         self._run(RuntimeError("500")).merge_mr.assert_not_called()
+
+
+class TestMainCrashReport(unittest.TestCase):
+    """A claimed MR is never retried by the poller: every crash must be retried once
+    automatically, and after that reach Slack with a manual retry button."""
+
+    def _main(self, exc, argv_extra=(), reset=True):
+        said = []
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "SCRIPT_DIR", Path(d)), \
+             mock.patch.object(reviewer, "load_config", return_value={}), \
+             mock.patch.object(reviewer, "load_state", return_value={}), \
+             mock.patch.object(reviewer, "run_review", side_effect=exc), \
+             mock.patch.object(reviewer, "reset_for_rerun", return_value=reset) as reset_mock, \
+             mock.patch.object(reviewer, "spawn_detached") as spawn, \
+             mock.patch.object(reviewer, "_slack_say",
+                               side_effect=lambda cfg, text, ts=None, b=None: said.append((text, b))), \
+             mock.patch("sys.argv", ["reviewer.py", "--project", "g/app", "--iid", "5",
+                                     "--mr-id", "100", *argv_extra]), \
+             self.assertLogs("mr_sentinel.reviewer", "ERROR"):
+            rc = reviewer.main()
+        return rc, said, reset_mock, spawn
+
+    def test_first_crash_retries_automatically(self):
+        rc, said, reset, spawn = self._main(
+            urllib.error.HTTPError("u", 500, "Internal Server Error", {}, None))
+        self.assertEqual(rc, 1)
+        reset.assert_called_once()
+        spawn.assert_called_once_with("g/app", "5", "100", "auto", attempt=1)
+        self.assertIn("自動重試", said[-1][0])
+        self.assertIn("HTTPError", said[-1][0])
+
+    def test_retry_keeps_the_requested_depth(self):
+        _, _, _, spawn = self._main(RuntimeError("boom"), ("--mode", "deep"))
+        spawn.assert_called_once_with("g/app", "5", "100", "deep", attempt=1)
+
+    def test_negative_attempt_cannot_extend_the_retry_budget(self):
+        _, _, reset, spawn = self._main(RuntimeError("boom"), ("--attempt", "-5"))
+        spawn.assert_called_once_with("g/app", "5", "100", "auto", attempt=1)
+
+    def test_crash_after_the_retry_is_reported_with_button(self):
+        _, said, reset, spawn = self._main(RuntimeError("boom"), ("--attempt", "1"))
+        reset.assert_not_called()
+        spawn.assert_not_called()
+        text, buttons = said[-1]
+        self.assertIn("中途失敗", text)
+        self.assertIn("RuntimeError", text)
+        self.assertTrue(buttons)
+
+    def test_incomplete_reset_reports_instead_of_retrying(self):
+        """Old comments kept (history write failed) -> a retry would post a second round."""
+        _, said, _, spawn = self._main(RuntimeError("boom"), reset=False)
+        spawn.assert_not_called()
+        self.assertTrue(said[-1][1])
+
+    def test_failed_reset_reports_instead_of_retrying(self):
+        said = []
+        with mock.patch.object(reviewer, "reset_for_rerun", side_effect=OSError("gitlab down")), \
+             mock.patch.object(reviewer, "spawn_detached") as spawn, \
+             mock.patch.object(reviewer, "_slack_say",
+                               side_effect=lambda cfg, text, ts=None, b=None: said.append((text, b))), \
+             self.assertLogs("mr_sentinel.reviewer", "ERROR"):
+            self.assertFalse(reviewer._retry_automatically(
+                {}, {}, "g/app", 5, 100, 0, RuntimeError("x")))
+        spawn.assert_not_called()
+        self.assertEqual(said, [])
+
+    def test_dry_run_stays_off_slack_and_never_retries(self):
+        _, said, reset, _ = self._main(RuntimeError("boom"), ("--dry-run",))
+        self.assertEqual(said, [])
+        reset.assert_not_called()
+
+
+class TestCrashAfterCompletion(unittest.TestCase):
+    """Once the completion message is out, nothing after it may read as a failed
+    review: main() would answer by deleting the comments and reviewing again."""
+
+    def _run_review(self, merge_side_effect=None, cleanup_side_effect=None):
+        cfg = {"gitlab_url": "http://gl", "gitlab_token": "t",
+               "review": {"language": "zh", "engine": "claude", "auto_merge_on_clean": True}}
+        ctx = {"diff_refs": {"head_sha": "h"}, "stats": {"files": 1, "lines": 1}, "web_url": "u"}
+        clean = {"findings": []}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "fetch_mr") as fm, \
+             mock.patch.object(reviewer, "engines"), \
+             mock.patch.object(reviewer, "post_comment") as pc, \
+             mock.patch.object(reviewer, "history_sync"), \
+             mock.patch.object(reviewer, "history_rate"), \
+             mock.patch.object(reviewer, "prepare_worktree", return_value=("/clone", None)), \
+             mock.patch.object(reviewer, "_review_with_confirmation", return_value=(clean, "deep")), \
+             mock.patch.object(reviewer, "_slack_say_verdict") as announced, \
+             mock.patch.object(reviewer, "_maybe_auto_merge", side_effect=merge_side_effect), \
+             mock.patch.object(reviewer, "_run_git", side_effect=cleanup_side_effect):
+            gl.get_current_user.return_value = {"id": 7}
+            gl.get_award_emojis.return_value = []
+            fm.build_context.return_value = ctx
+            pc.post_findings.return_value = 0
+            with self.assertLogs("mr_sentinel.reviewer", "ERROR"):
+                rc = reviewer.run_review("g/app", 5, 100, cfg, {}, False)
+        return rc, announced
+
+    def test_auto_merge_crash_after_the_announcement_is_not_a_failed_review(self):
+        rc, announced = self._run_review(merge_side_effect=RuntimeError("boom"))
+        self.assertEqual(rc, 0)
+        announced.assert_called_once()
+
+    def test_worktree_cleanup_timeout_is_not_a_failed_review(self):
+        import subprocess
+        rc, announced = self._run_review(
+            cleanup_side_effect=subprocess.TimeoutExpired("git", 120))
+        self.assertEqual(rc, 0)
+        announced.assert_called_once()
+
+
+class TestUnusableConfig(unittest.TestCase):
+    def test_config_failure_is_logged_not_raised(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "SCRIPT_DIR", Path(d)), \
+             mock.patch.object(reviewer, "load_config", side_effect=SystemExit("config not found")), \
+             mock.patch.object(reviewer, "run_review") as run, \
+             mock.patch("sys.argv", ["reviewer.py", "--project", "g/app", "--iid", "5",
+                                     "--mr-id", "100"]), \
+             self.assertLogs("mr_sentinel.reviewer", "ERROR"):
+            self.assertEqual(reviewer.main(), 1)
+        run.assert_not_called()
+
+
+class TestTakeLock(unittest.TestCase):
+    def test_retry_waits_for_the_parent_to_release_the_lock(self):
+        import fcntl
+        with tempfile.NamedTemporaryFile() as a, open(a.name) as b:
+            fcntl.flock(a, fcntl.LOCK_EX)
+            with mock.patch.object(reviewer.time, "sleep",
+                                   side_effect=lambda _: fcntl.flock(a, fcntl.LOCK_UN)):
+                self.assertTrue(reviewer.take_lock(b, wait=5))
+
+    def test_first_attempt_gives_up_at_once_when_a_review_is_running(self):
+        import fcntl
+        with tempfile.NamedTemporaryFile() as a, open(a.name) as b:
+            fcntl.flock(a, fcntl.LOCK_EX)
+            self.assertFalse(reviewer.take_lock(b))
+
+
+class TestResetForRerun(unittest.TestCase):
+    CFG = {"gitlab_url": "http://gl", "gitlab_token": "t"}
+
+    def _run(self, recorded):
+        with mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "history_sync") as hs:
+            gl.get_current_user.return_value = {"id": 7}
+            gl.get_award_emojis.return_value = [
+                {"id": 1, "name": "eyes", "user": {"id": 7}},
+                {"id": 2, "name": "eyes", "user": {"id": 99}},
+                {"id": 3, "name": "thumbsup", "user": {"id": 7}}]
+            gl.list_discussions.return_value = [{"notes": [
+                {"id": 50, "author": {"id": 7},
+                 "body": "x " + reviewer.review_common.SIGNATURE_MARKER}]}]
+            hs.sync_mr.return_value = recorded
+            result = reviewer.reset_for_rerun(self.CFG, "g/app", 5)
+        return result, gl
+
+    def test_drops_only_our_eyes_and_our_unanswered_comments(self):
+        result, gl = self._run(recorded=True)
+        self.assertTrue(result)
+        gl.delete_award_emoji.assert_called_once_with("http://gl", "t", "g/app", 5, 1)
+        gl.delete_note.assert_called_once_with("http://gl", "t", "g/app", 5, 50)
+
+    def test_touches_nothing_when_the_history_write_failed(self):
+        result, gl = self._run(recorded=False)
+        self.assertFalse(result)
+        gl.delete_award_emoji.assert_not_called()
+        gl.delete_note.assert_not_called()

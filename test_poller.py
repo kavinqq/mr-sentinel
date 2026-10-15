@@ -111,6 +111,19 @@ class TestGroupPollingAndInitGuard(unittest.TestCase):
                 poller.maybe_spawn_review(CFG, mr, "group/backend-app")
                 pop.assert_called_once()
 
+    def test_failed_spawn_is_surfaced_in_slack_with_a_rerun_button(self):
+        """The MR is already marked seen: without this signal it would never be reviewed."""
+        said = []
+        with mock.patch.object(poller.reviewer, "spawn_detached", side_effect=OSError("no fork")), \
+             mock.patch.object(poller.reviewer, "_slack_say",
+                               side_effect=lambda cfg, text, ts=None, b=None: said.append((text, ts, b))), \
+             self.assertLogs("mr_sentinel.poller", "ERROR"):
+            poller.maybe_spawn_review(CFG, {"id": 1, "iid": 2}, "group/backend-app", "111.22")
+        text, ts, buttons = said[-1]
+        self.assertIn("沒能啟動", text)
+        self.assertEqual(ts, "111.22")
+        self.assertTrue(buttons)
+
     def test_build_notification_mentions(self):
         mr = {"iid": 7, "title": "T", "web_url": "https://gl/mr/7",
               "author": {"name": "Ann"}, "source_branch": "f", "target_branch": "main"}

@@ -5,10 +5,13 @@ and findings without a line number fall back to plain notes.
 """
 import argparse
 import json
+import logging
 import urllib.error
 
 import gitlab_client
 import review_common
+
+log = logging.getLogger("mr_sentinel.post_comment")
 
 
 def _note_prefix(finding: dict) -> str:
@@ -19,23 +22,53 @@ def _note_prefix(finding: dict) -> str:
     return ""
 
 
+def _landed(base: str, token: str, project, iid, body: str) -> bool:
+    """Did a write that answered 5xx / timed out actually create the note?
+
+    GitLab can create the note and then fail in a post-save hook (seen: 500 one
+    second after the comment appeared), so an error response alone proves nothing.
+    """
+    try:
+        discussions = gitlab_client.list_discussions(base, token, project, iid)
+    except Exception:
+        return False
+    return any((n.get("body") or "").strip() == body.strip()
+               for d in discussions for n in d.get("notes") or [])
+
+
 def post_findings(base: str, token: str, project, iid, findings: list, diff_refs: dict,
                   signature: str = review_common.DEFAULT_SIGNATURE) -> int:
+    """Post every finding and return how many are on the MR.
+
+    A finding whose write fails for a reason other than "position rejected" is
+    checked against GitLab and then skipped, never raised: one flaky response must
+    not discard the rest of the review. The caller compares the return value with
+    len(findings) to tell the user about the gap.
+    """
     posted = 0
     for f in review_common.sort_findings(findings):
         body = review_common.format_comment_body(f, signature)
         position = review_common.build_position(f, diff_refs)
-        if position is not None:
-            try:
-                gitlab_client.post_discussion(base, token, project, iid, body, position)
+        attempted = body
+        try:
+            if position is not None:
+                try:
+                    gitlab_client.post_discussion(base, token, project, iid, body, position)
+                    posted += 1
+                    continue
+                except urllib.error.HTTPError as exc:
+                    if exc.code not in (400, 422):
+                        raise
+                    # position rejected -> fall through to a plain note
+            attempted = _note_prefix(f) + body
+            gitlab_client.post_note(base, token, project, iid, attempted)
+            posted += 1
+        except (urllib.error.URLError, OSError) as exc:
+            if _landed(base, token, project, iid, attempted):
+                log.warning("finding %r: %s, but the comment is on the MR", f.get("title"), exc)
                 posted += 1
-                continue
-            except urllib.error.HTTPError as exc:
-                if exc.code not in (400, 422):
-                    raise
-                # position rejected -> fall through to a plain note
-        gitlab_client.post_note(base, token, project, iid, _note_prefix(f) + body)
-        posted += 1
+            else:
+                log.error("finding %r not posted: %s", f.get("title"), exc)
     return posted
 
 

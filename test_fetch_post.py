@@ -42,15 +42,22 @@ class TestBuildContext(unittest.TestCase):
 
 
 class FakeGitlab:
-    def __init__(self, discussion_fail=False):
+    def __init__(self, discussion_fail=False, error_code=422, lands_anyway=False):
         self.discussions = []
         self.notes = []
         self.discussion_fail = discussion_fail
+        self.error_code = error_code
+        self.lands_anyway = lands_anyway
 
     def post_discussion(self, base, token, project, iid, body, position):
         if self.discussion_fail:
-            raise urllib.error.HTTPError("u", 422, "unprocessable", {}, None)
+            if self.lands_anyway:
+                self.discussions.append((body, position))
+            raise urllib.error.HTTPError("u", self.error_code, "err", {}, None)
         self.discussions.append((body, position))
+
+    def list_discussions(self, base, token, project, iid):
+        return [{"notes": [{"body": b}]} for b, _ in self.discussions]
 
     def post_note(self, base, token, project, iid, body):
         self.notes.append(body)
@@ -85,6 +92,21 @@ class TestPostFindings(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertEqual(len(fake.notes), 1)
         self.assertIn("`b.py:9`", fake.notes[0])
+
+    def test_500_after_the_comment_landed_counts_as_posted(self):
+        fake = FakeGitlab(discussion_fail=True, error_code=500, lands_anyway=True)
+        with mock.patch.object(post_comment, "gitlab_client", fake):
+            n = post_comment.post_findings("B", "T", "p", 2, [self._findings()[1]], DIFF_REFS)
+        self.assertEqual(n, 1)
+        self.assertEqual(fake.notes, [])          # no duplicate fallback note
+
+    def test_500_without_a_comment_is_skipped_not_raised(self):
+        fake = FakeGitlab(discussion_fail=True, error_code=500)
+        with mock.patch.object(post_comment, "gitlab_client", fake), \
+             self.assertLogs("mr_sentinel.post_comment", "ERROR"):
+            n = post_comment.post_findings("B", "T", "p", 2, self._findings(), DIFF_REFS)
+        self.assertEqual(n, 1)                    # only the no-line note went through
+        self.assertEqual(len(fake.notes), 1)
 
     def test_custom_signature_flows_through(self):
         fake = FakeGitlab()

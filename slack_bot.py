@@ -721,14 +721,24 @@ class Bot:
         project, iid, mr_id = resolved
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
 
-        # record the comments about to be deleted, so the history keeps them; if
-        # that failed, deleting would lose them for good — keep them instead
-        recorded = history_sync.sync_mr(self.config, project, iid,
-                                        trigger=f"重審前紀錄 {project.rsplit('/', 1)[-1]}!{iid}")
-        unclaimed = self.unclaim(base, token, project, iid)
-        deleted = self.clear_previous_comments(base, token, project, iid) if recorded else 0
+        # The reviewer's per-MR lock is held across reset + spawn: checking it and
+        # then resetting would leave a gap for a review to start, and the reset
+        # would delete its claim and comments underneath it. The spawned child
+        # waits for the lock, so it starts once this block is done.
+        reviewer.REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(reviewer.REVIEWS_DIR / f".lock-{mr_id}", "w") as lock_file:
+            if not reviewer.take_lock(lock_file):
+                self.say(f":hourglass: `{project}` !{iid} 正在 review 中,跑完後再按一次", thread_ts)
+                return None
 
-        reviewer.spawn_detached(project, iid, mr_id, mode)
+            # record the comments about to be deleted, so the history keeps them; if
+            # that failed, deleting would lose them for good — keep them instead
+            recorded = history_sync.sync_mr(self.config, project, iid,
+                                            trigger=f"重審前紀錄 {project.rsplit('/', 1)[-1]}!{iid}")
+            unclaimed = self.unclaim(base, token, project, iid)
+            deleted = self.clear_previous_comments(base, token, project, iid) if recorded else 0
+
+            reviewer.spawn_detached(project, iid, mr_id, mode)
         self.spend_budget()
 
         detail = []
