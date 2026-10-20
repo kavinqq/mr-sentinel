@@ -156,6 +156,10 @@ class TestNormalize(unittest.TestCase):
     def test_unchecked_file_fails(self):
         self.assertIsNone(release_guard.normalize(self.ok(checked_files=["a.py"]), ["a.py", "b.py"]))
 
+    def test_unhashable_checked_files_fail_instead_of_raising(self):
+        self.assertIsNone(release_guard.normalize(self.ok(checked_files=[["a.py"], "b.py"]),
+                                                  ["a.py", "b.py"]))
+
     def test_missing_lists_fail(self):
         self.assertIsNone(release_guard.normalize({}, ["a.py"]))
         self.assertIsNone(release_guard.normalize({"findings": [], "checked_files": "a.py"}, ["a.py"]))

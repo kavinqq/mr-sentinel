@@ -112,6 +112,27 @@ class TestRunGuard(unittest.TestCase):
             # release_guard.normalize fails the gate without the coverage claim
             self.assertEqual(out["checked_files"], ["a.py"])
 
+    def test_parallel_batches_never_share_a_reply_file(self):
+        """Guard batches run concurrently in one work dir; a shared last-message
+        file lets one batch read another's (possibly clean) reply."""
+        used = []
+
+        def fake_run(cmd, **kw):
+            last = pathlib.Path(cmd[cmd.index("-o") + 1] if "-o" in cmd
+                                else cmd[cmd.index("--output-last-message") + 1])
+            used.append(last.name)
+            last.write_text('{"checked_files": [], "findings": []}')
+            return mock.Mock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch("engines.resolve_cli", return_value="codex"), \
+                 mock.patch.object(codex_engine.subprocess, "run", side_effect=fake_run):
+                for i in (1, 2):
+                    codex_engine.run_guard(work, work / f"guard_context_{i}.json",
+                                           work / f"release_guard_{i}.json", "/tmp/wt", CFG)
+        self.assertEqual(len(set(used)), 2)
+
     def test_reply_without_findings_list_fails(self):
         with tempfile.TemporaryDirectory() as d:
             work = pathlib.Path(d)

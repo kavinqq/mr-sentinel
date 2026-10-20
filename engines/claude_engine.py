@@ -186,10 +186,10 @@ def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
 
 def run_guard(work_dir: Path, context_file: Path, output_file: Path,
               repo_dir, review_cfg: dict) -> int:
-    """Hunt test leaks only (prompts/release_guard.md). No skeptic: a pass built
-    to drop doubtful findings is exactly what let them through before."""
-    return _single_pass("release_guard.md", "claude-guard.log", work_dir, context_file,
-                        output_file, repo_dir, review_cfg)
+    """The production-branch extra review (prompts/release_guard.md). No skeptic: a
+    pass built to drop doubtful findings is exactly what let test leaks through."""
+    return _single_pass("release_guard.md", f"claude-{output_file.stem}.log", work_dir,
+                        context_file, output_file, repo_dir, review_cfg)
 
 
 def run_json(prompt: str, work_dir: Path, review_cfg: dict) -> dict:

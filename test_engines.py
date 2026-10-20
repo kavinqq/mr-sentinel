@@ -137,7 +137,8 @@ class TestCommand(unittest.TestCase):
             with mock.patch("engines.resolve_cli", return_value="claude"), \
                  mock.patch("subprocess.run", side_effect=fake_run) as run:
                 rc = claude_engine.run_guard(work, work / "guard_context.json", out, "/tmp/wt", CFG)
-            self.assertTrue((work / "claude-guard.log").exists())
+            # batches run in parallel: each keeps its own log
+            self.assertTrue((work / "claude-release_guard.log").exists())
         self.assertEqual(rc, 0)
         cmd = run.call_args.args[0]
         self.assertNotIn("--agents", cmd)                       # no skeptic may drop a leak

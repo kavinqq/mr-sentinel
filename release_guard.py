@@ -241,6 +241,8 @@ def normalize(result, batch_files: list[str], language: str = "en") -> list[dict
     findings, checked = result.get("findings"), result.get("checked_files")
     if not isinstance(findings, list) or not isinstance(checked, list):
         return None
+    if not all(isinstance(path, str) for path in checked):
+        return None
     files = set(batch_files)
     if not files <= set(checked):
         return None

@@ -61,10 +61,11 @@ def label(review_cfg: dict, mode: str = "deep") -> str:
     return f"scanned by {scan}, vetted by {vet} (codex)"
 
 
-def _exec_pass(prompt: str, work_dir: Path, model: str, timeout: int) -> str:
-    """Run one codex exec pass and return the model's last message."""
+def _exec_pass(prompt: str, work_dir: Path, model: str, timeout: int, tag: str = "") -> str:
+    """Run one codex exec pass and return the model's last message. Passes that
+    run concurrently in one work dir (guard batches) need distinct `tag`s."""
     from engines import resolve_cli
-    last = work_dir / ".codex_last_message.txt"
+    last = work_dir / f".codex_last_message{tag}.txt"
     if last.exists():
         last.unlink()
     cmd = build_cmd(prompt, str(work_dir), str(last), model)
@@ -144,7 +145,8 @@ def _single_pass(template: str, key: str, work_dir: Path, context_file: Path,
     try:
         reply = parse_json_reply(_exec_pass(prompt, work_dir,
                                             review_cfg["codex"].get("model", ""),
-                                            review_cfg["review_timeout_seconds"]))
+                                            review_cfg["review_timeout_seconds"],
+                                            f"_{output_file.stem}"))
         items = reply.get(key)
         if not isinstance(items, list):
             if required:
