@@ -133,6 +133,41 @@ class TestRunGuard(unittest.TestCase):
                                            work / f"release_guard_{i}.json", "/tmp/wt", CFG)
         self.assertEqual(len(set(used)), 2)
 
+    def test_concurrent_passes_without_a_tag_still_get_their_own_reply(self):
+        """history rate --workers N calls run_json concurrently in one dir."""
+        used = []
+
+        def fake_run(cmd, **kw):
+            last = pathlib.Path(cmd[cmd.index("--output-last-message") + 1])
+            used.append(last.name)
+            last.write_text("{}")
+            return mock.Mock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch("engines.resolve_cli", return_value="codex"), \
+                 mock.patch.object(codex_engine.subprocess, "run", side_effect=fake_run):
+                codex_engine._exec_pass("p", work, "", 10)
+                codex_engine._exec_pass("p", work, "", 10)
+            self.assertEqual([f.name for f in work.glob(".codex_last_message*")], [])
+        self.assertEqual(len(set(used)), 2)
+
+    def test_guard_batches_keep_separate_logs(self):
+        def fake_run(cmd, **kw):
+            pathlib.Path(cmd[cmd.index("--output-last-message") + 1]).write_text(
+                '{"checked_files": [], "findings": []}')
+            return mock.Mock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch("engines.resolve_cli", return_value="codex"), \
+                 mock.patch.object(codex_engine.subprocess, "run", side_effect=fake_run):
+                for i in (1, 2):
+                    codex_engine.run_guard(work, work / f"guard_context_{i}.json",
+                                           work / f"release_guard_{i}.json", "/tmp/wt", CFG)
+            self.assertTrue((work / "codex_release_guard_1.log").exists())
+            self.assertTrue((work / "codex_release_guard_2.log").exists())
+
     def test_reply_without_findings_list_fails(self):
         with tempfile.TemporaryDirectory() as d:
             work = pathlib.Path(d)

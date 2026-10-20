@@ -14,7 +14,9 @@ Note: the engine invokes plain `codex` from PATH. Shell aliases/functions
 (e.g. a wrapper adding --add-dir) do not propagate to subprocesses.
 """
 import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from engines import parse_json_reply  # noqa: F401  (re-exported; tests use it)
@@ -62,22 +64,28 @@ def label(review_cfg: dict, mode: str = "deep") -> str:
 
 
 def _exec_pass(prompt: str, work_dir: Path, model: str, timeout: int, tag: str = "") -> str:
-    """Run one codex exec pass and return the model's last message. Passes that
-    run concurrently in one work dir (guard batches) need distinct `tag`s."""
+    """Run one codex exec pass and return the model's last message. `tag` names
+    the pass's log (codex{tag}.log)."""
     from engines import resolve_cli
-    last = work_dir / f".codex_last_message{tag}.txt"
-    if last.exists():
-        last.unlink()
-    cmd = build_cmd(prompt, str(work_dir), str(last), model)
-    cmd[0] = resolve_cli(cmd[0])  # schedulers run with a minimal PATH
-    with open(work_dir / "codex.log", "a") as logf:
-        proc = subprocess.run(cmd,
-                              cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
-                              stdin=subprocess.DEVNULL,  # codex waits on stdin otherwise
-                              timeout=timeout)
-    if proc.returncode != 0 or not last.exists():
-        raise RuntimeError(f"codex exec failed (rc={proc.returncode})")
-    return last.read_text()
+    # passes run concurrently in one dir (guard batches, history rate --workers):
+    # a shared reply file would hand one pass another's answer
+    fd, name = tempfile.mkstemp(prefix=".codex_last_message", suffix=".txt", dir=work_dir)
+    os.close(fd)
+    last = Path(name)
+    last.unlink()
+    try:
+        cmd = build_cmd(prompt, str(work_dir), str(last), model)
+        cmd[0] = resolve_cli(cmd[0])  # schedulers run with a minimal PATH
+        with open(work_dir / f"codex{tag}.log", "a") as logf:
+            proc = subprocess.run(cmd,
+                                  cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
+                                  stdin=subprocess.DEVNULL,  # codex waits on stdin otherwise
+                                  timeout=timeout)
+        if proc.returncode != 0 or not last.exists():
+            raise RuntimeError(f"codex exec failed (rc={proc.returncode})")
+        return last.read_text()
+    finally:
+        last.unlink(missing_ok=True)
 
 
 def run_review(work_dir: Path, context_file: Path, output_file: Path,
