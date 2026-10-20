@@ -14,7 +14,6 @@ every file it checked, and any malformed answer counts as a failed guard.
 import re
 
 import artifact_gate
-import review_common
 
 GATE_NAME = "release_guard"
 DEFAULT_MAX_LINES = 3000
@@ -45,11 +44,54 @@ _STRANGE = re.compile(
 added_lines = artifact_gate.added_lines
 
 
+MINIFIED_SUFFIXES = (".min.js", ".min.css")
+
+
 def config_problem(guard_cfg: dict) -> str | None:
     """Without the team's own test hosts the guard can only guess, so it does not count as run."""
     if not [h for h in guard_cfg.get("test_hosts") or [] if str(h).strip()]:
         return "review.release_guard.test_hosts is not configured"
+    for key in ("max_diff_lines", "max_batches"):
+        value = guard_cfg.get(key, 1)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            return f"review.release_guard.{key} must be a positive integer"
     return None
+
+
+def model_reads(path: str) -> bool:
+    """A minified bundle is one huge line no model reads usefully;
+    minified_host_findings and the marker rule cover it instead."""
+    return not artifact_gate.never_ships(path) and not path.endswith(MINIFIED_SUFFIXES)
+
+
+def minified_host_findings(changes: list[dict], test_hosts: list[str], language: str) -> list[dict]:
+    """One rule finding per minified bundle whose added lines contain a test host."""
+    zh = language.startswith("zh")
+    hosts = [h.lower() for h in test_hosts if str(h).strip()]
+    findings = []
+    for c in changes:
+        path = c.get("new_path") or ""
+        if not path.endswith(MINIFIED_SUFFIXES):
+            continue
+        hits = [(n, h) for n, text in added_lines(c.get("diff")) for h in hosts if h in text.lower()]
+        if not hits:
+            continue
+        found = ", ".join(sorted({f"`{h}`" for _, h in hits}))
+        findings.append({
+            "severity": "high", "category": "correctness", "confidence": "sure",
+            "title": "壓縮後的 bundle 含測試主機" if zh else "Minified bundle contains a test host",
+            "file": path, "line": hits[0][0],
+            "problem": (f"建置產物裡有測試主機 {found}" if zh
+                        else f"The build output contains test host(s) {found}"),
+            "impact": ("正式使用者的瀏覽器會連到測試環境。" if zh
+                       else "Production users' browsers would call a test environment."),
+            "fix": ("用正式環境設定重新建置,或不要 commit 建置產物。" if zh
+                    else "Rebuild with production settings, or stop committing build output."),
+            "evidence": "\n".join(f"- `{path}:{n}` `{h}`" for n, h in hits),
+            "gate": artifact_gate.GATE_NAME,
+            "hit_lines": sorted({n for n, _ in hits}),
+        })
+    return findings
 
 
 def candidates(changes: list[dict], test_hosts: list[str]) -> list[dict]:
@@ -59,7 +101,7 @@ def candidates(changes: list[dict], test_hosts: list[str]) -> list[dict]:
     out = []
     for c in changes:
         path = c.get("new_path") or ""
-        if not path or review_common.is_noise_path(path):
+        if not path or not model_reads(path):
             continue
         for line_no, text in added_lines(c.get("diff")):
             why = [h for h in hosts if h in text.lower()]
@@ -116,7 +158,7 @@ def build_batches(ctx: dict, changes: list[dict], guard_cfg: dict,
                   max_batches: int = DEFAULT_MAX_BATCHES) -> list[dict] | None:
     """Guard contexts that together carry every added line, or None when that takes
     more than `max_batches` (a human must review it; nothing is sampled)."""
-    files = [c for c in changes if c.get("new_path") and not review_common.is_noise_path(c["new_path"])]
+    files = [c for c in changes if c.get("new_path") and model_reads(c["new_path"])]
     pieces: list[dict] = []
     for c in files:
         hunk_list = [piece for hunk in _split_hunks(c.get("diff") or "") or [""]

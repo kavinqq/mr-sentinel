@@ -107,6 +107,28 @@ class TestRun(unittest.TestCase):
         self.assertEqual(engine.batches, [])
 
 
+class TestMinifiedBundles(unittest.TestCase):
+    def test_test_host_in_a_minified_bundle_fails_even_when_the_guard_is_clean(self):
+        bundle = {"new_path": "static/app.min.js",
+                  "diff": "@@ -0,0 +1 @@\n+fetch('https://www.labpocket.tw/x')\n"}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(final_gates.artifact_gate, "collect", return_value=[bundle]):
+            out = final_gates.run(FakeEngine(clean), Path(d), CTX, "/clone", "/wt", CFG)
+        self.assertTrue(out.ok)
+        self.assertFalse(out.passed)
+        self.assertEqual(out.findings[0]["file"], "static/app.min.js")
+
+
+class TestDiffSource(unittest.TestCase):
+    def test_the_noise_filtered_review_diff_is_never_the_fallback(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(final_gates.artifact_gate, "collect", return_value=None) as collect:
+            out = final_gates.run(FakeEngine(clean), Path(d), {**CTX, "changes": [PLAIN]},
+                                  "/clone", "/wt", CFG)
+        self.assertIsNone(collect.call_args.args[3])
+        self.assertFalse(out.ok)
+
+
 class TestApplies(unittest.TestCase):
     def test_only_release_branches(self):
         self.assertTrue(final_gates.applies("master", {}, "master"))

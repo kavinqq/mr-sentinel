@@ -98,7 +98,8 @@ class TestRunAppeal(unittest.TestCase):
 
 class TestRunGuard(unittest.TestCase):
     def test_reply_becomes_the_guard_file(self):
-        reply = '{"findings": [{"severity": "high", "file": "a.py", "line": 1}]}'
+        reply = ('{"checked_files": ["a.py"], '
+                 '"findings": [{"severity": "high", "file": "a.py", "line": 1}]}')
         with tempfile.TemporaryDirectory() as d:
             work = pathlib.Path(d)
             with mock.patch.object(codex_engine, "_exec_pass", return_value=reply) as run:
@@ -108,6 +109,8 @@ class TestRunGuard(unittest.TestCase):
             self.assertIn("RELEASE GUARD", run.call_args.args[0])
             out = json.loads((work / "release_guard.json").read_text())
             self.assertEqual(out["findings"][0]["file"], "a.py")
+            # release_guard.normalize fails the gate without the coverage claim
+            self.assertEqual(out["checked_files"], ["a.py"])
 
     def test_reply_without_findings_list_fails(self):
         with tempfile.TemporaryDirectory() as d:

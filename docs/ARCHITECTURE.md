@@ -29,6 +29,9 @@ scheduler (launchd / cron / systemd, every 60s)
                            artifact_gate.py — test-marker rule on added lines (git diff, not the
                            API diff, which is empty for large MRs); a test-looking path is skipped
                            only if nothing outside tests references it at the head.
+                           Build output / vendored code are scanned (they ship); only lockfiles,
+                           source maps and images are skipped. Minified bundles: rule + test_hosts
+                           match, not the model.
                            release_guard.py + engine.run_guard — an extra review: test leaks first,
                            then anything strange for a release,
                            no skeptic, over EVERY added line in batches; strict output schema

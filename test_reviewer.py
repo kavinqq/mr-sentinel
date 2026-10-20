@@ -714,6 +714,17 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
         gl.merge_mr.assert_not_called()
         gl.post_note.assert_called_once()
 
+    def test_rail_scans_build_output_from_the_api_diff(self):
+        bundle = {"new_path": "dist/app.js", "diff": "@@ -0,0 +1 @@\n+x\n"}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer.artifact_gate, "collect", return_value=None) as collect, \
+             mock.patch.object(reviewer, "gitlab_client") as gl:
+            gl.get_project.return_value = {"default_branch": "master"}
+            gl.get_mr_changes.return_value = {"changes": [bundle]}
+            REAL_RELEASE_BLOCKER(self.CFG, "http://gl", "t", "g/p", self.GREEN)
+        self.assertEqual(collect.call_args.args[3], [bundle])
+
     def test_unreadable_diff_blocks(self):
         self._merge(None, self.PASSED).merge_mr.assert_not_called()
 

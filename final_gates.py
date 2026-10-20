@@ -95,13 +95,16 @@ def run(engine, work: Path, ctx: dict, local: str | None, wt, review_cfg: dict) 
     guard_cfg = review_cfg.get("release_guard", {})
     diff_refs = ctx.get("diff_refs") or {}
 
-    changes = artifact_gate.collect(local, diff_refs, ctx.get("target_branch") or "",
-                                    ctx.get("changes"))
+    # no API fallback: ctx["changes"] is filtered for the normal review and lacks
+    # build output, which ships; without the clone's diff the gate fails closed
+    changes = artifact_gate.collect(local, diff_refs, ctx.get("target_branch") or "", None)
     if changes is None:
         return Outcome(rule=None, guard=None, problem="拿不到完整 diff")
     exempt = artifact_gate.exempt_test_files(local, diff_refs.get("head_sha", ""),
                                              [c["new_path"] for c in changes if c.get("new_path")])
-    rule = artifact_gate.scan(changes, language, exempt)
+    rule = (artifact_gate.scan(changes, language, exempt)
+            + release_guard.minified_host_findings(changes, guard_cfg.get("test_hosts") or [],
+                                                   language))
 
     problem = release_guard.config_problem(guard_cfg)
     if problem:

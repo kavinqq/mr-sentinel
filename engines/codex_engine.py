@@ -133,10 +133,11 @@ READ_ONLY_REPLY = ("\n\nIMPORTANT: you run in a read-only sandbox and cannot wri
 
 
 def _single_pass(template: str, key: str, work_dir: Path, context_file: Path,
-                 output_file: Path, repo_dir, review_cfg: dict, required: bool) -> int:
-    """One codex pass; the script writes `{key: [...]}` from the reply, as the
-    sandbox is read-only. `required`: a reply without that list is a failure
-    instead of an empty list."""
+                 output_file: Path, repo_dir, review_cfg: dict, required: bool,
+                 keep: tuple[str, ...] = ()) -> int:
+    """One codex pass; the script writes `{key: [...]}` (plus any `keep` fields the
+    reply has) from the reply, as the sandbox is read-only. `required`: a reply
+    without that list is a failure instead of an empty list."""
     prompt = render_prompt((PROMPTS_DIR / template).read_text(),
                            review_cfg.get("language", "en"), str(repo_dir),
                            context_file.name, output_file.name) + READ_ONLY_REPLY
@@ -149,7 +150,8 @@ def _single_pass(template: str, key: str, work_dir: Path, context_file: Path,
             if required:
                 return 1
             items = []
-        output_file.write_text(json.dumps({key: items}, ensure_ascii=False, indent=1))
+        out = {key: items, **{k: reply[k] for k in keep if k in reply}}
+        output_file.write_text(json.dumps(out, ensure_ascii=False, indent=1))
         return 0
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
         return 1
@@ -164,9 +166,10 @@ def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
 
 def run_guard(work_dir: Path, context_file: Path, output_file: Path,
               repo_dir, review_cfg: dict) -> int:
-    """Hunt test leaks only (prompts/release_guard.md), no skeptic pass."""
+    """The production-branch extra review (prompts/release_guard.md), no skeptic pass.
+    `checked_files` is kept: release_guard.normalize fails the gate without it."""
     return _single_pass("release_guard.md", "findings", work_dir, context_file, output_file,
-                        repo_dir, review_cfg, required=True)
+                        repo_dir, review_cfg, required=True, keep=("checked_files",))
 
 
 def run_json(prompt: str, work_dir: Path, review_cfg: dict) -> dict:

@@ -59,6 +59,17 @@ _TEST_DIR = re.compile(r"(^|/)(tests?|__tests__|__mocks?__|mocks?|e2e|playwright
 _ENTRY_STEMS = {"index", "__init__", "main"}
 
 
+_UNSHIPPED_SUFFIXES = (".lock", "-lock.json", ".map", ".png", ".jpg", ".gif")
+
+
+def never_ships(path: str) -> bool:
+    """Lockfiles, source maps and images: nothing in them runs as shipped code.
+    Narrower than review_common.is_noise_path on purpose: build output and
+    vendored code are noise to a code review, but they ship."""
+    return (path.rsplit("/", 1)[-1] in review_common.NOISE_NAMES
+            or path.endswith(_UNSHIPPED_SUFFIXES))
+
+
 def is_test_path(path: str) -> bool:
     return bool(_TEST_PATH.search(path or ""))
 
@@ -129,7 +140,7 @@ def scan(changes: list[dict], language: str, exempt: set[str] = frozenset()) -> 
     findings = []
     for c in changes:
         path = c.get("new_path") or ""
-        if not path or path in exempt or review_common.is_noise_path(path):
+        if not path or path in exempt or never_ships(path):
             continue
         hits = [(n, line.strip(), m) for n, line in added_lines(c.get("diff"))
                 if (m := marker_in(line))]

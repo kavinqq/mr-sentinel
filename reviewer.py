@@ -246,8 +246,7 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
         return problem
     local = review_common.resolve_local_path(project_path, review_cfg)
     try:
-        api = review_common.filter_noise_changes(
-            gitlab_client.get_mr_changes(base, token, project_path, mr["iid"]).get("changes") or [])
+        api = gitlab_client.get_mr_changes(base, token, project_path, mr["iid"]).get("changes") or []
     except Exception:
         log.exception("auto-merge: MR changes for the test-marker rule unavailable")
         api = None

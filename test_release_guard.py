@@ -168,6 +168,41 @@ class TestConfigProblem(unittest.TestCase):
         self.assertIsNotNone(release_guard.config_problem({"test_hosts": ["  "]}))
         self.assertIsNone(release_guard.config_problem(GUARD_CFG))
 
+    def test_batch_limits_must_be_positive_integers(self):
+        for bad in ({"max_diff_lines": "3000"}, {"max_diff_lines": 0}, {"max_batches": None},
+                    {"max_batches": True}, {"max_diff_lines": 1.5}):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(release_guard.config_problem({**GUARD_CFG, **bad}))
+        self.assertIsNone(release_guard.config_problem({**GUARD_CFG, "max_diff_lines": 3000,
+                                                        "max_batches": 15}))
+
+
+class TestShippedArtifacts(unittest.TestCase):
+    def test_build_output_and_vendored_code_go_to_the_model(self):
+        changes = [change(p, "@@ -0,0 +1 @@\n+x\n")
+                   for p in ("dist/app.js", "build/main.js", "vendor/lib.php", "icon.svg")]
+        [b] = release_guard.build_batches(CTX, changes, GUARD_CFG, max_lines=100, max_batches=5)
+        self.assertEqual(b["files"], sorted(c["new_path"] for c in changes))
+
+    def test_unshipped_and_minified_files_are_not_sent(self):
+        changes = [change(p, "@@ -0,0 +1 @@\n+x\n")
+                   for p in ("package-lock.json", "yarn.lock", "app.js.map", "a.png", "app.min.js")]
+        [b] = release_guard.build_batches(CTX, changes, GUARD_CFG, max_lines=100, max_batches=5)
+        self.assertEqual(b["files"], [])
+
+    def test_test_host_in_a_minified_bundle_is_a_rule_finding(self):
+        diff = "@@ -0,0 +1 @@\n+var a=1;fetch('https://www.labpocket.tw/api')\n"
+        [f] = release_guard.minified_host_findings([change("static/app.min.js", diff)],
+                                                   ["labpocket.tw"], "zh-TW")
+        self.assertEqual((f["file"], f["line"], f["confidence"]), ("static/app.min.js", 1, "sure"))
+        self.assertEqual(f["hit_lines"], [1])
+        self.assertIn("labpocket.tw", f["problem"])
+
+    def test_readable_files_are_left_to_the_model(self):
+        diff = "@@ -0,0 +1 @@\n+url = 'https://www.labpocket.tw/api'\n"
+        self.assertEqual(release_guard.minified_host_findings([change("a.js", diff)],
+                                                              ["labpocket.tw"], "zh-TW"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

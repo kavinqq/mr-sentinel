@@ -89,10 +89,17 @@ class TestScan(unittest.TestCase):
         self.assertIn("a.py:1", f["evidence"])
         self.assertIn("a.py:3", f["evidence"])
 
-    def test_only_verified_test_files_and_noise_are_skipped(self):
+    def test_only_verified_test_files_and_unshipped_files_are_skipped(self):
         changes = [change("tests/test_a.py", "@@ -0,0 +1 @@\n+# 測試用\n"),
-                   change("dist/app.min.js", "@@ -0,0 +1 @@\n+測試用\n")]
+                   change("app.js.map", "@@ -0,0 +1 @@\n+測試用\n"),
+                   change("yarn.lock", "@@ -0,0 +1 @@\n+測試用\n")]
         self.assertEqual(artifact_gate.scan(changes, "zh-TW", exempt={"tests/test_a.py"}), [])
+
+    def test_shipped_build_output_is_scanned(self):
+        for path in ("dist/app.min.js", "build/main.js", "vendor/x.php", "icon.svg"):
+            with self.subTest(path=path):
+                changes = [change(path, "@@ -0,0 +1 @@\n+測試用\n")]
+                self.assertEqual(len(artifact_gate.scan(changes, "zh-TW")), 1)
 
     def test_a_test_looking_path_is_scanned_unless_verified(self):
         changes = [change("src/mocks/AppTestEntry.tsx", "@@ -0,0 +1 @@\n+App測試用按鈕\n")]
