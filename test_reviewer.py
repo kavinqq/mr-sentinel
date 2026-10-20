@@ -7,6 +7,18 @@ from unittest import mock
 
 import reviewer
 
+REAL_RELEASE_BLOCKER = reviewer._release_blocker
+_gate_patch = mock.patch.object(reviewer, "_release_blocker", return_value=None)
+
+
+def setUpModule():
+    # auto-merge tests below are about the other rails; the release rail has its own class
+    _gate_patch.start()
+
+
+def tearDownModule():
+    _gate_patch.stop()
+
 
 class TestCompletionText(unittest.TestCase):
     FINDINGS = [{"severity": "high"}, {"severity": "high"}, {"severity": "low"}]
@@ -395,6 +407,8 @@ class TestCrashAfterCompletion(unittest.TestCase):
              mock.patch.object(reviewer, "history_rate"), \
              mock.patch.object(reviewer, "prepare_worktree", return_value=("/clone", None)), \
              mock.patch.object(reviewer, "_review_with_confirmation", return_value=(clean, "deep")), \
+             mock.patch.object(reviewer.final_gates, "run", return_value=outcome()), \
+             mock.patch.object(reviewer, "_set_status"), \
              mock.patch.object(reviewer, "_slack_say_verdict") as announced, \
              mock.patch.object(reviewer, "_maybe_auto_merge", side_effect=merge_side_effect), \
              mock.patch.object(reviewer, "_run_git", side_effect=cleanup_side_effect):
@@ -478,3 +492,259 @@ class TestResetForRerun(unittest.TestCase):
         self.assertFalse(result)
         gl.delete_award_emoji.assert_not_called()
         gl.delete_note.assert_not_called()
+
+
+GATE_HIT = {"severity": "high", "category": "correctness", "title": "t", "file": "a.tsx",
+            "line": 3, "gate": "artifact", "hit_lines": [3]}
+LEAK = {"severity": "high", "category": "correctness", "title": "UAT host", "file": "b.py",
+        "line": 9, "gate": "release_guard"}
+
+
+def outcome(rule=(), guard=(), broken=False):
+    import final_gates
+    return final_gates.Outcome(rule=list(rule), guard=None if broken else list(guard),
+                               problem="guard failed" if broken else "")
+
+
+class TestWithoutCovered(unittest.TestCase):
+    def test_review_findings_on_gate_lines_are_duplicates(self):
+        ai = [{"file": "a.tsx", "line": 3, "title": "dup of rule"},
+              {"file": "b.py", "line": 9, "title": "dup of guard"},
+              {"file": "c.py", "line": 1, "title": "real"}]
+        kept = reviewer.without_covered(ai, [GATE_HIT, LEAK])
+        self.assertEqual([f["title"] for f in kept], ["real"])
+
+
+class ReviewHarness:
+    CFG = {"gitlab_url": "http://gl", "gitlab_token": "t",
+           "review": {"language": "zh", "engine": "claude", "auto_merge_on_clean": True}}
+    CTX = {"diff_refs": {"head_sha": "h"}, "stats": {"files": 1, "lines": 1}, "web_url": "u",
+           "changes": [], "target_branch": "master", "source_branch": "feat"}
+
+    def patches(self, d, gates):
+        self.stack = [
+            mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)),
+            mock.patch.object(reviewer, "gitlab_client"),
+            mock.patch.object(reviewer, "fetch_mr"),
+            mock.patch.object(reviewer, "engines"),
+            mock.patch.object(reviewer, "post_comment"),
+            mock.patch.object(reviewer, "history_sync"),
+            mock.patch.object(reviewer, "history_rate"),
+            mock.patch.object(reviewer, "prepare_worktree", return_value=("/clone", None)),
+            mock.patch.object(reviewer.final_gates, "run", return_value=gates),
+            mock.patch.object(reviewer, "_slack_say"),
+            mock.patch.object(reviewer, "_slack_say_verdict"),
+            mock.patch.object(reviewer, "_maybe_auto_merge"),
+            mock.patch.object(reviewer, "_set_status"),
+            mock.patch.object(reviewer, "_run_git"),
+        ]
+        m = {}
+        for patcher in self.stack:
+            m[patcher.attribute] = patcher.start()
+            self.addCleanup(patcher.stop)
+        m["gitlab_client"].get_current_user.return_value = {"id": 7}
+        m["gitlab_client"].get_award_emojis.return_value = []
+        m["gitlab_client"].list_discussions.return_value = []
+        m["fetch_mr"].build_context.return_value = self.CTX
+        m["gitlab_client"].get_project.return_value = {"default_branch": "master"}
+        m["post_comment"].post_findings.side_effect = lambda *a, **k: len(a[4])
+        return m
+
+    @staticmethod
+    def posted(m):
+        return [f for c in m["post_comment"].post_findings.call_args_list for f in c.args[4]]
+
+    @staticmethod
+    def said(m):
+        return " ".join(c.args[1] for c in m["_slack_say"].call_args_list)
+
+    @staticmethod
+    def statuses(m):
+        return [c.args[5] for c in m["_set_status"].call_args_list]
+
+
+class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
+    """The final gates run on every review, land even when the AI review says
+    clean or fails, publish a commit status, and keep the MR from auto-merging."""
+
+    def review(self, engine_result, gates):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, gates)
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=(engine_result, "deep")):
+            rc = reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        return rc, m, reviewer.read_review_meta(Path(d.name) / "100")
+
+    def test_rule_hit_is_posted_even_when_ai_says_clean(self):
+        rc, m, meta = self.review({"findings": []}, outcome(rule=[GATE_HIT]))
+        self.assertEqual(rc, 0)
+        self.assertEqual([f["gate"] for f in self.posted(m)], ["artifact"])
+        self.assertEqual(self.statuses(m), ["pending", "failed"])
+        m["_maybe_auto_merge"].assert_not_called()
+
+    def test_guard_leak_is_posted_and_recorded(self):
+        _, m, meta = self.review({"findings": []}, outcome(guard=[LEAK]))
+        self.assertEqual([f["gate"] for f in self.posted(m)], ["release_guard"])
+        self.assertEqual(meta["guard"], {"head_sha": "h", "target_branch": "master",
+                                         "ok": True, "leaks": 1})
+        m["_maybe_auto_merge"].assert_not_called()
+
+    def test_clean_gates_pass_and_merge_may_proceed(self):
+        _, m, meta = self.review({"findings": []}, outcome())
+        self.assertEqual(self.posted(m), [])
+        self.assertEqual(self.statuses(m), ["pending", "success"])
+        self.assertEqual(meta["guard"], {"head_sha": "h", "target_branch": "master",
+                                         "ok": True, "leaks": 0})
+        m["_maybe_auto_merge"].assert_called_once()
+
+    def test_ai_duplicate_of_a_gate_line_is_dropped(self):
+        ai = [{"file": "a.tsx", "line": 3, "title": "dup", "severity": "low"},
+              {"file": "c.py", "line": 1, "title": "real", "severity": "medium"}]
+        _, m, _ = self.review({"findings": ai}, outcome(rule=[GATE_HIT]))
+        self.assertEqual(sorted(f["title"] for f in self.posted(m)), ["real", "t"])
+
+    def test_gates_still_post_and_record_when_the_engine_fails(self):
+        rc, m, meta = self.review(None, outcome(rule=[GATE_HIT], guard=[LEAK]))
+        self.assertEqual(rc, 1)
+        self.assertEqual(sorted(f["gate"] for f in self.posted(m)), ["artifact", "release_guard"])
+        self.assertEqual(meta["guard"]["leaks"], 2)
+        m["_maybe_auto_merge"].assert_not_called()
+
+    def test_incomplete_gates_are_announced_failed_and_block(self):
+        _, m, meta = self.review({"findings": []}, outcome(broken=True))
+        self.assertIn("guard failed", self.said(m))
+        self.assertEqual(self.statuses(m)[-1], "failed")
+        self.assertFalse(meta["guard"]["ok"])
+        m["_maybe_auto_merge"].assert_not_called()
+
+    def test_mr_outside_release_branches_skips_the_final_gates(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome(rule=[GATE_HIT]))
+        ctx = {**self.CTX, "target_branch": "UAT-for-online"}
+        m["fetch_mr"].build_context.return_value = ctx
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            rc = reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        self.assertEqual(rc, 0)
+        m["run"].assert_not_called()
+        m["_set_status"].assert_not_called()
+        m["_maybe_auto_merge"].assert_called_once()
+        # no guard verdict is recorded, so a later retarget to master cannot reuse it
+        self.assertIsNone(reviewer.read_review_meta(Path(d.name) / "100")["guard"])
+
+    def test_mr_into_the_projects_own_main_branch_is_gated(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["fetch_mr"].build_context.return_value = {**self.CTX, "target_branch": "production"}
+        m["gitlab_client"].get_project.return_value = {"default_branch": "production"}
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        m["run"].assert_called_once()
+
+    def test_unknown_main_branch_gates_the_mr(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["fetch_mr"].build_context.return_value = {**self.CTX, "target_branch": "develop"}
+        m["gitlab_client"].get_project.side_effect = RuntimeError("500")
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        m["run"].assert_called_once()
+
+    def test_unsure_leak_asks_slack_for_a_human_check(self):
+        unsure = {**LEAK, "confidence": "unsure", "human_check": "確認正式機的 `API_HOST`"}
+        _, m, _ = self.review({"findings": []}, outcome(guard=[unsure]))
+        self.assertIn("需要人工確認", self.said(m))
+        self.assertIn("`API_HOST`", self.said(m))
+        m["_maybe_auto_merge"].assert_not_called()
+
+    def test_worktree_failure_marks_the_head_failed(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        with mock.patch.object(reviewer, "prepare_worktree", return_value=("/clone", "fetch")):
+            rc = reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.statuses(m), ["pending", "failed"])
+        self.assertIn("需要人工確認", self.said(m))
+
+
+class TestReleaseAutoMergeRail(unittest.TestCase):
+    """Every auto-merge (clean review or accepted appeals) re-runs the marker rule
+    and requires the guard to have passed this exact head, so no AI verdict can
+    waive either, and anything unknown fails closed."""
+
+    GREEN = {"id": 100, "iid": 10, "detailed_merge_status": "mergeable",
+             "head_pipeline": {"status": "success"}, "sha": "h",
+             "diff_refs": {"start_sha": "s", "head_sha": "h"}, "target_branch": "master"}
+    CFG = {"slack": {}, "review": {"release_guard": {"test_hosts": ["uat.example"]}}}
+    PASSED = {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 0}
+
+    def _merge(self, changes, guard_meta, cfg=None, hits=()):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "_release_blocker",
+                               side_effect=lambda *a: REAL_RELEASE_BLOCKER(*a)), \
+             mock.patch.object(reviewer.artifact_gate, "collect", return_value=changes), \
+             mock.patch.object(reviewer.artifact_gate, "exempt_test_files", return_value=set()), \
+             mock.patch.object(reviewer.artifact_gate, "scan", return_value=list(hits)), \
+             mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "_slack_say"):
+            if guard_meta is not None:
+                (Path(d) / "100").mkdir()
+                reviewer.write_review_meta(Path(d) / "100", "deep", "h", 0, guard_meta)
+            gl.get_mr.return_value = self.GREEN
+            gl.get_project.return_value = {"default_branch": "master"}
+            gl.has_ci_config.return_value = True
+            gl.get_mr_changes.return_value = {"changes": []}
+            reviewer._maybe_auto_merge(cfg or self.CFG, "http://gl", "tok", "g/p", 10,
+                                       "http://gl/10", reviewed_sha="h")
+        return gl
+
+    def test_clean_rule_and_passed_guard_merge(self):
+        self._merge([], self.PASSED).merge_mr.assert_called_once()
+
+    def test_rule_hit_blocks(self):
+        gl = self._merge([], self.PASSED, hits=[GATE_HIT])
+        gl.merge_mr.assert_not_called()
+        gl.post_note.assert_called_once()
+
+    def test_unreadable_diff_blocks(self):
+        self._merge(None, self.PASSED).merge_mr.assert_not_called()
+
+    def test_guard_leak_blocks(self):
+        self._merge([], {**self.PASSED, "leaks": 1}).merge_mr.assert_not_called()
+
+    def test_guard_failed_blocks(self):
+        self._merge([], {**self.PASSED, "ok": False}).merge_mr.assert_not_called()
+
+    def test_guard_on_an_older_head_blocks(self):
+        self._merge([], {**self.PASSED, "head_sha": "old"}).merge_mr.assert_not_called()
+
+    def test_retargeted_mr_without_a_guard_run_blocks_and_says_why(self):
+        gl = self._merge([], None)
+        gl.merge_mr.assert_not_called()
+        self.assertIn("正式分支額外 review", gl.post_note.call_args.args[4])
+
+    def test_guard_run_for_another_target_blocks(self):
+        self._merge([], {**self.PASSED, "target_branch": "main"}).merge_mr.assert_not_called()
+
+    def test_no_guard_record_blocks(self):
+        self._merge([], None).merge_mr.assert_not_called()
+
+    def test_mr_outside_release_branches_is_not_held_by_the_release_rail(self):
+        uat = {**self.GREEN, "target_branch": "UAT-for-online"}
+        with mock.patch.object(reviewer, "REVIEWS_DIR", Path("/nonexistent")), \
+             mock.patch.object(reviewer, "gitlab_client") as gl:
+            gl.get_project.return_value = {"default_branch": "master"}
+            self.assertIsNone(REAL_RELEASE_BLOCKER(self.CFG, "http://gl", "t", "g/p", uat))
+        gl.get_mr_changes.assert_not_called()
+
+    def test_unconfigured_test_hosts_block(self):
+        self._merge([], self.PASSED, cfg={"slack": {}, "review": {}}).merge_mr.assert_not_called()
+

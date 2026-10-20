@@ -14,6 +14,22 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
 
 ## Deployment gotchas (hard-won)
 
+- **mr-sentinel is the last check before release.** The final gates
+  (`final_gates.py` = `artifact_gate.py` + `release_guard.py`) exist because a
+  test button reached production after passing every review: the general review
+  is tuned to drop doubtful findings. They run at review time only, on MRs into
+  master/main or the project's default branch — no real-time branch watching,
+  and no auto re-run when an MR gets new commits or a new target after review.
+  Deliberate (owner's call, 2026-10-20): developers cannot merge into production
+  branches themselves, the rerun button re-runs the gate, auto-merge refuses a
+  verdict for another head or target, and a leak a developer slips past by not
+  re-running is on that developer. Do not re-propose poller-side re-gating. Rules for
+  anything on this path: fail closed (can't check completely = `failed`, never
+  "probably fine"), never sample or truncate, never let a model verdict waive a
+  gate, the guard is an *extra* review that lists anything strange (not only test
+  leaks) and sends whatever it is `unsure` about to Slack as 需要人工確認, and
+  keep them running when the review itself fails.
+
 - Schedulers (launchd/cron) run with a **minimal PATH**: plists must use absolute
   interpreter paths, and external CLIs are resolved via `engines.resolve_cli()`.
 - `config.json`, `state.json`, `bot_state.json`, `overrides.json`,

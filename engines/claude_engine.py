@@ -153,29 +153,43 @@ def run_review(work_dir: Path, context_file: Path, output_file: Path,
     return 0
 
 
-def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
-               repo_dir, review_cfg: dict) -> int:
-    """Re-judge findings the developer disputed (prompts/appeal.md).
-
-    Same file contract as run_review: context in, verdicts JSON out, rc back.
-    One pass, no skeptic — the findings were vetted already; this only weighs
-    the developer's reply against the code."""
-    prompt = render_prompt((PROMPTS_DIR / "appeal.md").read_text(),
+def _single_pass(template: str, log_name: str, work_dir: Path, context_file: Path,
+                 output_file: Path, repo_dir, review_cfg: dict) -> int:
+    """One read-only session, no skeptic: same file contract as run_review."""
+    prompt = render_prompt((PROMPTS_DIR / template).read_text(),
                            review_cfg.get("language", "en"), str(repo_dir),
                            context_file.name, output_file.name)
     cmd = build_cmd(prompt, None, str(repo_dir), review_cfg)
     try:
         from engines import resolve_cli
         cmd[0] = resolve_cli(cmd[0])
-        with open(work_dir / "claude-appeal.log", "w") as logf:
+        with open(work_dir / log_name, "w") as logf:
             proc = subprocess.run(cmd, cwd=str(work_dir), stdout=logf, stderr=subprocess.STDOUT,
                                   timeout=review_cfg["review_timeout_seconds"])
     except (subprocess.TimeoutExpired, OSError) as exc:
-        (work_dir / "claude-appeal.log").write_text(f"engine error: {exc}\n")
+        (work_dir / log_name).write_text(f"engine error: {exc}\n")
         return 1
     if proc.returncode != 0 or not output_file.exists():
         return 1
     return 0
+
+
+def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
+               repo_dir, review_cfg: dict) -> int:
+    """Re-judge findings the developer disputed (prompts/appeal.md).
+
+    One pass, no skeptic — the findings were vetted already; this only weighs
+    the developer's reply against the code."""
+    return _single_pass("appeal.md", "claude-appeal.log", work_dir, context_file,
+                        output_file, repo_dir, review_cfg)
+
+
+def run_guard(work_dir: Path, context_file: Path, output_file: Path,
+              repo_dir, review_cfg: dict) -> int:
+    """Hunt test leaks only (prompts/release_guard.md). No skeptic: a pass built
+    to drop doubtful findings is exactly what let them through before."""
+    return _single_pass("release_guard.md", "claude-guard.log", work_dir, context_file,
+                        output_file, repo_dir, review_cfg)
 
 
 def run_json(prompt: str, work_dir: Path, review_cfg: dict) -> dict:

@@ -22,12 +22,30 @@ scheduler (launchd / cron / systemd, every 60s)
        3. claim            :eyes: on the MR (+ Slack reaction when configured)
        4. size guard       pick depth by size: small → "lite" (1 gate), large → "deep" (3 gates)
        5. worktree         git fetch refs/merge-requests/<iid>/head → disposable worktree
-       6. AI engine        engines/<engine>.run_review(context, mode → findings)   ← only AI step
-       7. post             post_comment.py: inline discussion first, note fallback
+       6. AI engine        engines/<engine>.run_review(context, mode → findings)
+       6b. final gates     final_gates.py, only for MRs into master/main (or target_branches) or the
+                           project's GitLab default branch (lookup failed = gated); run once per
+                           review whatever the review said — no branch watching between reviews:
+                           artifact_gate.py — test-marker rule on added lines (git diff, not the
+                           API diff, which is empty for large MRs); a test-looking path is skipped
+                           only if nothing outside tests references it at the head.
+                           release_guard.py + engine.run_guard — an extra review: test leaks first,
+                           then anything strange for a release,
+                           no skeptic, over EVERY added line in batches; strict output schema
+                           incl. checked_files. Unreadable diff / missing test_hosts / failed or
+                           malformed batch / too many batches = failed, never passed.
+                           Every finding is `sure` or `unsure` (+ `human_check`); Slack lists the
+                           unsure ones, and any incomplete check, as 需要人工確認.
+                           Verdict → GitLab commit status `mr-sentinel/release-gate`
+       7. post             post_comment.py: rule → guard → review findings, duplicates dropped;
+                           inline discussion first, note fallback
        8. notify           optional Slack completion message
        9. auto-merge       if deep-clean + auto_merge_on_clean (a clean lite pass is re-run deep first):
                            merge pinned to the reviewed sha (unless draft/head moved/unmergeable/
-                           CI not green/CI config but no pipeline), then :done: on the notification
+                           CI not green/CI config but no pipeline), then :done: on the notification.
+                           Every auto-merge (appeals too) re-runs the marker rule and needs the
+                           release guard's pass for that exact head (review_meta.json `guard`);
+                           anything unknown fails closed
       10. cleanup          worktree removed (finally-block, even on crash)
 
 scheduler (second entry, every 15s)          — or long-lived with --socket
@@ -47,6 +65,7 @@ scheduler (second entry, every 15s)          — or long-lived with --socket
 
 ```python
 def run_review(work_dir, context_file, output_file, repo_dir, review_cfg) -> int
+def run_guard(work_dir, context_file, output_file, repo_dir, review_cfg) -> int  # guard_context_N.json → release_guard_N.json
 def label(review_cfg) -> str
 ```
 
@@ -168,6 +187,9 @@ prose is not. The final message is used for nothing.
 | `slack_bot.py` | poll Slack (or listen on Socket Mode) for mentions and clicks, dispatch commands (IO only) |
 | `socket_mode.py` | stdlib WebSocket client + Socket Mode envelope loop (ack-first, reconnect) |
 | `history/` | review history in SQLite: schema+migrations (`db`), GitLab sync, follow-ups, scoring, AI category backlog (`python3 -m history`), 個人軌跡 (`trajectory`), team weekly / project risk numbers (`reports`) |
+| `artifact_gate.py` | test-marker rule over added lines; MR diff from the clone (`git diff start..head`) |
+| `final_gates.py` | the final gates as one fail-closed verdict + commit status |
+| `release_guard.py` | release-guard pass plumbing: batches covering every added line, keyword hints, strict output validation |
 | `appeal.py` | re-judge findings the developer disputed; verdict replies, resolve, summary |
 | `blocks.py` | Block Kit buttons: build, retire after a click, parse a click back to a Command (pure) |
 | `commands.py` | parse / authorize / render usage, settings, status (pure) |

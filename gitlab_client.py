@@ -207,3 +207,15 @@ def find_user(base: str, token: str, username: str) -> dict | None:
     """Exact username lookup (works without admin rights)."""
     users = json.loads(_call(f"{base}/api/v4/users?username={urllib.parse.quote(username)}", token))
     return users[0] if users else None
+
+
+def set_commit_status(base: str, token: str, project, sha: str, state: str, name: str,
+                      description: str = "", target_url: str = "", ref: str = "") -> None:
+    """state: pending | running | success | failed | canceled. With `ref` the status
+    joins that branch's pipeline, which is what "Pipelines must succeed" checks."""
+    form = {"state": state, "name": name, "description": description}
+    if target_url:
+        form["target_url"] = target_url
+    if ref:
+        form["ref"] = ref
+    _call(f"{_project(base, project)}/statuses/{_sha(sha)}", token, method="POST", form=form)

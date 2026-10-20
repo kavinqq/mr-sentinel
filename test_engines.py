@@ -125,6 +125,34 @@ class TestCommand(unittest.TestCase):
                 self.assertEqual(claude_engine.run_appeal(
                     work, work / "c.json", work / "o.json", "/tmp/wt", CFG), 1)
 
+    def test_run_guard_is_single_pass_with_the_release_guard_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            out = work / "release_guard.json"
+
+            def fake_run(cmd, **kw):
+                out.write_text("{}")
+                return mock.Mock(returncode=0)
+
+            with mock.patch("engines.resolve_cli", return_value="claude"), \
+                 mock.patch("subprocess.run", side_effect=fake_run) as run:
+                rc = claude_engine.run_guard(work, work / "guard_context.json", out, "/tmp/wt", CFG)
+            self.assertTrue((work / "claude-guard.log").exists())
+        self.assertEqual(rc, 0)
+        cmd = run.call_args.args[0]
+        self.assertNotIn("--agents", cmd)                       # no skeptic may drop a leak
+        self.assertEqual(cmd[cmd.index("--model") + 1], CFG["claude"]["model"])
+        prompt = cmd[cmd.index("-p") + 1]
+        self.assertIn("RELEASE GUARD", prompt)
+        self.assertIn("guard_context.json", prompt)
+
+    def test_run_guard_fails_without_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)):
+                self.assertEqual(claude_engine.run_guard(
+                    work, work / "c.json", work / "o.json", "/tmp/wt", CFG), 1)
+
     def test_run_review_fails_when_no_output(self):
         with tempfile.TemporaryDirectory() as d:
             work = pathlib.Path(d)

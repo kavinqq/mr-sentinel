@@ -96,6 +96,27 @@ class TestRunAppeal(unittest.TestCase):
                                                          "/tmp/wt", CFG), 1)
 
 
+class TestRunGuard(unittest.TestCase):
+    def test_reply_becomes_the_guard_file(self):
+        reply = '{"findings": [{"severity": "high", "file": "a.py", "line": 1}]}'
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch.object(codex_engine, "_exec_pass", return_value=reply) as run:
+                rc = codex_engine.run_guard(work, work / "guard_context.json",
+                                            work / "release_guard.json", "/tmp/wt", CFG)
+            self.assertEqual(rc, 0)
+            self.assertIn("RELEASE GUARD", run.call_args.args[0])
+            out = json.loads((work / "release_guard.json").read_text())
+            self.assertEqual(out["findings"][0]["file"], "a.py")
+
+    def test_reply_without_findings_list_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            with mock.patch.object(codex_engine, "_exec_pass", return_value='{"ok": 1}'):
+                self.assertEqual(codex_engine.run_guard(work, work / "c.json", work / "o.json",
+                                                        "/tmp/wt", CFG), 1)
+
+
 class TestRunReview(unittest.TestCase):
     def test_two_pass_flow_writes_final_findings(self):
         scan_reply = json.dumps({"findings": [

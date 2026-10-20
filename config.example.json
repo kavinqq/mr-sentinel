@@ -35,6 +35,12 @@
     "codex": {
       "model": "",
       "skeptic_model": ""
+    },
+    "release_guard": {
+      "test_hosts": ["uat.example.com", "staging.example.com", "10.0.2."],
+      "environment_notes": "Production is www.example.com. UAT is uat.example.com, selected by the DEBUG setting in settings/local_settings.py.",
+      "max_diff_lines": 3000,
+      "max_batches": 15
     }
   }
 }

@@ -21,13 +21,16 @@ from collections import Counter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import artifact_gate
 import blocks
 import engines
 from history import rate as history_rate
 from history import sync as history_sync
 import fetch_mr
+import final_gates
 import gitlab_client
 import post_comment
+import release_guard
 import review_common
 import slack_client
 from sentinel_config import (SCRIPT_DIR, SOCKET_HEARTBEAT_MAX_AGE, SOCKET_HEARTBEAT_PATH,
@@ -56,6 +59,9 @@ def completion_text(project_path: str, iid, web_url, findings: list, posted: int
 
 def build_signature(engine_label: str) -> str:
     return f"— 🤖 mr-sentinel AI review ({engine_label})"
+
+
+GATE_LABEL = "test-marker rule"
 
 
 # ---------- IO ----------
@@ -139,7 +145,8 @@ def _maybe_auto_merge(config: dict, base: str, token: str,
                            f"mergeability check failed ({exc}) — merge manually\n{web_url}", thread_ts)
         return
 
-    blocker = review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
+    blocker = (review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
+               or _release_blocker(config, base, token, project_path, mr))
     if blocker:
         log.info("MR !%s clean but not auto-merged: %s", iid, blocker)
         retry = (blocks.rerun_buttons(project_path, iid, label="🔁 重審最新 commit")
@@ -165,6 +172,106 @@ def _maybe_auto_merge(config: dict, base: str, token: str,
     _slack_say(config, f":white_check_mark: {project_path} MR !{iid} auto-merged "
                        f"(AI review clean)\n{web_url}", thread_ts)
     _mark_notification_merged(config, thread_ts)
+
+
+def without_covered(ai: list, gate_findings: list) -> list:
+    """Review findings minus those on a line a final gate already reported."""
+    covered = {(f["file"], n) for f in gate_findings for n in f.get("hit_lines") or [f.get("line")]}
+    return [f for f in ai if (f.get("file"), f.get("line")) not in covered]
+
+
+def _set_status(config: dict, project_path: str, sha: str, ref: str | None, web_url: str | None,
+                state: str, description: str) -> None:
+    """Publish the final-gate verdict on the commit; GitLab can then refuse the merge
+    ("Pipelines must succeed"). A failed write is logged, never raised: the Slack and
+    MR-comment signals still go out, and auto-merge has its own rail."""
+    try:
+        gitlab_client.set_commit_status(config["gitlab_url"], config["gitlab_token"], project_path,
+                                        sha, state, final_gates.STATUS_NAME, description,
+                                        web_url or "", ref or "")
+    except Exception:
+        log.exception("commit status %s for %s@%s not set", state, project_path, sha)
+
+
+def _fail_status(config: dict, project_path: str, iid, reason: str) -> None:
+    """Best effort: mark the MR's current head failed when the gates could not run."""
+    try:
+        mr = gitlab_client.get_mr(config["gitlab_url"], config["gitlab_token"], project_path, iid)
+        _set_status(config, project_path, mr["sha"], mr.get("source_branch"), mr.get("web_url"),
+                    "failed", f"正式分支額外 review 未完成:{reason}"[:255])
+    except Exception:
+        log.exception("could not mark MR !%s failed", iid)
+
+
+def _post_gate_findings(config: dict, engine, project_path: str, iid, ctx: dict,
+                        findings: list) -> int:
+    """Rule hits and guard leaks go up under their own signatures."""
+    base, token, review_cfg = config["gitlab_url"], config["gitlab_token"], config["review"]
+    groups = [
+        ([f for f in findings if f.get("gate") == artifact_gate.GATE_NAME],
+         build_signature(GATE_LABEL)),
+        ([f for f in findings if f.get("gate") == release_guard.GATE_NAME],
+         build_signature(f"release guard · {engine.label(review_cfg, 'lite')}")),
+    ]
+    posted = 0
+    for items, signature in groups:
+        if items:
+            posted += post_comment.post_findings(base, token, project_path, iid, items,
+                                                 ctx["diff_refs"], signature=signature)
+    return posted
+
+
+def _main_branch(base: str, token: str, project_path: str) -> str | None:
+    """The project's default branch, or None when GitLab cannot say (final_gates.applies
+    then gates the MR anyway)."""
+    try:
+        return gitlab_client.get_project(base, token, project_path).get("default_branch")
+    except Exception:
+        log.exception("default branch of %s unavailable; gating the MR", project_path)
+        return None
+
+
+def _release_blocker(config: dict, base: str, token: str, project_path: str,
+                     mr: dict) -> str | None:
+    """Final rail before any auto-merge, including one reached through accepted
+    appeals: the marker rule is re-run on the head about to merge, and the release
+    guard must have passed that exact head. No AI verdict can waive either, and
+    anything that cannot be confirmed fails closed."""
+    review_cfg = config.get("review", {})
+    if not final_gates.applies(mr.get("target_branch"), review_cfg,
+                               _main_branch(base, token, project_path)):
+        return None
+    problem = release_guard.config_problem(review_cfg.get("release_guard", {}))
+    if problem:
+        return problem
+    local = review_common.resolve_local_path(project_path, review_cfg)
+    try:
+        api = review_common.filter_noise_changes(
+            gitlab_client.get_mr_changes(base, token, project_path, mr["iid"]).get("changes") or [])
+    except Exception:
+        log.exception("auto-merge: MR changes for the test-marker rule unavailable")
+        api = None
+    diff_refs = mr.get("diff_refs") or {}
+    changes = artifact_gate.collect(local, diff_refs, mr.get("target_branch") or "", api)
+    if changes is None:
+        return "test-marker rule could not read the diff"
+    exempt = artifact_gate.exempt_test_files(local, diff_refs.get("head_sha", ""),
+                                             [c["new_path"] for c in changes if c.get("new_path")])
+    hits = artifact_gate.scan(changes, review_cfg.get("language", "en"), exempt)
+    if hits:
+        return f"test-only code in {len(hits)} file(s)"
+    guard = read_review_meta(REVIEWS_DIR / str(mr.get("id"))).get("guard")
+    if not guard:
+        return ("正式分支額外 review 沒跑過這個 MR(可能是 review 後才改成合進 "
+                f"`{mr.get('target_branch')}`),需要人工確認或按重審")
+    if guard.get("target_branch") != mr.get("target_branch"):
+        return (f"正式分支額外 review 是針對合進 `{guard.get('target_branch')}` 跑的,"
+                f"MR 現在要合進 `{mr.get('target_branch')}`,需要人工確認或按重審")
+    if guard.get("head_sha") != mr.get("sha") or not guard.get("ok"):
+        return "release guard has not passed this commit"
+    if guard.get("leaks"):
+        return f"release guard found {guard['leaks']} test leak(s)"
+    return None
 
 
 MERGED_REACTIONS = ("done", "white_check_mark")
@@ -246,12 +353,14 @@ def _remove_worktree(local: str, wt: Path) -> None:
 REVIEW_META = "review_meta.json"
 
 
-def write_review_meta(work: Path, mode: str, head_sha: str, findings: int) -> None:
+def write_review_meta(work: Path, mode: str, head_sha: str, findings: int,
+                      guard: dict | None = None) -> None:
     """What the last review actually covered. appeal.py reads it: merging after
     accepted appeals must keep the same rails as a clean review (deep, and the
-    reviewed sha — never code pushed after the review)."""
+    reviewed sha — never code pushed after the review). `guard` is the release
+    guard's verdict ({head_sha, target_branch, ok, leaks}) that _release_blocker requires."""
     (work / REVIEW_META).write_text(json.dumps(
-        {"mode": mode, "head_sha": head_sha, "findings": findings}, indent=1))
+        {"mode": mode, "head_sha": head_sha, "findings": findings, "guard": guard}, indent=1))
 
 
 def read_review_meta(work: Path) -> dict:
@@ -332,22 +441,26 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
 
     # 5. local clone + fetch MR ref + disposable worktree
     wt = work / "wt"
+    ref, web_url = ctx.get("source_branch"), ctx.get("web_url")
+    # the final gates guard what is about to be released: MRs into a main branch only
+    gated = final_gates.applies(ctx.get("target_branch"), review_cfg,
+                                _main_branch(base, token, project_path))
+    if gated and not dry_run:
+        _set_status(config, project_path, head_sha, ref, web_url, "pending", "正式分支額外 review 進行中")
     local, failure = prepare_worktree(project_path, iid, head_sha, wt, review_cfg)
-    if failure == "no_clone":
+    if failure:
         if not dry_run:
-            _slack_say(config, f":warning: local clone not found for {project_path}, "
-                               f"MR !{iid} skipped", thread_ts)
-        return 1
-    if failure == "fetch":
-        if not dry_run:
-            _slack_say(config, f":warning: git fetch failed for {project_path} MR !{iid}", thread_ts)
-        return 1
-    if failure == "worktree":
-        if not dry_run:
+            reason = {"no_clone": f"local clone not found for {project_path}",
+                      "fetch": "git fetch failed",
+                      "worktree": "worktree setup failed"}[failure]
             # the MR is already claimed (:eyes:) and will never be retried;
             # every failure branch must produce a human-visible signal
-            _slack_say(config, f":warning: worktree setup failed for {project_path} MR !{iid}, "
-                               f"please review manually\n{ctx.get('web_url')}", thread_ts)
+            if gated:
+                _set_status(config, project_path, head_sha, ref, web_url, "failed",
+                            f"正式分支額外 review 未完成:{reason}")
+                reason += "。正式分支額外 review 也沒跑,*需要人工確認*沒有測試內容或可疑的地方"
+            _slack_say(config, f":warning: {project_path} MR !{iid}: {reason}, "
+                               f"please review manually\n{web_url}", thread_ts)
         return 1
 
     try:
@@ -379,19 +492,41 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
 
         auto_merge = bool(review_cfg.get("auto_merge_on_clean"))
         result, mode = _review_with_confirmation(run, mode, auto_merge)
+
+        # 6b. the final gates run whatever the review said: they are the last check
+        #     before release, so a failed review must not skip them
+        outcome = (final_gates.run(engine, work, ctx, local, wt, review_cfg) if gated
+                   else final_gates.NOT_APPLICABLE)
+        gate_findings = outcome.findings
+        # an ungated review leaves no verdict: if the MR is retargeted to a main
+        # branch later, _release_blocker must not read "not applicable" as "passed"
+        guard_record = outcome.record(head_sha, ctx.get("target_branch")) if gated else None
+        if gated:
+            _set_status(config, project_path, head_sha, ref, web_url, *final_gates.status(outcome))
+        if not outcome.passed:
+            _slack_say(config, final_gates.slack_text(project_path, iid, web_url,
+                                                      ctx.get("target_branch"), outcome),
+                       thread_ts,
+                       None if outcome.ok else blocks.rerun_buttons(project_path, iid, label="🔁 重審"))
+
         if result is None:
+            _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
+            write_review_meta(work, mode, head_sha, len(gate_findings), guard_record)
             _slack_say(config, f":warning: {project_path} MR !{iid} review did not finish, "
-                               f"please review manually\n{ctx.get('web_url')}", thread_ts,
+                               f"please review manually\n{web_url}", thread_ts,
                        blocks.rerun_buttons(project_path, iid, label="🔁 再試一次"))
             return 1
 
         # 7. post comments (scripts post; the AI never does)
-        findings = result.get("findings", [])
-        posted = post_comment.post_findings(
-            base, token, project_path, iid, findings, ctx["diff_refs"],
+        ai_findings = without_covered(result.get("findings", []), gate_findings)
+        findings = gate_findings + ai_findings
+        result["findings"] = findings
+        posted = _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
+        posted += post_comment.post_findings(
+            base, token, project_path, iid, ai_findings, ctx["diff_refs"],
             signature=build_signature(engine.label(review_cfg, mode)))
 
-        write_review_meta(work, mode, head_sha, len(findings))
+        write_review_meta(work, mode, head_sha, len(findings), guard_record)
         # into the db -> blame -> follow-ups -> every score -> change log (never raises)
         history_sync.sync_mr(config, project_path, iid,
                              trigger=f"review 完成 {project_path.rsplit('/', 1)[-1]}!{iid}"
@@ -404,8 +539,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                                        label="🔁 修好了，重審" if findings else "🔁 重審")
         if posted:
             buttons += blocks.appeal_buttons(project_path, iid)
-        text = completion_text(project_path, iid, ctx.get("web_url"),
-                               findings, posted, language, mode)
+        text = completion_text(project_path, iid, web_url, findings, posted, language, mode)
         if posted < len(findings):
             text += (f"\n:warning: {len(findings) - posted} 則留言沒發成功"
                      f"(GitLab 回錯誤),可以按重審補上")
@@ -416,9 +550,9 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         #    announced by now: a crash here must not read as a failed review, which
         #    main() would answer by deleting the comments and reviewing again.
         try:
-            if auto_merge and review_common.auto_merge_eligible(mode, result):
-                _maybe_auto_merge(config, base, token, project_path, iid, ctx.get("web_url"),
-                                  thread_ts, reviewed_sha=ctx["diff_refs"]["head_sha"])
+            if auto_merge and outcome.passed and review_common.auto_merge_eligible(mode, result):
+                _maybe_auto_merge(config, base, token, project_path, iid, web_url,
+                                  thread_ts, reviewed_sha=head_sha)
         except Exception:
             log.exception("auto-merge step of MR !%s crashed after the review was announced", iid)
         return 0
@@ -551,6 +685,7 @@ def main() -> int:
             if args.dry_run:
                 return 1
             # reset + spawn stay under the lock; a Slack rerun refuses while it is held
+            _fail_status(config, args.project, args.iid, f"{type(exc).__name__}")
             if not _retry_automatically(config, state, args.project, args.iid, args.mr_id,
                                         args.attempt, exc, args.mode):
                 _report_crash(config, state, args.project, args.iid, args.mr_id, exc)

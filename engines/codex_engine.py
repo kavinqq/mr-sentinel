@@ -132,22 +132,41 @@ READ_ONLY_REPLY = ("\n\nIMPORTANT: you run in a read-only sandbox and cannot wri
                    "object as your final message instead.")
 
 
-def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
-               repo_dir, review_cfg: dict) -> int:
-    """Re-judge disputed findings (prompts/appeal.md) in one codex pass; the script
-    writes the verdicts file from the reply, as the sandbox is read-only."""
-    prompt = render_prompt((PROMPTS_DIR / "appeal.md").read_text(),
+def _single_pass(template: str, key: str, work_dir: Path, context_file: Path,
+                 output_file: Path, repo_dir, review_cfg: dict, required: bool) -> int:
+    """One codex pass; the script writes `{key: [...]}` from the reply, as the
+    sandbox is read-only. `required`: a reply without that list is a failure
+    instead of an empty list."""
+    prompt = render_prompt((PROMPTS_DIR / template).read_text(),
                            review_cfg.get("language", "en"), str(repo_dir),
                            context_file.name, output_file.name) + READ_ONLY_REPLY
     try:
         reply = parse_json_reply(_exec_pass(prompt, work_dir,
                                             review_cfg["codex"].get("model", ""),
                                             review_cfg["review_timeout_seconds"]))
-        output_file.write_text(json.dumps({"verdicts": reply.get("verdicts", [])},
-                                          ensure_ascii=False, indent=1))
+        items = reply.get(key)
+        if not isinstance(items, list):
+            if required:
+                return 1
+            items = []
+        output_file.write_text(json.dumps({key: items}, ensure_ascii=False, indent=1))
         return 0
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
         return 1
+
+
+def run_appeal(work_dir: Path, context_file: Path, output_file: Path,
+               repo_dir, review_cfg: dict) -> int:
+    """Re-judge disputed findings (prompts/appeal.md) in one codex pass."""
+    return _single_pass("appeal.md", "verdicts", work_dir, context_file, output_file,
+                        repo_dir, review_cfg, required=False)
+
+
+def run_guard(work_dir: Path, context_file: Path, output_file: Path,
+              repo_dir, review_cfg: dict) -> int:
+    """Hunt test leaks only (prompts/release_guard.md), no skeptic pass."""
+    return _single_pass("release_guard.md", "findings", work_dir, context_file, output_file,
+                        repo_dir, review_cfg, required=True)
 
 
 def run_json(prompt: str, work_dir: Path, review_cfg: dict) -> dict:
