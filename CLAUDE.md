@@ -26,7 +26,9 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   re-running is on that developer. Do not re-propose poller-side re-gating. Rules for
   anything on this path: fail closed (can't check completely = `failed`, never
   "probably fine"), never sample or truncate, never let a model verdict waive a
-  gate, the guard is an *extra* review that lists anything strange (not only test
+  gate (only an admin's ✅ sign-off in `merge_retry.py`, for `unsure` / unfinished
+  holds on that exact head; never a `sure` finding or the marker rule), the
+  guard is an *extra* review that lists anything strange (not only test
   leaks) and sends whatever it is `unsure` about to Slack as 需要人工確認, and
   keep them running when the review itself fails.
 

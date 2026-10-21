@@ -33,6 +33,8 @@ ALIASES = {
     "status": "status", "stat": "status", "st": "status", "狀態": "status", "狀況": "status",
     "rerun": "rerun", "re": "rerun", "retry": "rerun", "重跑": "rerun", "重審": "rerun",
     "appeal": "appeal", "nofix": "appeal", "申訴": "appeal", "不用修": "appeal",
+    "merge": "merge", "合併": "merge", "重新合併": "merge",
+    "waive": "waive", "放行": "waive",
     "set": "set", "設定": "set",
     "reset": "reset", "還原": "reset", "重設": "reset",
     "pause": "pause", "暫停": "pause", "mute": "pause",
@@ -45,9 +47,9 @@ ALIASES = {
 # its tier is declared here on purpose.
 TIERS = {
     "help": PUBLIC, "status": PUBLIC, "unknown": PUBLIC,
-    "rerun": MEMBER, "appeal": MEMBER,
+    "rerun": MEMBER, "appeal": MEMBER, "merge": MEMBER,
     "set": ADMIN, "reset": ADMIN, "pause": ADMIN, "resume": ADMIN,
-    "automerge": ADMIN, "projects": ADMIN,
+    "automerge": ADMIN, "projects": ADMIN, "waive": ADMIN,
 }
 
 value_choices = overrides.value_choices
@@ -171,6 +173,7 @@ def format_help(is_admin: bool, handle: str = BOT_HANDLE) -> str:
         "• `rerun !481 deep` — 強制三關對抗式審查(`lite` = 單關快掃)",
         "• `appeal !481` — 已在 GitLab 回覆「不用修」的理由,請 AI 讀回覆重新判斷",
         "  (理由成立就 resolve 討論串;和重跑共用每小時上限)",
+        "• `merge !481` — AI review 都過了卻沒自動合併(例如 CI 重跑好了),重新檢查後合併",
         "  _在 MR 通知的 thread 裡回覆可以省略 MR 編號_",
     ]
     if is_admin:
@@ -181,6 +184,8 @@ def format_help(is_admin: bool, handle: str = BOT_HANDLE) -> str:
             "• `set effort high` — 改單一設定",
             "• `reset effort` / `reset all` — 回到 config.json 的值",
             "• `automerge on|off` — 乾淨時是否自動合併",
+            "• `waive !481` — 人工確認過正式分支額外 review 的「需要人工確認」項目,"
+            "放行並合併(確定問題不能放行)",
             f"• `pause 2h` / `resume` — 暫停通知與 review(最多 "
             f"{MAX_PAUSE_SECONDS // 3600} 小時,期間的 MR 會累積不會漏)",
             "",

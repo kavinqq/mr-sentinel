@@ -95,7 +95,7 @@ leave the `slack` block empty to disable notifications entirely.
 | `review.engine` | `claude` (default) or `codex` (experimental) |
 | `review.max_changed_files` / `max_diff_lines` | Tier boundary: within both limits an MR gets a 1-gate `lite` review (scan only); over either limit it escalates to a 3-gate `deep` review (scan → vet → adjudicate) |
 | `review.auto_merge_on_clean` | `false` (default) or `true`: when a **deep** review finds **zero** problems, auto-merge the MR and mark the Slack notification `:done:` (falls back to `:white_check_mark:`). A clean lite review is first confirmed by a deep pass. Never merges a draft, a head that moved since the review, a non-mergeable MR, a non-green pipeline, or a project with CI config but no pipeline |
-| `review.release_guard.test_hosts` / `environment_notes` / `max_diff_lines` / `max_batches` / `target_branches` | **The final gates — the last check before release.** Every review of an MR into master/main (`target_branches` replaces that list) or the project's GitLab default branch (always included, and an MR whose default branch cannot be looked up is gated too) gets an **extra** review on top of the normal one: a dedicated pass that hunts test leaks first — test-only features, test/UAT hosts and IPs, test settings, test accounts, bypassed checks — and then anything else that looks strange for a release (debug output, TODO/temporary code, hard-coded secrets or ids, files that should not ship, changes the description does not explain), with no skeptic to drop them, plus a plain test-marker rule (`測試用`, `TEST ONLY`, `DO NOT MERGE` …). Every added line is reviewed, in batches of `max_diff_lines` — build output and vendored code included, since they ship; only lockfiles, source maps and images are skipped, and minified bundles (`.min.js` / `.min.css`) get the marker rule plus a `test_hosts` match instead of the model; more than `max_batches` batches needs a human. `test_hosts` is mandatory. Each guard finding is `sure` or `unsure`; the unsure ones, and any check that did not complete, are posted to Slack as **需要人工確認** with what to look at. Nothing watches branches between reviews. The verdict is posted as the commit status `mr-sentinel/release-gate` and fails closed: anything not checked completely is `failed`. No AI verdict can waive it, and it blocks auto-merge. To make GitLab itself refuse the merge, turn on **Pipelines must succeed** in each project |
+| `review.release_guard.test_hosts` / `environment_notes` / `max_diff_lines` / `max_batches` / `target_branches` | **The final gates — the last check before release.** Every review of an MR into master/main (`target_branches` replaces that list) or the project's GitLab default branch (always included, and an MR whose default branch cannot be looked up is gated too) gets an **extra** review on top of the normal one: a dedicated pass that hunts test leaks first — test-only features, test/UAT hosts and IPs, test settings, test accounts, bypassed checks — and then anything else that looks strange for a release (debug output, TODO/temporary code, hard-coded secrets or ids, files that should not ship, changes the description does not explain), with no skeptic to drop them, plus a plain test-marker rule (`測試用`, `TEST ONLY`, `DO NOT MERGE` …). Every added line is reviewed, in batches of `max_diff_lines` — build output and vendored code included, since they ship; only lockfiles, source maps and images are skipped, and minified bundles (`.min.js` / `.min.css`) get the marker rule plus a `test_hosts` match instead of the model; more than `max_batches` batches needs a human. `test_hosts` is mandatory. Each guard finding is `sure` or `unsure`; the unsure ones, and any check that did not complete, are posted to Slack as **需要人工確認** with what to look at. Nothing watches branches between reviews. The verdict is posted as the commit status `mr-sentinel/release-gate` and fails closed: anything not checked completely is `failed`. No AI verdict can waive it (only an admin's ✅ sign-off, for what the gate was unsure about), and it blocks auto-merge. To make GitLab itself refuse the merge, turn on **Pipelines must succeed** in each project |
 | `review.claude.model` / `skeptic_model` / `effort` | Scanner + adjudicator model (gates 1 & 3), skeptic subagent model (gate 2), reasoning effort |
 | `review.codex.model` / `skeptic_model` | Codex models (empty = CLI default) |
 
@@ -133,6 +133,8 @@ messages carry buttons, so the common case needs no typing at all:
 | 申訴結果 (findings still open) | 🔁 修好了，重審 · 💬 已留言,我覺得不用修 |
 | review did not finish | 🔁 再試一次 |
 | auto-merge blocked by new commits | 🔁 重審最新 commit |
+| auto-merge blocked otherwise (the message lists every failed job / status and the gate's 需要人工確認 items) | 🔀 重新合併 · ✅ 已人工確認,放行合併 (admin, only when the gate is all `unsure` or did not finish) |
+| final gate held (unsure only, or did not finish) | ✅ 已人工確認,放行合併 (admin) · 🔁 重審 (did not finish) |
 
 A click is turned back into the typed command (`rerun g/app!481 deep`) and goes
 through the same permission check and hourly rerun budget. A permission refusal
@@ -151,6 +153,22 @@ When nothing is left open and `auto_merge_on_clean` is on, the normal auto-merge
 rails apply, pinned to the sha the last *deep* review covered (a lite review,
 or code pushed after the review, is never merged this way). Appeals share the
 hourly rerun budget.
+
+**🔀 重新合併 (`merge !N`).** For a clean MR whose auto-merge was blocked (a red CI
+run that has since been retried, a conflict that was fixed): `merge_retry.py`
+re-checks the same rule as an appeal (every AI thread closed, last review deep)
+and then every auto-merge rail. It never gets past a rail; it costs no model
+quota.
+
+**✅ 已人工確認,放行合併 (`waive !N`, admin).** The final gate holds an MR when it is
+*unsure* about something or could not finish; that is a human's call. An admin who
+has checked the listed items presses this: the gate's commit status becomes
+`success` (`人工確認放行(name)`), the sign-off is written to `review_meta.json` for
+that head and target only, the gate's 需要人工確認 threads on GitLab are answered and
+resolved, a note on the MR records who released it, and then 🔀 runs. A *sure*
+gate finding, a verdict for another head or target, or an older record that does
+not separate sure from unsure, cannot be signed off: fix it, or rerun. The
+test-marker rule is re-run at merge time and is never waived.
 
 Slack app setup (once): **Socket Mode** → enable, generate an app-level token
 with `connections:write` → `slack.app_token`. **Interactivity & Shortcuts** →

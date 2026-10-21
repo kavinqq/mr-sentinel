@@ -202,7 +202,7 @@ def build_batches(ctx: dict, changes: list[dict], guard_cfg: dict,
 
 
 _REQUIRED_TEXT = ("title", "problem", "impact", "fix")
-_HUMAN_CHECK = {"zh": "需要人工確認", "en": "Needs a human check"}
+HUMAN_CHECK = {"zh": "需要人工確認", "en": "Needs a human check"}
 
 
 def _valid_finding(f, files: set) -> bool:
@@ -227,7 +227,7 @@ def _with_human_check(f: dict, language: str) -> dict:
     """An unsure finding's MR comment leads with what the human must confirm."""
     if f["confidence"] != "unsure":
         return f
-    label = _HUMAN_CHECK["zh" if language.startswith("zh") else "en"]
+    label = HUMAN_CHECK["zh" if language.startswith("zh") else "en"]
     return {**f, "evidence": f"- **{label}**:{f['human_check']}\n{f.get('evidence') or ''}".rstrip()}
 
 

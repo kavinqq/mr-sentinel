@@ -794,3 +794,43 @@ class TestBotStateIO(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMergeButtons(unittest.TestCase):
+    def press(self, harness, verb, user=ADMIN, rerun_log=None):
+        if rerun_log is not None:
+            harness.bot.bot_state["rerun_log"] = rerun_log
+        gl = slack_bot.gitlab_client
+        with mock.patch.object(gl, "get_mr", return_value={"id": 100, "state": "opened"}), \
+             mock.patch.object(slack_bot.merge_retry, "spawn_detached") as spawn, \
+             mock.patch.object(slack_bot.slack_client, "chat_update") as update, \
+             mock.patch.object(slack_bot.slack_client, "post_ephemeral") as whisper:
+            harness.bot.on_socket_event("interactive",
+                                        click_payload(["g/app!481"], user=user, verb=verb))
+        return spawn, update, whisper
+
+    def test_merge_retry_spawns_without_signing_anything_off(self):
+        with BotHarness() as h:
+            spawn, update, _ = self.press(h, "merge", user=OTHER)
+            spawn.assert_called_once_with("g/app", "481", "100", waived_by=None)
+            update.assert_called_once()                          # button retired
+
+    def test_merge_retry_runs_no_model_so_spends_no_budget(self):
+        now = datetime.now(timezone.utc).isoformat()
+        with BotHarness() as h:
+            spawn, _, _ = self.press(h, "merge", user=OTHER,
+                                     rerun_log=[now] * commands.RERUN_LIMIT_PER_HOUR)
+            spawn.assert_called_once()
+            self.assertEqual(len(h.bot.bot_state["rerun_log"]), commands.RERUN_LIMIT_PER_HOUR)
+
+    def test_admin_sign_off_carries_who_pressed(self):
+        with BotHarness() as h:
+            spawn, _, _ = self.press(h, "waive")
+            spawn.assert_called_once_with("g/app", "481", "100", waived_by=ADMIN)
+
+    def test_sign_off_is_admin_only(self):
+        with BotHarness() as h:
+            spawn, update, whisper = self.press(h, "waive", user=OTHER)
+            spawn.assert_not_called()
+            update.assert_not_called()
+            self.assertIn("admin", whisper.call_args.args[3])

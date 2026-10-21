@@ -24,6 +24,7 @@ import release_guard
 STATUS_NAME = "mr-sentinel/release-gate"
 GUARD_WORKERS = 3
 DEFAULT_TARGET_BRANCHES = ("master", "main")
+UNFINISHED_CHECK = "這個 MR 沒有測試字樣、測試連結、測試按鈕、測試帳號或測試設定"
 
 log = logging.getLogger("mr_sentinel.final_gates")
 
@@ -48,9 +49,15 @@ class Outcome:
 
     def record(self, head_sha: str, target_branch: str | None) -> dict:
         """What review_meta.json keeps for _release_blocker. The same head into a
-        different branch is a different diff, so the verdict is bound to both."""
+        different branch is a different diff, so the verdict is bound to both.
+        `sure` and `human_checks` say what an admin may sign off (merge_retry)."""
+        sure, unsure = _split(self.findings)
+        checks = [] if self.ok else [f"正式分支額外 review 沒跑完:{self.problem} — 請確認:"
+                                     f"{UNFINISHED_CHECK}"]
         return {"head_sha": head_sha, "target_branch": target_branch,
-                "ok": self.ok, "leaks": len(self.findings)}
+                "ok": self.ok, "leaks": len(self.findings), "sure": len(sure),
+                "human_checks": checks + [f"{_where(f)} {f.get('title', '')} — 請確認:"
+                                          f"{f['human_check']}" for f in unsure]}
 
 
 def applies(target_branch: str | None, review_cfg: dict, default_branch: str | None) -> bool:
@@ -156,8 +163,7 @@ def slack_text(project_path: str, iid, web_url: str | None, target_branch: str |
     lines = []
     if not outcome.ok:
         lines += [f":warning: *需要人工確認* — {head}沒有完整跑完:{outcome.problem}",
-                  "請人工檢查這個 MR 沒有測試字樣、測試連結、測試按鈕、測試帳號或測試設定,"
-                  "確認後再合併。"]
+                  f"請人工檢查{UNFINISHED_CHECK},確認後再合併。"]
     else:
         lines.append(f":no_entry: {head}沒過")
     if sure:

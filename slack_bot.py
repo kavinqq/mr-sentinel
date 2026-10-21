@@ -44,6 +44,7 @@ import blocks
 import appeal
 import commands
 import gitlab_client
+import merge_retry
 import overrides
 import review_common
 import reviewer
@@ -59,7 +60,7 @@ HISTORY_LIMIT = 50
 # single status command will read looking for a project's last review
 PROJECT_SCAN_LIMIT = 400
 # verbs a button may carry; anything else in a (forged) button value is refused
-BUTTON_VERBS = {"rerun", "appeal"}
+BUTTON_VERBS = {"rerun", "appeal", "merge", "waive"}
 CLICK_LOG_LIMIT = 200
 HANDLED_LIMIT = 500
 
@@ -344,6 +345,10 @@ class Bot:
             return
         if cmd.verb == "appeal":
             note = f":scales: <@{user}> 已送出「不用修」,AI 正在讀回覆"
+        elif cmd.verb == "merge":
+            note = f":twisted_rightwards_arrows: <@{user}> 按了重新合併,檢查中(結果會回在下面)"
+        elif cmd.verb == "waive":
+            note = f":hourglass: <@{user}> 送出人工放行,確認中 — 還沒合併(結果會回在下面)"
         else:
             note = f":recycle: <@{user}> 已觸發重審(`{cmd.args[-1] if cmd.args else 'auto'}`)"
         new_blocks = blocks.resolved(click["blocks"], note)
@@ -367,7 +372,7 @@ class Bot:
     def dispatch(self, cmd: commands.Command, user: str, thread_ts: str | None) -> None:
         handler = {
             "help": self.do_help, "status": self.do_status, "rerun": self.do_rerun,
-            "appeal": self.do_appeal,
+            "appeal": self.do_appeal, "merge": self.do_merge, "waive": self.do_waive,
             "set": self.do_set, "reset": self.do_reset, "automerge": self.do_automerge,
             "pause": self.do_pause, "resume": self.do_resume,
             "projects": self.do_projects, "unknown": self.do_unknown,
@@ -633,11 +638,13 @@ class Bot:
                                           key=lambda kv: kv[0], reverse=True)
                 if mr_id in seen]
 
-    def resolve_target(self, cmd, user, thread_ts, verb: str = "rerun"):
-        """Shared front half of rerun/appeal: which MR, is it ours, is there budget.
+    def resolve_target(self, cmd, user, thread_ts, verb: str = "rerun",
+                       costs_quota: bool = True):
+        """Shared front half of rerun/appeal/merge: which MR, is it ours, is there budget.
 
         Returns (project, iid, mr_id), or None after telling the user why not.
-        Both burn model quota, so they share the hourly rerun budget."""
+        Rerun and appeal burn model quota, so they share the hourly rerun budget;
+        a merge retry runs no model and passes `costs_quota=False`."""
         target = None
         for arg in cmd.args:
             project, iid = commands.parse_target(arg)
@@ -669,7 +676,8 @@ class Bot:
             return None
 
         rerun_log = self.bot_state.setdefault("rerun_log", [])
-        if not commands.rerun_allowed(rerun_log, self.now(), is_admin=self.is_admin(user)):
+        if costs_quota and not commands.rerun_allowed(rerun_log, self.now(),
+                                                      is_admin=self.is_admin(user)):
             self.say(f":warning: 重跑太頻繁了(每小時上限 {commands.RERUN_LIMIT_PER_HOUR} 次,"
                      f"admin 不受限)。每次重跑都會消耗模型額度,等一下再試。", thread_ts)
             return None
@@ -738,6 +746,21 @@ class Bot:
         self.say(f":scales: 讀取 `{project}` !{iid} 的 {len(appeals)} 則回覆中,"
                  f"判斷完會回在 GitLab 討論串", thread_ts)
         return True
+
+    def do_merge(self, cmd, user, thread_ts, waive: bool = False):
+        """🔀 retry the merge of a clean MR; with `waive` (✅, admin-only by
+        commands.TIERS) sign off the release gate first. merge_retry.py decides."""
+        resolved = self.resolve_target(cmd, user, thread_ts, verb=cmd.verb, costs_quota=False)
+        if resolved is None:
+            return None
+        project, iid, mr_id = resolved
+        merge_retry.spawn_detached(project, iid, mr_id, waived_by=user if waive else None)
+        self.say(f":twisted_rightwards_arrows: `{project}` !{iid}: "
+                 + ("記錄放行後" if waive else "") + "重新檢查合併條件中", thread_ts)
+        return True
+
+    def do_waive(self, cmd, user, thread_ts):
+        return self.do_merge(cmd, user, thread_ts, waive=True)
 
     def do_rerun(self, cmd, user, thread_ts):
         mode = next((a.lower() for a in cmd.args if a.lower() in ("auto", "lite", "deep")), "auto")

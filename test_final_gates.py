@@ -51,7 +51,8 @@ class TestRun(unittest.TestCase):
         out, _ = self.run_gates([PLAIN], clean)
         self.assertTrue(out.passed)
         self.assertEqual(out.record("h", "master"),
-                         {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 0})
+                         {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 0,
+                          "sure": 0, "human_checks": []})
 
     def test_rule_hit_fails_even_when_the_guard_is_clean(self):
         out, _ = self.run_gates([MARKER, PLAIN], clean)
@@ -164,6 +165,19 @@ RULE_HIT = {"gate": "artifact", "file": "a.tsx", "line": 3, "hit_lines": [3],
             "title": "測試用程式碼會跟著上線", "confidence": "sure"}
 UNSURE_LEAK = {**LEAK, "title": "預設 API 指向 UAT", "confidence": "unsure",
                "human_check": "確認正式機有設定 `API_HOST`"}
+
+
+class TestRecord(unittest.TestCase):
+    def test_keeps_what_only_a_human_can_sign_off(self):
+        rec = final_gates.Outcome(rule=[RULE_HIT], guard=[UNSURE_LEAK]).record("h", "master")
+        self.assertEqual((rec["leaks"], rec["sure"]), (2, 1))
+        self.assertEqual(len(rec["human_checks"]), 1)
+        self.assertIn("確認正式機有設定 `API_HOST`", rec["human_checks"][0])
+
+    def test_incomplete_guard_has_nothing_sure(self):
+        rec = final_gates.Outcome(rule=[], guard=None, problem="x").record("h", "master")
+        self.assertEqual((rec["ok"], rec["sure"]), (False, 0))
+        self.assertIn("沒跑完:x", rec["human_checks"][0])        # the sign-off says what it covered
 
 
 class TestSlackText(unittest.TestCase):

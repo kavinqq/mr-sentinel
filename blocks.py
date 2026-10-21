@@ -13,6 +13,10 @@ import commands
 RERUN_AUTO = "rerun:auto"
 APPEAL = "appeal"
 APPEAL_LABEL = "已留言,我覺得不用修"
+MERGE = "merge"
+MERGE_LABEL = "🔀 重新合併"
+WAIVE = "waive"
+WAIVE_LABEL = "✅ 已人工確認,放行合併"
 ACTION_PREFIX = "mrs:"          # namespace, so foreign actions are ignored
 
 
@@ -38,6 +42,19 @@ def appeal_buttons(project: str, iid) -> list[dict]:
     return [_button(APPEAL, f"💬 {APPEAL_LABEL}",
                     {"verb": "appeal", "args": [f"{project}!{iid}"]})]
 
+
+
+def merge_buttons(project: str, iid) -> list[dict]:
+    """A clean MR whose automatic merge was blocked: re-check every rail and merge
+    (merge_retry.py). It can never get past a rail, only retry it."""
+    return [_button(MERGE, MERGE_LABEL, {"verb": "merge", "args": [f"{project}!{iid}"]},
+                    style="primary")]
+
+
+def waive_buttons(project: str, iid) -> list[dict]:
+    """Admin-only (commands.TIERS): sign off what the release gate was unsure
+    about, then merge as `merge_buttons` would."""
+    return [_button(WAIVE, WAIVE_LABEL, {"verb": "waive", "args": [f"{project}!{iid}"]})]
 
 def message(text: str, buttons: list[dict]) -> list[dict]:
     """The text as one mrkdwn section, buttons underneath."""

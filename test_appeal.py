@@ -105,6 +105,8 @@ class Harness:
                  mock.patch.object(appeal.fetch_mr, "write_context"), \
                  mock.patch.object(appeal.engines, "get_engine", return_value=engine):
                 self.rc = appeal.run_appeal("g/app", "5", "100", self.cfg, {})
+                meta_path = reviews / "100" / "review_meta.json"
+                self.meta_after = json.loads(meta_path.read_text()) if meta_path.exists() else None
         return self
 
 
@@ -166,6 +168,20 @@ class TestRunAppeal(unittest.TestCase):
         h.merge.assert_called_once()
         # the deep pass covered the head it was run on, and that is what may merge
         self.assertEqual(h.merge.call_args.kwargs["reviewed_sha"], "head2")
+        # so a later 🔀 retry knows this head passed a deep review; the guard is kept
+        self.assertEqual((h.meta_after["mode"], h.meta_after["head_sha"]), ("deep", "head2"))
+
+    def test_deep_pass_keeps_the_guard_record(self):
+        guard = {"head_sha": "head2", "target_branch": "dev", "ok": True, "leaks": 1, "sure": 0}
+        h = Harness([disputed("d1")], self.ACCEPT, auto_merge_on_clean=True,
+                    meta={**self.LITE, "guard": guard}).run()
+        self.assertEqual(h.meta_after["guard"], guard)
+
+    def test_deep_pass_with_findings_records_nothing(self):
+        found = {"findings": [{"severity": "medium", "title": "x", "file": "a.py", "line": 3}]}
+        h = Harness([disputed("d1")], self.ACCEPT, deep=found,
+                    auto_merge_on_clean=True, meta=self.LITE).run()
+        self.assertEqual(h.meta_after["mode"], "lite")
 
     def test_deep_pass_with_findings_blocks_the_merge_and_posts_nothing(self):
         """The model never saw the appeals: whatever it finds is reported, not commented

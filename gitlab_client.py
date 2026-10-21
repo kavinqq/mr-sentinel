@@ -219,3 +219,17 @@ def set_commit_status(base: str, token: str, project, sha: str, state: str, name
     if ref:
         form["ref"] = ref
     _call(f"{_project(base, project)}/statuses/{_sha(sha)}", token, method="POST", form=form)
+
+
+def list_commit_statuses(base: str, token: str, project, sha: str, per_page: int = 100,
+                         max_pages: int = 50) -> list[dict]:
+    """The latest status per name on `sha`, every page: CI jobs and external ones
+    (our release gate) alike, so this says why a head pipeline is red."""
+    out: list = []
+    for page in range(1, max_pages + 1):
+        batch = json.loads(_call(f"{_project(base, project)}/repository/commits/{_sha(sha)}"
+                                 f"/statuses?per_page={per_page}&page={page}", token))
+        out += batch
+        if len(batch) < per_page:
+            return out
+    raise RuntimeError(f"commit {sha[:8]} has more than {per_page * max_pages} statuses")

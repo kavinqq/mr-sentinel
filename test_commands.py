@@ -342,3 +342,17 @@ class TestTargetParsing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMergeVerbs(unittest.TestCase):
+    def test_merge_is_for_members_and_waive_for_admins(self):
+        self.assertEqual(commands.TIERS["merge"], commands.MEMBER)
+        self.assertEqual(commands.TIERS["waive"], commands.ADMIN)
+
+    def test_chinese_aliases(self):
+        self.assertEqual(commands.ALIASES["重新合併"], "merge")
+        self.assertEqual(commands.ALIASES["放行"], "waive")
+
+    def test_waive_help_is_shown_to_admins_only(self):
+        self.assertNotIn("waive", commands.format_help(is_admin=False))
+        self.assertIn("waive", commands.format_help(is_admin=True))

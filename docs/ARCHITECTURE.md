@@ -47,8 +47,9 @@ scheduler (launchd / cron / systemd, every 60s)
                            merge pinned to the reviewed sha (unless draft/head moved/unmergeable/
                            CI not green/CI config but no pipeline), then :done: on the notification.
                            Every auto-merge (appeals too) re-runs the marker rule and needs the
-                           release guard's pass for that exact head (review_meta.json `guard`);
-                           anything unknown fails closed
+                           release guard's pass for that exact head (review_meta.json `guard`,
+                           or an admin's `waived_by` sign-off on it); anything unknown fails closed.
+                           A blocked merge lists each failed job/status and offers 🔀 (and ✅)
       10. cleanup          worktree removed (finally-block, even on crash)
 
 scheduler (second entry, every 15s)          — or long-lived with --socket
@@ -59,6 +60,10 @@ scheduler (second entry, every 15s)          — or long-lived with --socket
        └─ appeal          💬 button → appeal.py (detached, shares the per-MR lock):
                           threads a human answered → engine.run_appeal → reply +
                           resolve accepted → summary → auto-merge rails if none open
+       ├─ merge retry     🔀 / ✅ button → merge_retry.py (detached, per-MR lock): ✅ (admin)
+       │                  first signs off the gate's unsure / unfinished hold on this head
+       │                  (status success, meta `waived_by`, gate threads resolved, MR note);
+       │                  then the appeal rule (no open thread, deep) → auto-merge rails
        ├─ usage           bare mention -> the command list for that user
        ├─ settings        writes overrides.json (whitelisted keys only)
        └─ rerun           un-claim → delete its own unanswered comments → spawn
@@ -194,6 +199,7 @@ prose is not. The final message is used for nothing.
 | `final_gates.py` | the final gates as one fail-closed verdict + commit status |
 | `release_guard.py` | release-guard pass plumbing: batches covering every added line, keyword hints, strict output validation |
 | `appeal.py` | re-judge findings the developer disputed; verdict replies, resolve, summary |
+| `merge_retry.py` | 🔀 retry a blocked merge of a clean MR; ✅ an admin's sign-off on the release gate first |
 | `blocks.py` | Block Kit buttons: build, retire after a click, parse a click back to a Command (pure) |
 | `commands.py` | parse / authorize / render usage, settings, status (pure) |
 | `overrides.py` | Slack-settable config layer: whitelist, validate, merge |

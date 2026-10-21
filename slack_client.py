@@ -169,6 +169,11 @@ def auth_test(token: str) -> dict:
     return _checked_get("auth.test", token, {})
 
 
+
+def users_info(token: str, user: str) -> dict:
+    """The Slack user object (needs `users:read`)."""
+    return _checked_get("users.info", token, {"user": user})["user"]
+
 def conversations_history(token: str, channel: str, limit: int = 50) -> list[dict]:
     """Newest-first top-level messages.
 

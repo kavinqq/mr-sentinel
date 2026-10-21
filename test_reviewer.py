@@ -587,15 +587,37 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
         _, m, meta = self.review({"findings": []}, outcome(guard=[LEAK]))
         self.assertEqual([f["gate"] for f in self.posted(m)], ["release_guard"])
         self.assertEqual(meta["guard"], {"head_sha": "h", "target_branch": "master",
-                                         "ok": True, "leaks": 1})
+                                         "ok": True, "leaks": 1, "sure": 1, "human_checks": []})
         m["_maybe_auto_merge"].assert_not_called()
+
+    def gate_actions(self, m):
+        buttons = m["_slack_say"].call_args_list[0].args[3] or []
+        return [b["action_id"] for b in buttons]
+
+    def test_unsure_only_gate_offers_admin_sign_off(self):
+        unsure = {**LEAK, "confidence": "unsure", "human_check": "確認字號"}
+        _, m, _ = self.review({"findings": []}, outcome(guard=[unsure]))
+        self.assertEqual(self.gate_actions(m), ["mrs:waive"])
+
+    def test_sign_off_hint_is_in_the_gate_message(self):
+        unsure = {**LEAK, "confidence": "unsure", "human_check": "確認字號"}
+        _, m, _ = self.review({"findings": []}, outcome(guard=[unsure]))
+        self.assertIn("waive", m["_slack_say"].call_args_list[0].args[1])
+
+    def test_unfinished_gate_offers_rerun_and_sign_off(self):
+        _, m, _ = self.review({"findings": []}, outcome(broken=True))
+        self.assertEqual(self.gate_actions(m), ["mrs:rerun:auto", "mrs:waive"])
+
+    def test_sure_gate_finding_offers_no_sign_off(self):
+        _, m, _ = self.review({"findings": []}, outcome(guard=[{**LEAK, "confidence": "sure"}]))
+        self.assertEqual(self.gate_actions(m), [])
 
     def test_clean_gates_pass_and_merge_may_proceed(self):
         _, m, meta = self.review({"findings": []}, outcome())
         self.assertEqual(self.posted(m), [])
         self.assertEqual(self.statuses(m), ["pending", "success"])
         self.assertEqual(meta["guard"], {"head_sha": "h", "target_branch": "master",
-                                         "ok": True, "leaks": 0})
+                                         "ok": True, "leaks": 0, "sure": 0, "human_checks": []})
         m["_maybe_auto_merge"].assert_called_once()
 
     def test_ai_duplicate_of_a_gate_line_is_dropped(self):
@@ -759,3 +781,169 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
     def test_unconfigured_test_hosts_block(self):
         self._merge([], self.PASSED, cfg={"slack": {}, "review": {}}).merge_mr.assert_not_called()
 
+
+    def test_admin_sign_off_releases_the_guard_hold(self):
+        waived = {**self.PASSED, "leaks": 1, "sure": 0, "waived_by": "冠霖"}
+        self._merge([], waived).merge_mr.assert_called_once()
+
+    def test_sign_off_releases_an_unfinished_guard_too(self):
+        waived = {**self.PASSED, "ok": False, "sure": 0, "waived_by": "冠霖"}
+        self._merge([], waived).merge_mr.assert_called_once()
+
+    def test_sign_off_never_covers_the_marker_rule(self):
+        waived = {**self.PASSED, "leaks": 1, "sure": 0, "waived_by": "冠霖"}
+        self._merge([], waived, hits=[GATE_HIT]).merge_mr.assert_not_called()
+
+    def test_sign_off_for_an_older_head_does_not_carry_over(self):
+        waived = {**self.PASSED, "head_sha": "old", "sure": 0, "waived_by": "冠霖"}
+        self._merge([], waived).merge_mr.assert_not_called()
+
+
+MR_HEAD = {"id": 100, "iid": 10, "sha": "h", "target_branch": "master",
+           "head_pipeline": {"status": "failed", "web_url": "http://gl/p/1"}}
+UNSURE_GUARD = {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 1, "sure": 0,
+                "human_checks": ["`a.py:3` 字號寫死 — 請確認:正式站字號已更新"]}
+
+
+class TestWaiveRules(unittest.TestCase):
+    def test_unsure_only_hold_on_this_head_may_be_signed_off(self):
+        self.assertIsNone(reviewer.waive_problem(UNSURE_GUARD, MR_HEAD))
+        self.assertTrue(reviewer.gate_waivable(UNSURE_GUARD, MR_HEAD))
+
+    def test_unfinished_guard_may_be_signed_off(self):
+        self.assertTrue(reviewer.gate_waivable({**UNSURE_GUARD, "ok": False, "leaks": 0},
+                                               MR_HEAD))
+
+    def test_a_sure_finding_needs_a_fix(self):
+        self.assertIn("確定", reviewer.waive_problem({**UNSURE_GUARD, "sure": 1}, MR_HEAD))
+
+    def test_record_without_sure_count_fails_closed(self):
+        old = {k: v for k, v in UNSURE_GUARD.items() if k != "sure"}
+        self.assertIsNotNone(reviewer.waive_problem(old, MR_HEAD))
+
+    def test_other_head_or_target_needs_a_rerun(self):
+        self.assertIsNotNone(reviewer.waive_problem(UNSURE_GUARD, {**MR_HEAD, "sha": "new"}))
+        self.assertIsNotNone(reviewer.waive_problem(UNSURE_GUARD,
+                                                    {**MR_HEAD, "target_branch": "main"}))
+        self.assertIsNotNone(reviewer.waive_problem(None, MR_HEAD))
+
+    def test_nothing_to_offer_when_passed_or_already_signed(self):
+        self.assertFalse(reviewer.gate_waivable({**UNSURE_GUARD, "leaks": 0}, MR_HEAD))
+        self.assertFalse(reviewer.gate_waivable({**UNSURE_GUARD, "waived_by": "x"}, MR_HEAD))
+
+
+class TestBlockedMergeMessage(unittest.TestCase):
+    """A clean MR that did not merge says exactly why, with a way forward."""
+    STATUSES = [{"name": "mr-sentinel/release-gate", "status": "failed",
+                 "description": "正式分支額外 review:0 個確定問題,1 個需要人工確認"},
+                {"name": "unit-test", "status": "failed", "target_url": "http://gl/jobs/9"},
+                {"name": "lint", "status": "success"}]
+
+    def _run(self, mr, guard, statuses=STATUSES):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "_release_blocker", return_value=None), \
+             mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "_slack_say") as say:
+            (Path(d) / "100").mkdir()
+            reviewer.write_review_meta(Path(d) / "100", "deep", "h", 0, guard)
+            gl.get_mr.return_value = mr
+            gl.has_ci_config.return_value = True
+            if isinstance(statuses, Exception):
+                gl.list_commit_statuses.side_effect = statuses
+            else:
+                gl.list_commit_statuses.return_value = statuses
+            reviewer._maybe_auto_merge({"slack": {}}, "http://gl", "tok", "g/p", 10,
+                                       "http://gl/10", reviewed_sha="h")
+        gl.merge_mr.assert_not_called()
+        text, buttons = say.call_args.args[1], say.call_args.args[3]
+        return text, [b["action_id"] for b in buttons]
+
+    MR = {**MR_HEAD, "detailed_merge_status": "mergeable"}
+
+    def test_names_every_failed_status_and_the_human_checks(self):
+        text, _ = self._run(self.MR, UNSURE_GUARD)
+        self.assertIn("1 個需要人工確認", text)
+        self.assertIn("unit-test", text)
+        self.assertIn("http://gl/jobs/9", text)
+        self.assertNotIn("lint", text)
+        self.assertIn("正式站字號已更新", text)
+
+    def test_gate_hold_offers_merge_retry_and_admin_sign_off(self):
+        _, actions = self._run(self.MR, UNSURE_GUARD)
+        self.assertEqual(actions, ["mrs:merge", "mrs:waive"])
+
+    def test_sure_finding_offers_no_sign_off_and_says_why(self):
+        text, actions = self._run(self.MR, {**UNSURE_GUARD, "sure": 1})
+        self.assertEqual(actions, ["mrs:rerun:auto", "mrs:merge"])   # fix, then rerun
+        self.assertIn("不能放行", text)
+        self.assertIn("按「🔁 重審」", text.split("*下一步*")[1])
+
+    def test_ci_failure_alone_offers_only_merge_retry(self):
+        passed = {**UNSURE_GUARD, "leaks": 0, "human_checks": []}
+        text, actions = self._run(self.MR, passed, statuses=self.STATUSES[1:])
+        self.assertEqual(actions, ["mrs:merge"])
+        self.assertIn("unit-test", text)
+
+    def test_status_lookup_failure_still_reports(self):
+        text, actions = self._run(self.MR, UNSURE_GUARD, statuses=RuntimeError("502"))
+        self.assertIn("查不到", text)
+        self.assertIn("mrs:merge", actions)
+
+    def test_message_is_plain_chinese_with_a_next_step(self):
+        text, _ = self._run(self.MR, UNSURE_GUARD)
+        self.assertIn("*原因*", text)
+        self.assertIn("*下一步*", text)
+        self.assertNotIn("merge manually", text)
+        self.assertNotIn("mr-sentinel/release-gate", text)
+
+    def test_sign_off_hint_names_the_admins_and_the_typed_fallback(self):
+        with mock.patch.object(reviewer.commands, "admins", return_value=["UBOSS"]):
+            text, _ = self._run(self.MR, UNSURE_GUARD)
+        self.assertIn("<@UBOSS>", text)
+        self.assertIn("waive g/p!10", text)
+
+    def test_red_pipeline_without_a_failed_status_still_points_somewhere(self):
+        text, _ = self._run(self.MR, {**UNSURE_GUARD, "leaks": 0},
+                            statuses=[{"name": "lint", "status": "success"}])
+        self.assertIn("http://gl/p/1", text)
+
+    def test_running_pipeline_says_wait_without_a_status_lookup(self):
+        mr = {**self.MR, "head_pipeline": {"status": "running"}}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "_release_blocker", return_value=None), \
+             mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "_slack_say") as say:
+            gl.get_mr.return_value = mr
+            reviewer._maybe_auto_merge({"slack": {}}, "http://gl", "tok", "g/p", 10,
+                                       "http://gl/10", reviewed_sha="h")
+        gl.list_commit_statuses.assert_not_called()
+        self.assertIn("CI 還在跑", say.call_args.args[1])
+
+    def test_a_pressed_retry_adds_no_mr_note(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "_release_blocker", return_value=None), \
+             mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "_slack_say"):
+            gl.get_mr.return_value = {**self.MR, "draft": True}
+            reviewer._maybe_auto_merge({"slack": {}}, "http://gl", "tok", "g/p", 10,
+                                       "http://gl/10", reviewed_sha="h", note_on_block=False)
+        gl.post_note.assert_not_called()
+
+    def test_blocker_texts_cover_every_rail(self):
+        for blocker in ("new commits since review", "draft MR", "not mergeable (conflict)",
+                        "pipeline missing", "pipeline is for an older commit",
+                        "pipeline failed", "pipeline running",
+                        "test-marker rule could not read the diff", "test-only code in 2 file(s)",
+                        "release guard has not passed this commit",
+                        "release guard found 1 test leak(s)"):
+            with self.subTest(blocker=blocker):
+                why, next_step = reviewer.blocker_text(blocker)
+                self.assertNotEqual(why, blocker)              # translated, not passed through
+                self.assertTrue(next_step)
+
+    def test_new_commits_keep_the_rerun_button(self):
+        _, actions = self._run({**self.MR, "sha": "pushed"}, UNSURE_GUARD)
+        self.assertEqual(actions, ["mrs:rerun:auto"])

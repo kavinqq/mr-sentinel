@@ -159,6 +159,24 @@ class TestListDiscussions(unittest.TestCase):
                 gitlab_client.list_discussions("https://gl", "tok", "g/p", 3, max_pages=2)
 
 
+class TestListCommitStatuses(unittest.TestCase):
+    def test_reads_every_page(self):
+        import gitlab_client
+        pages = [json.dumps([{"name": i} for i in range(100)]), json.dumps([{"name": "last"}])]
+        with mock.patch.object(gitlab_client, "_call", side_effect=pages) as call:
+            got = gitlab_client.list_commit_statuses("https://gl", "tok", "g/p", "abc1234")
+        self.assertEqual(len(got), 101)
+        self.assertIn("page=2", call.call_args_list[1].args[0])
+
+    def test_runaway_pagination_raises_instead_of_truncating(self):
+        import gitlab_client
+        full = json.dumps([{"name": i} for i in range(100)])
+        with mock.patch.object(gitlab_client, "_call", return_value=full):
+            with self.assertRaises(RuntimeError):
+                gitlab_client.list_commit_statuses("https://gl", "tok", "g/p", "abc1234",
+                                                   max_pages=2)
+
+
 class TestHasCiConfig(unittest.TestCase):
     def _run(self, project, file_result):
         import gitlab_client

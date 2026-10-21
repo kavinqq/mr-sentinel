@@ -172,7 +172,7 @@ def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_g
                                        reviewed_sha=meta["head_sha"])
         elif meta.get("mode") == "lite" and deep_gate:
             _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts,
-                                   deep_gate, say)
+                                   deep_gate, say, work)
         else:
             say(f":information_source: `{project}` !{iid}: 理由都成立,但上次是 "
                 f"{meta.get('mode') or '未知'} review,依規則只有 deep review 才自動合併 — "
@@ -181,7 +181,7 @@ def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_g
 
 
 def _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts,
-                           deep_gate, say) -> None:
+                           deep_gate, say, work) -> None:
     """Appeals cleared a lite review's findings. Lite is one gate, so the same rule as a
     clean lite review applies: a deep pass must agree before anything merges."""
     try:
@@ -206,6 +206,9 @@ def _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts
         say(f":warning: `{project}` !{iid}: 理由都成立,但 deep 確認發現 {len(found)} 個問題"
             f",不自動合併 — 請確認後手動處理\n{listing}\n{web_url or ''}", retry)
         return
+    # a later 🔀 retry (merge_retry) needs to know this head passed a deep review
+    meta = reviewer.read_review_meta(work)
+    reviewer.save_review_meta(work, {**meta, "mode": "deep", "head_sha": head_sha})
     reviewer._maybe_auto_merge(config, base, token, project, iid, web_url, thread_ts,
                                reviewed_sha=head_sha)
 
