@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+import blocks
 import commands
 import overrides
 import slack_bot
@@ -523,10 +524,12 @@ class TestButtons(unittest.TestCase):
 class TestAppeal(unittest.TestCase):
     AI = "🟠 [Medium] x\n\n— 🤖 mr-sentinel AI review (m)"
 
-    def appeal(self, harness, discussions, args=("g/app!481",), via_button=False):
+    def appeal(self, harness, discussions, args=("g/app!481",), via_button=False,
+               mr_state="opened"):
         gl = slack_bot.gitlab_client
         with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
              mock.patch.object(gl, "list_discussions", return_value=discussions), \
+             mock.patch.object(gl, "get_mr", return_value={"id": 100, "state": mr_state}), \
              mock.patch.object(slack_bot.appeal, "spawn_detached") as spawn, \
              mock.patch.object(slack_bot.slack_client, "chat_update") as update, \
              mock.patch.object(slack_bot.slack_client, "post_ephemeral"):
@@ -554,7 +557,25 @@ class TestAppeal(unittest.TestCase):
                                                                "body": self.AI}]}])
             spawn.assert_not_called()
             self.assertIn("還沒看到新的回覆", h.last)
+            self.assertIn("立刻加入留言", h.last)     # a "Start a review" draft is invisible to us
+            self.assertIn("最下方", h.last)           # a top-level comment is not a reply
+            self.assertIn(f"再按一次「{blocks.APPEAL_LABEL}」", h.last)
             self.assertEqual(h.bot.bot_state.get("rerun_log", []), [])
+
+    def test_closed_mr_says_so_and_points_to_the_replacement(self):
+        """The developer closed the MR, reopened the change as a new one and replied
+        there — pressing the old thread's button must not claim "no reply yet"."""
+        with BotHarness() as h:
+            h.bot.state["mrs"]["101"] = {"project": "g/app", "iid": 482, "author": "dev",
+                                         "web_url": "http://gl/g/app/-/merge_requests/482"}
+            h.bot.state["mrs"]["100"]["author"] = "dev"
+            spawn, _ = self.appeal(h, [{"id": "d1", "notes": [{"author": {"id": 42},
+                                                               "body": self.AI}]}],
+                                   mr_state="closed")
+            spawn.assert_not_called()
+            self.assertNotIn("還沒看到新的回覆", h.last)
+            self.assertIn("已關閉", h.last)
+            self.assertIn("g/app!482", h.last)
 
     def test_button_retires_with_appeal_note(self):
         with BotHarness() as h:

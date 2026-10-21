@@ -681,6 +681,25 @@ class Bot:
             return None
         return project, iid, mr_id
 
+    def not_open_text(self, project: str, iid: str, mr_state: str | None) -> str:
+        """Developers often close an MR and reopen the same change on a new branch,
+        then reply on the new one while pressing the old thread's button. Guessing
+        the replacement by same project + author + a later iid is a heuristic, so
+        it is offered as a suggestion, not acted on."""
+        label = {"merged": "已合併", "closed": "已關閉"}.get(mr_state, f"狀態是 {mr_state}")
+        mrs = self.state.get("mrs") or {}
+        author = next((info.get("author") for info in mrs.values()
+                       if info.get("project") == project and str(info.get("iid")) == iid), None)
+        later = sorted((int(info["iid"]) for info in mrs.values()
+                        if author and info.get("project") == project
+                        and info.get("author") == author and int(info["iid"]) > int(iid)),
+                       reverse=True)
+        text = f":warning: `{project}` !{iid} {label},這裡不會再審了"
+        if later:
+            text += (f"。如果改開了新的 MR,請到那邊的討論串按,或輸入 "
+                     f"`appeal {project}!{later[0]}`")
+        return text
+
     def spend_budget(self) -> None:
         rerun_log = self.bot_state.setdefault("rerun_log", [])
         rerun_log.append(self.now().isoformat())
@@ -702,10 +721,17 @@ class Bot:
             self.say(f":scales: `{project}` !{iid}: 重試 resolve 之前判定成立的討論串", thread_ts)
             return True
         if not appeals:
+            mr_state = gitlab_client.get_mr(base, token, project, iid).get("state")
+            if mr_state != "opened":
+                self.say(self.not_open_text(project, iid, mr_state), thread_ts)
+                return None
             waiting = counts.get("unanswered", 0) + counts.get("rejected", 0)
-            self.say(f":speech_balloon: `{project}` !{iid} 還沒看到新的回覆 — 先在 GitLab 的 "
-                     f"AI 留言底下回覆「為什麼不用修」,再按一次"
-                     + (f"(目前有 {waiting} 則等回覆)" if waiting else ""), thread_ts)
+            self.say(f":speech_balloon: `{project}` !{iid} 還沒看到新的回覆 — 先在 GitLab 那則 "
+                     f"AI 留言的討論串裡按 Reply,回覆「為什麼不用修」,送出時選 "
+                     f"*Add comment now(立刻加入留言)*,再按一次「{blocks.APPEAL_LABEL}」"
+                     + (f"(目前有 {waiting} 則等回覆)" if waiting else "")
+                     + "\n• 選 Start a review 會變成草稿,只有你自己看得到,要按 Submit review 才算送出"
+                     "\n• 頁面最下方的留言框不算回覆,一定要回在 AI 那則留言底下", thread_ts)
             return None
         appeal.spawn_detached(project, iid, mr_id)
         self.spend_budget()

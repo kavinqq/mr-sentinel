@@ -12,6 +12,7 @@ import commands
 # action_ids are unique within one message (Slack rejects duplicates)
 RERUN_AUTO = "rerun:auto"
 APPEAL = "appeal"
+APPEAL_LABEL = "已留言,我覺得不用修"
 ACTION_PREFIX = "mrs:"          # namespace, so foreign actions are ignored
 
 
@@ -34,7 +35,7 @@ def rerun_buttons(project: str, iid, label: str = "🔁 修好了，重審") -> 
 def appeal_buttons(project: str, iid) -> list[dict]:
     """The developer has answered the AI comments on GitLab: ask the AI to weigh
     those replies (appeal.py). Accepted threads get resolved."""
-    return [_button(APPEAL, "💬 已留言,我覺得不用修",
+    return [_button(APPEAL, f"💬 {APPEAL_LABEL}",
                     {"verb": "appeal", "args": [f"{project}!{iid}"]})]
 
 
