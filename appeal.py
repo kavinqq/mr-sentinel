@@ -161,10 +161,13 @@ def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_g
         gitlab_client.list_discussions(base, token, project, iid), me)
     still_open = review_common.open_findings(after)
     say(review_common.appeal_summary_text(project, iid, web_url, verdicts, after),
-        _buttons(project, iid) if still_open else None)
+        _buttons(project, iid) + blocks.waive_buttons(project, iid) if still_open else None)
     log.info("appeal on !%s: %s judged, %s still open %s", iid, len(verdicts), still_open,
              dict(after))
 
+    # the release status follows only its own comments, whatever else is still open
+    reviewer.sync_release_status(config, base, token, project,
+                                 gitlab_client.get_mr(base, token, project, iid))
     if not still_open and review_cfg.get("auto_merge_on_clean"):
         meta = reviewer.read_review_meta(work)
         if meta.get("mode") == "deep" and meta.get("head_sha"):

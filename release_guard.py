@@ -215,6 +215,9 @@ def _valid_finding(f, files: set) -> bool:
     if f["confidence"] == "unsure" and not (isinstance(f.get("human_check"), str)
                                             and f["human_check"].strip()):
         return False
+    # not about any one line (deploy order, another repo, outside config): an MR note
+    if f.get("file") is None and f.get("line") is None:
+        return all(isinstance(f.get(k), str) and f[k].strip() for k in _REQUIRED_TEXT)
     if f.get("file") not in files:
         return False
     line = f.get("line")

@@ -1,5 +1,6 @@
 """Pure functions for the MR review pipeline (unit-testable, no IO)."""
 import random
+import re
 from collections import Counter
 
 from history.parse import category_marker
@@ -196,7 +197,22 @@ def format_comment_body(finding: dict, signature: str = DEFAULT_SIGNATURE) -> st
     marker = category_marker(finding.get("category"))
     if marker:
         parts.append(marker)
+    if finding.get("gate_head"):
+        parts.append(GATE_HEAD_MARKER.format(finding["gate_head"]))
     return "\n".join(parts)
+
+
+# a release-review comment names the head it was posted for, so the merge rail can
+# tell this review's open comments from answered ones left over from earlier heads
+GATE_HEAD_MARKER = "<!-- mr-sentinel:gate-head={} -->"
+_GATE_HEAD_RE = re.compile(r"<!-- mr-sentinel:gate-head=(\S+?) -->")
+
+
+def gate_head(discussion: dict) -> str | None:
+    """The head a release-review thread was posted for, or None for any other thread."""
+    notes = _human_notes(discussion)
+    match = _GATE_HEAD_RE.search((notes[0].get("body") or "") if notes else "")
+    return match.group(1) if match else None
 
 
 def build_position(finding: dict, diff_refs: dict) -> dict | None:

@@ -1,39 +1,35 @@
 #!/usr/bin/env python3
-"""mr-sentinel merge retry: the 🔀 / ✅ buttons on a clean MR that did not merge.
+"""mr-sentinel merge retry: the 🔀 / ✅ buttons on an MR that did not merge.
 
 Spawned detached by the Slack listener, under the reviewer's per-MR lock. The merge
 itself is reviewer._maybe_auto_merge with every rail; this only decides whether the
 last review entitles the MR to one, by the rule appeal.py applies: every AI thread
 closed, and a deep review on the head being merged.
 
-`--waived-by` first records an admin's sign-off on what the release gate was unsure
-about (reviewer.waive_problem says when that is allowed). The sign-off is bound to
-the head it was given for, becomes the gate's commit status, and is left on the MR
-as a note, so a waived release always says who released it.
+`--waived-by` (✅, admin only) first overrides what is still open, for when the
+developer says a comment needs no fix and the AI keeps disagreeing: every open AI
+thread is answered and resolved in the admin's name, the override is bound to this
+head and target in review_meta.json, and a note on the MR says who released what.
 """
 import argparse
 import fcntl
 import logging
 import sys
 import subprocess
-import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 import blocks
 import commands
-import final_gates
 import gitlab_client
-import release_guard
+from history import parse as history_parse
 import review_common
 import reviewer
 import slack_client
 from sentinel_config import SCRIPT_DIR, load_config, load_state
 
 REVIEWS_DIR = reviewer.REVIEWS_DIR
-# GitLab recomputes an external pipeline from its statuses asynchronously
-PIPELINE_SETTLE_TRIES = 5
-PIPELINE_SETTLE_SECONDS = 2
+
 
 log = logging.getLogger("mr_sentinel.merge_retry")
 
@@ -53,86 +49,73 @@ def slack_name(config: dict, user_id: str) -> str:
         return user_id
 
 
-def is_human_check_thread(discussion: dict, me) -> bool:
-    """One of the release gate's unsure items, posted as an MR thread."""
-    notes = review_common._human_notes(discussion)
-    body = (notes[0].get("body") or "") if notes else ""
-    return (review_common.discussion_status(discussion, me) not in (None, "closed")
-            and f"{reviewer.GUARD_LABEL} · " in body
-            and any(f"**{label}**" in body for label in release_guard.HUMAN_CHECK.values()))
+def _override_threads(base: str, token: str, project: str, iid, name: str) -> list[str]:
+    """Answer every AI thread still open with the admin's override and resolve it;
+    returns one audit line per thread touched.
 
-
-def _close_signed_off_threads(base: str, token: str, project: str, iid, name: str) -> int:
-    """The sign-off answers the threads of the items it covers, so they stop holding
-    the merge. Each is marked accepted the way an appeal is: a thread GitLab fails
-    to resolve stays "accepted" and is retried by the next appeal press."""
+    Marked accepted the way an appeal is, so a thread GitLab fails to resolve stays
+    "accepted" (open, blocking) and is retried by the next press."""
     me = gitlab_client.get_current_user(base, token)["id"]
-    closed = 0
+    lines = []
     for discussion in gitlab_client.list_discussions(base, token, project, iid):
-        if not is_human_check_thread(discussion, me):
+        state = review_common.discussion_status(discussion, me)
+        if state in (None, "closed"):
             continue
         did = str(discussion.get("id"))
+        title = history_parse.parse_comment(
+            review_common._human_notes(discussion)[0].get("body")).get("title") or did
         try:
-            gitlab_client.reply_discussion(base, token, project, iid, did,
-                f"✅ **{name} 已在 Slack 人工確認這一項**,放行。\n\n{review_common.APPEAL_ACCEPT}")
+            if state != "accepted":
+                gitlab_client.reply_discussion(base, token, project, iid, did,
+                    f"✅ **{name} 裁定放行**,這則不用改。\n\n{review_common.APPEAL_ACCEPT}")
             gitlab_client.resolve_discussion(base, token, project, iid, did)
-            closed += 1
+            lines.append(f"- {title}(原本:{STATE_WORDS.get(state, state)})")
         except Exception:
-            log.exception("waive: thread %s on !%s not closed", did, iid)
-    return closed
+            log.exception("override: thread %s on !%s not closed", did, iid)
+            lines.append(f"- {title}(沒關成功,下次按會再試)")
+    return lines
 
 
-def _waive(config: dict, project: str, mr: dict, work, user_id: str, say) -> bool:
-    """Record the sign-off. False (after saying why) when it may not be given or did
-    not stick; the merge must not follow then.
+STATE_WORDS = {"unanswered": "沒人回覆", "rejected": "申訴被駁回",
+               "appeal": "有回覆還沒判", "accepted": "已接受但沒關成功"}
+
+
+def _override(config: dict, project: str, mr: dict, work, user_id: str, say) -> bool:
+    """Answer what is still open in an admin's name. False (after saying why) when it
+    may not be given; the merge must not follow then.
 
     The Slack listener already authorized the click; the admin check is repeated
-    here because this script can be started by hand with any `--waived-by`."""
+    here because this script can be started by hand with any `--waived-by`. Only a
+    review that finished on this head and target can be overridden: the override
+    closes comments, it never stands in for a check that did not run, and the
+    marker rule is re-run at merge regardless (reviewer._release_blocker)."""
     base, token = config["gitlab_url"], config["gitlab_token"]
     if not commands.is_admin(user_id, config.get("slack", {})):
-        say(f":no_entry: `{project}` !{mr['iid']} 不能放行:<@{user_id}> 不是 admin")
+        say(f":no_entry: `{project}` !{mr['iid']}:<@{user_id}> 不是 admin,不能裁定放行")
         return False
     meta = reviewer.read_review_meta(work)
     guard = meta.get("guard")
-    problem = reviewer.waive_problem(guard, mr)
-    if problem:
-        say(f":no_entry: `{project}` !{mr['iid']} 不能放行:{problem}",
-            blocks.rerun_buttons(project, mr["iid"], label="🔁 重審"))
+    if meta.get("head_sha") != mr.get("sha") or (
+            guard is not None and not (reviewer._same_change(guard, mr) and guard.get("ok"))):
+        say(f":no_entry: `{project}` !{mr['iid']}:最新的 commit 還沒完整 review 過,"
+            f"按「🔁 重審」後再看", blocks.rerun_buttons(project, mr["iid"], label="🔁 重審"))
         return False
-    if not reviewer.gate_waivable(guard, mr):
-        return True                          # passed, or signed off already
     name = slack_name(config, user_id)
-    try:
-        gitlab_client.set_commit_status(base, token, project, mr["sha"], "success",
-                                        final_gates.STATUS_NAME,
-                                        f"人工確認放行({name})"[:255],
-                                        mr.get("web_url") or "", mr.get("source_branch") or "")
-    except Exception as exc:
-        log.exception("waive: commit status of !%s not set", mr["iid"])
-        say(f":boom: `{project}` !{mr['iid']} 放行失敗,GitLab 狀態沒改成"
-            f"({type(exc).__name__}),可以再按一次", blocks.waive_buttons(project, mr["iid"]))
-        return False
-    reviewer.save_review_meta(work, {**meta, "guard": {
-        **guard, "waived_by": name, "waived_by_id": user_id,
-        "waived_at": datetime.now(timezone.utc).isoformat()}})
-    checks = guard.get("human_checks") or []
+    reviewer.save_review_meta(work, {**meta, "override": {
+        "head_sha": mr["sha"], "target_branch": mr.get("target_branch"), "by": name,
+        "by_id": user_id, "at": datetime.now(timezone.utc).isoformat()}})
+    lines = _override_threads(base, token, project, mr["iid"], name)
     try:
         gitlab_client.post_note(base, token, project, mr["iid"],
-            f"🤖 mr-sentinel: {name}(Slack `{user_id}`)在 Slack 確認了正式分支額外 review "
-            f"需要人工確認的項目,放行 commit `{mr['sha']}` 合進 `{mr.get('target_branch')}`。\n"
-            + "".join(f"\n- {c}" for c in checks))
+            f"🤖 mr-sentinel: {name}(Slack `{user_id}`)裁定放行 commit `{mr['sha']}` "
+            f"合進 `{mr.get('target_branch')}`,以下 AI 留言標成不用改:\n\n"
+            + ("\n".join(lines) or "- (沒有還開著的留言)"))
         noted = ""
     except Exception:
-        log.exception("waive: MR note failed (the status and meta hold it)")
-        noted = "\n:warning: GitLab 上的放行紀錄留言沒寫成功(commit 狀態和本機紀錄都有)"
-    say(f":white_check_mark: 已記錄 <@{user_id}> 人工確認 `{project}` !{mr['iid']} 的正式分支額外 review"
-        f"({len(checks)} 項),放行 commit `{mr['sha'][:8]}`。*還沒合併*,接著檢查 AI 留言、"
-        f"CI 和 GitLab 的合併條件{noted}")
-    for _ in range(PIPELINE_SETTLE_TRIES):
-        pipeline = gitlab_client.get_mr(base, token, project, mr["iid"]).get("head_pipeline") or {}
-        if pipeline.get("status") != "failed":
-            break
-        time.sleep(PIPELINE_SETTLE_SECONDS)
+        log.exception("override: MR note failed (the meta holds it)")
+        noted = "\n:warning: GitLab 上的放行紀錄留言沒寫成功(本機紀錄有)"
+    say(f":white_check_mark: 已記錄 <@{user_id}> 裁定放行 `{project}` !{mr['iid']}"
+        f"({len(lines)} 則留言)。*還沒合併*,接著檢查 CI 和 GitLab 的合併條件{noted}")
     return True
 
 
@@ -148,19 +131,15 @@ def run_merge(project: str, iid, mr_id, config: dict, state: dict,
     if mr.get("state") != "opened":
         say(f":information_source: `{project}` !{iid} 已經是 {mr.get('state')},不用再合併")
         return 0
-    if waived_by and not _waive(config, project, mr, work, waived_by, say):
+    if waived_by and not _override(config, project, mr, work, waived_by, say):
         return 0
     web_url = mr.get("web_url")
-    guard = reviewer.read_review_meta(work).get("guard") or {}
-    if guard.get("waived_by") and guard.get("head_sha") == mr.get("sha"):
+    override = reviewer.read_review_meta(work).get("override") or {}
+    if not waived_by and override.get("head_sha") == mr.get("sha"):
         # retried on every press: a thread GitLab failed to close must not hold forever
-        closed = _close_signed_off_threads(base, token, project, iid, guard["waived_by"])
-        if closed:
-            say(f":white_check_mark: GitLab 上 {closed} 則「需要人工確認」的留言已標成已確認")
-    if not config["review"].get("auto_merge_on_clean"):
-        say(f":information_source: `{project}` !{iid}: 自動合併功能沒開,請 admin 開啟"
-            f"(`automerge on`)或到 GitLab 手動合併\n{web_url or ''}")
-        return 0
+        _override_threads(base, token, project, iid, override["by"])
+    # the release status follows only its own comments, whatever else is still open
+    reviewer.sync_release_status(config, base, token, project, mr)
     me = gitlab_client.get_current_user(base, token)["id"]
     _, counts = review_common.collect_appeals(
         gitlab_client.list_discussions(base, token, project, iid), me)
@@ -169,7 +148,11 @@ def run_merge(project: str, iid, mr_id, config: dict, state: dict,
         say(f":warning: `{project}` !{iid} 還有 {still_open} 則 AI 留言沒處理完,不合併 — "
             f"修好就按重審,不用修就回覆後按「{blocks.APPEAL_LABEL}」\n{web_url or ''}",
             blocks.rerun_buttons(project, iid, label="🔁 修好了，重審")
-            + blocks.appeal_buttons(project, iid))
+            + blocks.appeal_buttons(project, iid) + blocks.waive_buttons(project, iid))
+        return 0
+    if not config["review"].get("auto_merge_on_clean"):
+        say(f":information_source: `{project}` !{iid}: 自動合併功能沒開,請 admin 開啟"
+            f"(`automerge on`)或到 GitLab 手動合併\n{web_url or ''}")
         return 0
     meta = reviewer.read_review_meta(work)
     if meta.get("mode") != "deep" or not meta.get("head_sha"):

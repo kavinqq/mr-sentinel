@@ -64,3 +64,12 @@ class TestParseClick(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMergedButtons(unittest.TestCase):
+    def test_first_row_wins_on_a_repeated_action(self):
+        first = blocks.rerun_buttons("g/app", 1, label="🔁 重審") + blocks.merge_buttons("g/app", 1)
+        then = blocks.rerun_buttons("g/app", 1, label="🔁 修好了，重審")
+        out = blocks.merged_buttons(first, then)
+        self.assertEqual([b["action_id"] for b in out], ["mrs:rerun:auto", "mrs:merge"])
+        self.assertEqual(out[0]["text"]["text"], "🔁 重審")

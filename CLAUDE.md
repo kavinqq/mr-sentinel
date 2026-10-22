@@ -25,12 +25,19 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   verdict for another head or target, and a leak a developer slips past by not
   re-running is on that developer. Do not re-propose poller-side re-gating. Rules for
   anything on this path: fail closed (can't check completely = `failed`, never
-  "probably fine"), never sample or truncate, never let a model verdict waive a
-  gate (only an admin's ✅ sign-off in `merge_retry.py`, for `unsure` / unfinished
-  holds on that exact head; never a `sure` finding or the marker rule), the
-  guard is an *extra* review that lists anything strange (not only test
-  leaks) and sends whatever it is `unsure` about to Slack as 需要人工確認, and
-  keep them running when the review itself fails.
+  "probably fine"), never sample or truncate, the guard is an *extra*, stricter
+  review that lists anything strange (not only test leaks) and keeps what it is
+  `unsure` about, and keep them running when the review itself fails.
+  To developers it is just a stricter review with the same flow (owner's call,
+  2026-10-21): its findings are ordinary MR comments (a finding about no line of
+  code is an MR-level note), no separate Slack message, no "正式分支" wording in
+  Slack. The gate clears when every comment it posted *for that head* (hidden
+  `gate-head` marker) is closed — fixed by a rerun, accepted on the developer's
+  reply (the developer answers for it), or answered by an admin's ✅ override in
+  `merge_retry.py` for a stalemate. The override only closes comments and never
+  skips a check (an unfinished review needs a rerun). `reviewer.sync_release_status`
+  turns the commit status green and always runs `_release_blocker` first. The
+  test-marker rule is re-run at merge and never overridden.
 
 - Schedulers (launchd/cron) run with a **minimal PATH**: plists must use absolute
   interpreter paths, and external CLIs are resolved via `engines.resolve_cli()`.

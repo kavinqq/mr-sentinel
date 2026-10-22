@@ -14,6 +14,7 @@ import argparse
 import fcntl
 import json
 import logging
+import re
 import subprocess
 import sys
 import time
@@ -62,8 +63,8 @@ def build_signature(engine_label: str) -> str:
     return f"— 🤖 mr-sentinel AI review ({engine_label})"
 
 
-GATE_LABEL = "test-marker rule"
-GUARD_LABEL = "release guard"
+GATE_LABEL = "測試字樣檢查"
+MERGE_CHECK_LABEL = "合併前檢查"
 
 
 # ---------- IO ----------
@@ -132,65 +133,82 @@ def _slack_say_verdict(config: dict, text: str, findings: list,
 def _maybe_auto_merge(config: dict, base: str, token: str,
                       project_path: str, iid, web_url, thread_ts: str | None = None,
                       *, reviewed_sha: str, note_on_block: bool = True) -> None:
-    """Merge a clean MR, honoring the hard rails. Every path warns; none raises.
+    """Merge a clean MR through try_auto_merge and say how it went in its own message
+    (an appeal or a 🔀 press; a review folds the outcome into its completion message)."""
+    merged, report, buttons, _ = try_auto_merge(config, base, token, project_path, iid,
+                                                reviewed_sha=reviewed_sha,
+                                                note_on_block=note_on_block)
+    if merged:
+        _slack_say(config, f":white_check_mark: {project_path} MR !{iid} auto-merged "
+                           f"(AI review clean)\n{web_url}", thread_ts)
+        _mark_notification_merged(config, thread_ts)
+        return
+    _slack_say(config, f":warning: `{project_path}` MR !{iid}: AI review 沒問題,但還沒自動合併\n"
+                       f"{report}\n{web_url}", thread_ts, buttons)
+
+
+def try_auto_merge(config: dict, base: str, token: str, project_path: str, iid, *,
+                   reviewed_sha: str, note_on_block: bool = True
+                   ) -> tuple[bool, str, list, list[dict]]:
+    """Merge a clean MR, honoring the hard rails. Never raises.
 
     Rails (in review_common.auto_merge_blocker): never merge a draft, a head
     other than `reviewed_sha`, an MR GitLab won't cleanly merge, or one whose
-    head pipeline isn't green. `note_on_block=False` keeps a retry someone just
-    pressed from adding the same MR note again.
+    head pipeline isn't green; then _release_blocker. Returns (merged, report,
+    buttons, bugs): when not merged, report is the *原因* / *下一步* lines and
+    buttons the way forward; bugs are the blockers that are the developer's to
+    fix, as findings (blocker_findings) a review posts like any other.
+    `note_on_block=False` keeps a retry someone just pressed from adding the same
+    MR note again.
     """
     retry_merge = blocks.merge_buttons(project_path, iid)
-    head = f":warning: `{project_path}` MR !{iid}: AI review 沒問題,但還沒自動合併"
     try:
         mr = gitlab_client.get_mr(base, token, project_path, iid)
         has_ci = gitlab_client.has_ci_config(base, token, project_path, reviewed_sha)
+        release = _release_blocker(config, base, token, project_path, mr)
+        if release is None:
+            mr = sync_release_status(config, base, token, project_path, mr, cleared=True)
     except Exception as exc:
         log.exception("auto-merge: get_mr failed")
-        _slack_say(config, f"{head}\n*原因*:查 GitLab 合併狀態失敗({type(exc).__name__})\n"
-                           f"*下一步*:等一下再{RETRY_MERGE}\n{web_url}", thread_ts, retry_merge)
-        return
+        return (False, f"*原因*:查 GitLab 合併狀態失敗({type(exc).__name__})\n"
+                       f"*下一步*:等一下再{RETRY_MERGE}", retry_merge, [])
 
-    blocker = (review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
-               or _release_blocker(config, base, token, project_path, mr))
+    rail = review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
+    # our own failed status turns the pipeline red: name the reason behind it instead
+    blocker = rail if rail == "new commits since review" else (release or rail)
     if blocker:
         log.info("MR !%s clean but not auto-merged: %s", iid, blocker)
-        guard = read_review_meta(REVIEWS_DIR / str(mr.get("id"))).get("guard")
         why, next_step = blocker_text(blocker)
-        details, gate = blocker_details(base, token, project_path, mr, blocker, guard,
-                                        commands.admins(config.get("slack", {})))
-        next_step = GATE_NEXT_STEP.get(gate, next_step)
         if blocker == "new commits since review":
             buttons = blocks.rerun_buttons(project_path, iid, label="🔁 重審最新 commit")
+        elif blocker in RERUN_BLOCKERS:
+            buttons = blocks.rerun_buttons(project_path, iid, label="🔁 重審") + retry_merge
+        elif blocker.startswith(OPEN_COMMENTS):
+            buttons = (blocks.rerun_buttons(project_path, iid, label="🔁 修好了，重審")
+                       + blocks.appeal_buttons(project_path, iid)
+                       + blocks.waive_buttons(project_path, iid))
         else:
-            buttons = ((blocks.rerun_buttons(project_path, iid, label="🔁 重審")
-                        if _needs_rerun(blocker) or gate == "rerun" else [])
-                       + retry_merge
-                       + (blocks.waive_buttons(project_path, iid) if gate == "waivable" else []))
-        _slack_say(config, f"{head}\n*原因*:{why}\n"
-                           + "".join(f"{line}\n" for line in details)
-                           + f"*下一步*:{next_step}\n{web_url}", thread_ts, buttons)
-        if note_on_block:
+            buttons = retry_merge
+        details = blocker_details(base, token, project_path, mr, blocker)
+        bugs = blocker_findings(base, token, project_path, mr, blocker)
+        if note_on_block and not bugs:
             try:
                 gitlab_client.post_note(base, token, project_path, iid,
                     f"🤖 mr-sentinel: AI review 無發現問題,但因「{why}」還沒自動合併,"
                     f"原因與按鈕在 Slack 討論串。")
             except Exception:
                 log.exception("auto-merge: note failed (ignored)")
-        return
+        return (False, f"*原因*:{why}\n" + "".join(f"{line}\n" for line in details)
+                       + f"*下一步*:{next_step}", buttons, bugs)
 
     try:
         gitlab_client.merge_mr(base, token, project_path, iid, sha=reviewed_sha)
     except Exception as exc:
         log.exception("auto-merge: merge failed")
-        _slack_say(config, f"{head}\n*原因*:GitLab 拒絕合併({str(exc)[:120]})\n"
-                           f"*下一步*:到 GitLab 看 MR 狀態,處理後{RETRY_MERGE}\n{web_url}",
-                   thread_ts, retry_merge)
-        return
-
+        return (False, f"*原因*:GitLab 拒絕合併({str(exc)[:120]})\n"
+                       f"*下一步*:到 GitLab 看 MR 狀態,處理後{RETRY_MERGE}", retry_merge, [])
     log.info("MR !%s auto-merged (AI review clean)", iid)
-    _slack_say(config, f":white_check_mark: {project_path} MR !{iid} auto-merged "
-                       f"(AI review clean)\n{web_url}", thread_ts)
-    _mark_notification_merged(config, thread_ts)
+    return True, "", [], []
 
 
 def without_covered(ai: list, gate_findings: list) -> list:
@@ -217,20 +235,23 @@ def _fail_status(config: dict, project_path: str, iid, reason: str) -> None:
     try:
         mr = gitlab_client.get_mr(config["gitlab_url"], config["gitlab_token"], project_path, iid)
         _set_status(config, project_path, mr["sha"], mr.get("source_branch"), mr.get("web_url"),
-                    "failed", f"正式分支額外 review 未完成:{reason}"[:255])
+                    "failed", f"review 沒跑完,請重審:{reason}"[:255])
     except Exception:
         log.exception("could not mark MR !%s failed", iid)
 
 
 def _post_gate_findings(config: dict, engine, project_path: str, iid, ctx: dict,
                         findings: list) -> int:
-    """Rule hits and guard leaks go up under their own signatures."""
+    """Rule hits and guard leaks go up under their own signatures, each marked with
+    the head it is about (review_common.gate_head), which _release_blocker counts."""
     base, token, review_cfg = config["gitlab_url"], config["gitlab_token"], config["review"]
+    head_sha = ctx["diff_refs"]["head_sha"]
+    findings = [{**f, "gate_head": head_sha} for f in findings]
     groups = [
         ([f for f in findings if f.get("gate") == artifact_gate.GATE_NAME],
          build_signature(GATE_LABEL)),
         ([f for f in findings if f.get("gate") == release_guard.GATE_NAME],
-         build_signature(f"{GUARD_LABEL} · {engine.label(review_cfg, 'lite')}")),
+         build_signature(engine.label(review_cfg, "lite"))),
     ]
     posted = 0
     for items, signature in groups:
@@ -254,8 +275,11 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
                      mr: dict) -> str | None:
     """Final rail before any auto-merge, including one reached through accepted
     appeals: the marker rule is re-run on the head about to merge, and the release
-    guard must have passed that exact head. No AI verdict can waive either, and
-    anything that cannot be confirmed fails closed."""
+    review must have run on that exact head and target, finished, with every
+    comment it posted for that head closed — fixed, accepted on the developer's
+    reply (the developer answers for it), or answered by an admin's override
+    (merge_retry). Nothing skips these checks; anything that cannot be confirmed
+    fails closed."""
     review_cfg = config.get("review", {})
     if not final_gates.applies(mr.get("target_branch"), review_cfg,
                                _main_branch(base, token, project_path)):
@@ -278,46 +302,71 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
     hits = artifact_gate.scan(changes, review_cfg.get("language", "en"), exempt)
     if hits:
         return f"test-only code in {len(hits)} file(s)"
-    guard = read_review_meta(REVIEWS_DIR / str(mr.get("id"))).get("guard")
-    if not guard:
-        return ("正式分支額外 review 沒跑過這個 MR(可能是 review 後才改成合進 "
-                f"`{mr.get('target_branch')}`),需要人工確認或按重審")
-    if guard.get("target_branch") != mr.get("target_branch"):
-        return (f"正式分支額外 review 是針對合進 `{guard.get('target_branch')}` 跑的,"
-                f"MR 現在要合進 `{mr.get('target_branch')}`,需要人工確認或按重審")
-    # an admin's sign-off (merge_retry) stands in for the guard's verdict, never for
-    # the marker rule above, and only on the head it was given for
-    waived = bool(guard.get("waived_by"))
-    if guard.get("head_sha") != mr.get("sha") or not (guard.get("ok") or waived):
-        return "release guard has not passed this commit"
-    if guard.get("leaks") and not waived:
-        return f"release guard found {guard['leaks']} test leak(s)"
+    meta = read_review_meta(REVIEWS_DIR / str(mr.get("id")))
+    guard = meta.get("guard")
+    if not _same_change(guard, mr):
+        return NOT_REVIEWED
+    if not guard.get("ok"):
+        return UNFINISHED
+    if not guard.get("leaks"):
+        return None
+    me = gitlab_client.get_current_user(base, token)["id"]
+    states = [review_common.discussion_status(d, me)
+              for d in gitlab_client.list_discussions(base, token, project_path, mr["iid"])
+              if review_common.gate_head(d) == mr.get("sha")]
+    open_count = sum(state != "closed" for state in states)
+    if open_count:
+        return f"{OPEN_COMMENTS}{open_count}"
+    if len(states) < guard["leaks"]:
+        # a comment that never reached GitLab cannot be answered there
+        return NOT_REVIEWED
     return None
 
 
-def waive_problem(guard: dict | None, mr: dict) -> str | None:
-    """Why an admin may not sign off the release gate's hold on this MR, or None.
-
-    Only what the gate was unsure about, or could not finish, is a human's call: a
-    sure finding needs a fix, and a verdict on another head or target a rerun. A
-    record from before `sure` was kept cannot tell the two apart, so it refuses."""
-    if not guard or guard.get("head_sha") != mr.get("sha") \
-            or guard.get("target_branch") != mr.get("target_branch"):
-        return "正式分支額外 review 的結果不是針對目前這個 commit 和目標分支,請按重審"
-    if guard.get("sure") is None:
-        return "這筆正式分支額外 review 紀錄分不出確定和不確定的問題,請按重審"
-    if guard["sure"]:
-        return f"正式分支額外 review 有 {guard['sure']} 個確定的問題,不能放行,要修好再重審"
-    return None
+def _same_change(record: dict | None, mr: dict) -> bool:
+    """A verdict holds for one head into one target: the same head into another
+    branch is another diff."""
+    return bool(record) and record.get("head_sha") == mr.get("sha") \
+        and record.get("target_branch") == mr.get("target_branch")
 
 
-def gate_waivable(guard: dict | None, mr: dict) -> bool:
-    """Whether to offer the admin sign-off button: the gate holds this head, and
-    nothing it found is sure."""
-    return (waive_problem(guard, mr) is None and not guard.get("waived_by")
-            and (not guard.get("ok") or bool(guard.get("leaks"))))
+def sync_release_status(config: dict, base: str, token: str, project_path: str,
+                        mr: dict, cleared: bool = False) -> dict:
+    """Turn the release status green once _release_blocker has nothing left, so
+    GitLab's own merge check agrees; returns the MR as GitLab reports it after.
+
+    Runs _release_blocker itself unless the caller just did (`cleared`). Only a
+    failed status of ours on a gated head is touched, never raised: the caller
+    re-checks the pipeline anyway, and a red one simply stays a blocker."""
+    if not _same_change(read_review_meta(REVIEWS_DIR / str(mr.get("id"))).get("guard"), mr):
+        return mr
+    try:
+        if not cleared and _release_blocker(config, base, token, project_path, mr) is not None:
+            return mr
+        ours = [s for s in gitlab_client.list_commit_statuses(base, token, project_path, mr["sha"])
+                if s.get("name") == final_gates.STATUS_NAME]
+        if not ours or ours[0].get("status") == "success":
+            return mr
+        gitlab_client.set_commit_status(base, token, project_path, mr["sha"], "success",
+                                        final_gates.STATUS_NAME, "review 留言都處理完了",
+                                        mr.get("web_url") or "", mr.get("source_branch") or "")
+        for _ in range(STATUS_SETTLE_TRIES):
+            mr = gitlab_client.get_mr(base, token, project_path, mr["iid"])
+            if (mr.get("head_pipeline") or {}).get("status") != "failed":
+                break
+            time.sleep(STATUS_SETTLE_SECONDS)
+    except Exception:
+        log.exception("release status of !%s not synced", mr.get("iid"))
+    return mr
 
 
+# GitLab recomputes a pipeline from its statuses asynchronously
+STATUS_SETTLE_TRIES = 5
+STATUS_SETTLE_SECONDS = 2
+NOT_REVIEWED = "latest commit not fully reviewed"
+UNFINISHED = "review did not finish"
+OPEN_COMMENTS = "open review comments: "
+RERUN_BLOCKERS = (NOT_REVIEWED, UNFINISHED, "test-marker rule could not read the diff")
 RETRY_MERGE = f"按「{blocks.MERGE_LABEL}」"
 RERUN_HINT = "按「🔁 重審」"
 
@@ -340,89 +389,112 @@ def blocker_text(blocker: str) -> tuple[str, str]:
         status = blocker[len("pipeline "):]
         if status in ("pending", "running", "created", "waiting_for_resource", "preparing"):
             return f"CI 還在跑({status})", f"等跑完,再{RETRY_MERGE}"
-        return f"CI / 檢查沒過({status})", f"看上面沒過的項目,修好或重跑成功後{RETRY_MERGE}"
+        return (f"CI 沒過({status})",
+                f"看上面沒過的項目,修好或重跑成功後{RETRY_MERGE};"
+                f"如果申訴已成立(跟這次修改無關),請 admin 到 GitLab 手動合併")
     if blocker == "test-marker rule could not read the diff":
         return "合併前的測試字樣檢查讀不到完整 diff", f"{RERUN_HINT};還是不行請找 admin"
     if blocker.startswith("test-only code in"):
         return (f"合併前檢查發現{blocker[len('test-only code in'):]}有測試字樣"
                 f"(例如「測試用」「DO NOT MERGE」)", "拿掉後推新的 commit")
-    if blocker == "release guard has not passed this commit":
-        return "正式分支額外 review 沒有通過目前這個 commit", f"{RERUN_HINT},或請 admin 確認後放行"
-    if blocker.startswith("release guard found"):
-        return "正式分支額外 review 有項目要處理", "看下面的項目"
-    if "請按重審" in blocker or "按重審" in blocker:
-        return blocker, RERUN_HINT
+    if blocker == NOT_REVIEWED:
+        return "最新的 commit 還沒完整 review 過", RERUN_HINT
+    if blocker == UNFINISHED:
+        return "上次 review 有一部分沒跑完", RERUN_HINT
+    if blocker.startswith(OPEN_COMMENTS):
+        return (f"還有 {blocker[len(OPEN_COMMENTS):]} 則 review 留言沒處理完",
+                f"修好就按「🔁 修好了，重審」;不用修就在 GitLab 那則留言回覆,"
+                f"再按「{blocks.APPEAL_LABEL}」")
     return blocker, f"處理後{RETRY_MERGE}"
 
 
-def _needs_rerun(blocker: str) -> bool:
-    return blocker in ("test-marker rule could not read the diff",
-                       "release guard has not passed this commit") or "重審" in blocker
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|section_(?:start|end):\d+:\S+")
+TRACE_TAIL_LINES = 40
+CONFLICT_STATUSES = ("conflict", "cannot_be_merged")
 
 
-def blocker_details(base: str, token: str, project_path: str, mr: dict, blocker: str,
-                    guard: dict | None, admins: list[str] = ()) -> tuple[list[str], str | None]:
-    """Lines spelling out an auto-merge blocker: each failed job or external status
-    behind a red pipeline, and what the release gate wants a human to confirm.
+def failing_step(trace: str) -> str:
+    """The end of a job log from its last `$ command` line on, so the error is not
+    buried under dependency installs; at most TRACE_TAIL_LINES lines."""
+    lines = [line for line in trace.rstrip().splitlines() if line.strip()]
+    starts = [i for i, line in enumerate(lines) if line.startswith("$ ")]
+    return "\n".join(lines[starts[-1] if starts else 0:][-TRACE_TAIL_LINES:])
 
-    Returns (lines, gate): gate is None when the release gate is not what holds
-    the MR, else "waivable" (an admin may sign off), "waived", or "rerun" (the
-    gate verdict cannot be signed off as it stands). Never raises; a failed
-    lookup says so instead."""
-    lines = []
-    red_pipeline = blocker.startswith("pipeline ") and blocker not in (
-        "pipeline missing", "pipeline is for an older commit")
-    if red_pipeline and not blocker_text(blocker)[0].startswith("CI 還在跑"):
+
+def blocker_findings(base: str, token: str, project_path: str, mr: dict,
+                     blocker: str) -> list[dict]:
+    """The blockers that are the developer's to fix — a failed CI job, a conflict
+    with the target — as findings posted and counted like any other. The developer
+    can still reply and appeal (the log tail in `evidence` lets the AI weigh a
+    reason such as "unrelated old debt"), and an admin can override. Empty for any
+    other blocker; never raises."""
+    if blocker.startswith("not mergeable") and any(c in blocker for c in CONFLICT_STATUSES):
+        return [{"severity": "high", "category": "compatibility", "file": None, "line": None,
+                 "title": f"跟目標分支 `{mr.get('target_branch')}` 有衝突,不能合併",
+                 "problem": f"這個 MR 跟 `{mr.get('target_branch')}` 有衝突,GitLab 不讓合併。",
+                 "impact": "衝突沒解掉之前這個修改上不了線。",
+                 "fix": f"把 `{mr.get('target_branch')}` 合進來(或 rebase)解掉衝突後推新的 commit。",
+                 "evidence": f"- GitLab merge status:`{blocker[len('not mergeable'):].strip()}`"}]
+    if not blocker.startswith("pipeline ") or blocker_text(blocker)[0].startswith("CI 還在跑") \
+            or blocker in ("pipeline missing", "pipeline is for an older commit"):
+        return []
+    try:
+        statuses = gitlab_client.list_commit_statuses(base, token, project_path, mr["sha"])
+    except Exception:
+        log.exception("auto-merge: commit statuses of !%s unavailable", mr.get("iid"))
+        return []
+    project_url = (mr.get("web_url") or "").split("/-/merge_requests")[0]
+    bugs = []
+    for s in statuses:
+        if s.get("status") not in ("failed", "canceled") or s.get("allow_failure") \
+                or s.get("name") == final_gates.STATUS_NAME:
+            continue
+        url = s.get("target_url") or (f"{project_url}/-/jobs/{s['id']}" if s.get("id") else "")
+        evidence = [f"- CI job `{s.get('name')}` {s.get('status')}" + (f":{url}" if url else "")]
         try:
-            statuses = gitlab_client.list_commit_statuses(base, token, project_path, mr["sha"])
-        except Exception as exc:
-            log.exception("auto-merge: commit statuses of !%s unavailable", mr.get("iid"))
-            statuses = []
-            lines.append(f"• 查不到是哪一項沒過({type(exc).__name__})")
-        for s in statuses:
-            if s.get("status") in ("success", "skipped", "manual", "running", "pending", "created"):
-                continue
-            if s.get("name") == final_gates.STATUS_NAME:
-                description = s.get("description") or ""
-                lines.append(f"• {description}" if description.startswith("正式分支")
-                             else f"• 正式分支額外 review 沒過:{description}")
-            else:
-                lines.append(f"• CI job `{s.get('name')}` {s.get('status')}"
-                             + (f":{s['description']}" if s.get("description") else "")
-                             + (f" {s['target_url']}" if s.get("target_url") else ""))
-        if not any(line.startswith(("• CI job", "• 正式分支")) for line in lines):
-            pipeline = mr.get("head_pipeline") or mr.get("pipeline") or {}
-            lines.append(f"• GitLab 說 CI 沒過,但沒列出是哪一項,請打開 pipeline 看:"
-                         f"{pipeline.get('web_url') or mr.get('web_url') or ''}")
-    held_by_gate = any(line.startswith("• 正式分支") for line in lines) \
-        or blocker.startswith("release guard")
-    if not held_by_gate:
-        return lines, None
-    problem = waive_problem(guard, mr)
-    if problem:
-        lines.append(f"_{problem}_")
-        return lines, "rerun"
-    checks = guard.get("human_checks") or []
-    if checks:
-        lines.append(f":warning: *需要人工確認({len(checks)})*:")
-        lines += [f"• {c}" for c in checks]
-    if guard.get("waived_by"):
-        return lines, "waived"
-    lines.append(waive_hint(project_path, mr.get("iid"), admins))
-    return lines, "waivable"
+            trace = ANSI_RE.sub("", gitlab_client.get_job_trace(base, token, project_path, s["id"]))
+            evidence.append(f"- log 結尾:\n\n```\n{failing_step(trace)}\n```")
+        except Exception:
+            log.exception("auto-merge: log of job %s unavailable", s.get("id"))
+            evidence.append("- 拿不到 job log,請點上面的連結看")
+        bugs.append({"severity": "high", "category": "verification", "file": None, "line": None,
+                     "title": f"CI 沒過:{s.get('name')} {s.get('status')}",
+                     "problem": f"這個 commit 的 CI job `{s.get('name')}` {s.get('status')}。",
+                     "impact": "CI 沒過就不能合併。",
+                     "fix": "看 job log 修好後推新的 commit;如果錯誤跟這次修改無關"
+                            "(例如原本就有的問題),在這則留言回覆說明,再按申訴。",
+                     "evidence": "\n".join(evidence)})
+    return bugs
 
 
-GATE_NEXT_STEP = {
-    "rerun": RERUN_HINT + ",讓正式分支額外 review 重新檢查目前這個 commit",
-    "waivable": f"請 admin 確認上面的項目後按「{blocks.WAIVE_LABEL}」",
-    "waived": f"已有人工放行,等 GitLab 更新狀態後{RETRY_MERGE}",
-}
-
-
-def waive_hint(project_path: str, iid, admins) -> str:
-    who = " ".join(f"<@{a}>" for a in admins) or "admin"
-    return (f"_請 admin({who})確認上面的項目後按「{blocks.WAIVE_LABEL}」;"
-            f"看不到按鈕就在這裡輸入 `@{commands.BOT_HANDLE} waive {project_path}!{iid}`_")
+def blocker_details(base: str, token: str, project_path: str, mr: dict,
+                    blocker: str) -> list[str]:
+    """Lines naming each failed CI job behind a red pipeline. Our own release status
+    is left out: its reason is the blocker itself. Never raises; a failed lookup
+    says so instead."""
+    if not blocker.startswith("pipeline ") or blocker in (
+            "pipeline missing", "pipeline is for an older commit") \
+            or blocker_text(blocker)[0].startswith("CI 還在跑"):
+        return []
+    lines = []
+    try:
+        statuses = gitlab_client.list_commit_statuses(base, token, project_path, mr["sha"])
+    except Exception as exc:
+        log.exception("auto-merge: commit statuses of !%s unavailable", mr.get("iid"))
+        statuses = []
+        lines.append(f"• 查不到是哪一項沒過({type(exc).__name__})")
+    for s in statuses:
+        if s.get("status") in ("success", "skipped", "manual", "running", "pending", "created") \
+                or s.get("name") == final_gates.STATUS_NAME:
+            continue
+        lines.append(f"• CI job `{s.get('name')}` {s.get('status')}"
+                     + (f":{s['description']}" if s.get("description") else "")
+                     + (f" {s['target_url']}" if s.get("target_url") else ""))
+    if not any(line.startswith("• CI job") for line in lines):
+        pipeline = mr.get("head_pipeline") or mr.get("pipeline") or {}
+        lines.append(f"• GitLab 說 CI 沒過,但沒列出是哪一項,請打開 pipeline 看:"
+                     f"{pipeline.get('web_url') or mr.get('web_url') or ''}")
+    return lines
 
 
 MERGED_REACTIONS = ("done", "white_check_mark")
@@ -603,7 +675,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
     gated = final_gates.applies(ctx.get("target_branch"), review_cfg,
                                 _main_branch(base, token, project_path))
     if gated and not dry_run:
-        _set_status(config, project_path, head_sha, ref, web_url, "pending", "正式分支額外 review 進行中")
+        _set_status(config, project_path, head_sha, ref, web_url, "pending", "review 進行中")
     local, failure = prepare_worktree(project_path, iid, head_sha, wt, review_cfg)
     if failure:
         if not dry_run:
@@ -614,10 +686,10 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             # every failure branch must produce a human-visible signal
             if gated:
                 _set_status(config, project_path, head_sha, ref, web_url, "failed",
-                            f"正式分支額外 review 未完成:{reason}")
-                reason += "。正式分支額外 review 也沒跑,*需要人工確認*沒有測試內容或可疑的地方"
-            _slack_say(config, f":warning: {project_path} MR !{iid}: {reason}, "
-                               f"please review manually\n{web_url}", thread_ts)
+                            f"review 沒跑完,請重審:{reason}")
+            _slack_say(config, f":warning: `{project_path}` MR !{iid}: review 沒跑完({reason})"
+                               f" — 按「🔁 再試一次」\n{web_url}", thread_ts,
+                       blocks.rerun_buttons(project_path, iid, label="🔁 再試一次"))
         return 1
 
     try:
@@ -660,24 +732,16 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         guard_record = outcome.record(head_sha, ctx.get("target_branch")) if gated else None
         if gated:
             _set_status(config, project_path, head_sha, ref, web_url, *final_gates.status(outcome))
-        if not outcome.passed:
-            gate_buttons = [] if outcome.ok else blocks.rerun_buttons(project_path, iid,
-                                                                      label="🔁 重審")
-            gate_text = final_gates.slack_text(project_path, iid, web_url,
-                                               ctx.get("target_branch"), outcome)
-            if gate_waivable(guard_record, {"sha": head_sha,
-                                            "target_branch": ctx.get("target_branch")}):
-                gate_buttons += blocks.waive_buttons(project_path, iid)
-                gate_text += "\n" + waive_hint(project_path, iid,
-                                                commands.admins(config.get("slack", {})))
-            _slack_say(config, gate_text, thread_ts, gate_buttons or None)
-
         if result is None:
-            _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
+            posted = _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
             write_review_meta(work, mode, head_sha, len(gate_findings), guard_record)
-            _slack_say(config, f":warning: {project_path} MR !{iid} review did not finish, "
-                               f"please review manually\n{web_url}", thread_ts,
-                       blocks.rerun_buttons(project_path, iid, label="🔁 再試一次"))
+            _slack_say(config, f":warning: `{project_path}` MR !{iid}: review 沒跑完 — "
+                               f"按「🔁 再試一次」"
+                               + (f";已經發出的 {posted} 則留言如果不用修,回覆後按"
+                                  f"「{blocks.APPEAL_LABEL}」" if posted else "")
+                               + f"\n{web_url}", thread_ts,
+                       blocks.rerun_buttons(project_path, iid, label="🔁 再試一次")
+                       + (blocks.appeal_buttons(project_path, iid) if posted else []))
             return 1
 
         # 7. post comments (scripts post; the AI never does)
@@ -689,6 +753,25 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             base, token, project_path, iid, ai_findings, ctx["diff_refs"],
             signature=build_signature(engine.label(review_cfg, mode)))
 
+        # 8. auto-merge on a clean deep review (opt-in; hard-railed). A failed CI job or
+        #    a conflict comes back as findings and is posted like any other, before the
+        #    history sync so it counts. try_auto_merge never raises, and a crash around
+        #    it is caught: it must not read as a failed review, which main() would
+        #    answer by deleting the comments and reviewing again.
+        merged, merge_report, merge_buttons = False, None, []
+        try:
+            if auto_merge and outcome.passed and review_common.auto_merge_eligible(mode, result):
+                merged, merge_report, merge_buttons, bugs = try_auto_merge(
+                    config, base, token, project_path, iid, reviewed_sha=head_sha)
+                if bugs:
+                    merge_report, merge_buttons = None, []
+                    findings += bugs
+                    posted += post_comment.post_findings(
+                        base, token, project_path, iid, bugs, ctx["diff_refs"],
+                        signature=build_signature(MERGE_CHECK_LABEL))
+        except Exception:
+            log.exception("auto-merge step of MR !%s crashed", iid)
+
         write_review_meta(work, mode, head_sha, len(findings), guard_record)
         # into the db -> blame -> follow-ups -> every score -> change log (never raises)
         history_sync.sync_mr(config, project_path, iid,
@@ -697,27 +780,27 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         # the scorecard: 1-5 per category for this MR, from the same context (never raises)
         history_rate.rate_mr(config, project_path, iid, ctx=ctx)
 
-        # 8. completion message
+        # 9. completion message
         buttons = blocks.rerun_buttons(project_path, iid,
                                        label="🔁 修好了，重審" if findings else "🔁 重審")
         if posted:
             buttons += blocks.appeal_buttons(project_path, iid)
+            buttons += blocks.waive_buttons(project_path, iid)
         text = completion_text(project_path, iid, web_url, findings, posted, language, mode)
+        if not outcome.ok:
+            text += "\n:warning: 有一部分檢查沒跑完,按「🔁 重審」再跑一次"
         if posted < len(findings):
             text += (f"\n:warning: {len(findings) - posted} 則留言沒發成功"
                      f"(GitLab 回錯誤),可以按重審補上")
+        if merged:
+            text += "\n:white_check_mark: *已自動合併*"
+        elif merge_report:
+            text += f"\n:warning: *還沒自動合併*\n{merge_report}"
+            buttons = blocks.merged_buttons(merge_buttons, buttons)
         _slack_say_verdict(config, text, findings, thread_ts, buttons)
+        if merged:
+            _mark_notification_merged(config, thread_ts)
         log.info("MR !%s reviewed: %s comment(s) posted", iid, posted)
-
-        # 9. auto-merge on a clean deep review (opt-in; hard-railed). The review is
-        #    announced by now: a crash here must not read as a failed review, which
-        #    main() would answer by deleting the comments and reviewing again.
-        try:
-            if auto_merge and outcome.passed and review_common.auto_merge_eligible(mode, result):
-                _maybe_auto_merge(config, base, token, project_path, iid, web_url,
-                                  thread_ts, reviewed_sha=head_sha)
-        except Exception:
-            log.exception("auto-merge step of MR !%s crashed after the review was announced", iid)
         return 0
     finally:
         _remove_worktree(local, wt)

@@ -24,7 +24,6 @@ import release_guard
 STATUS_NAME = "mr-sentinel/release-gate"
 GUARD_WORKERS = 3
 DEFAULT_TARGET_BRANCHES = ("master", "main")
-UNFINISHED_CHECK = "這個 MR 沒有測試字樣、測試連結、測試按鈕、測試帳號或測試設定"
 
 log = logging.getLogger("mr_sentinel.final_gates")
 
@@ -49,15 +48,9 @@ class Outcome:
 
     def record(self, head_sha: str, target_branch: str | None) -> dict:
         """What review_meta.json keeps for _release_blocker. The same head into a
-        different branch is a different diff, so the verdict is bound to both.
-        `sure` and `human_checks` say what an admin may sign off (merge_retry)."""
-        sure, unsure = _split(self.findings)
-        checks = [] if self.ok else [f"正式分支額外 review 沒跑完:{self.problem} — 請確認:"
-                                     f"{UNFINISHED_CHECK}"]
+        different branch is a different diff, so the verdict is bound to both."""
         return {"head_sha": head_sha, "target_branch": target_branch,
-                "ok": self.ok, "leaks": len(self.findings), "sure": len(sure),
-                "human_checks": checks + [f"{_where(f)} {f.get('title', '')} — 請確認:"
-                                          f"{f['human_check']}" for f in unsure]}
+                "ok": self.ok, "leaks": len(self.findings)}
 
 
 def applies(target_branch: str | None, review_cfg: dict, default_branch: str | None) -> bool:
@@ -134,44 +127,10 @@ def run(engine, work: Path, ctx: dict, local: str | None, wt, review_cfg: dict) 
     return Outcome(rule=rule, guard=[f for r in results for f in r])
 
 
-def _split(findings: list) -> tuple[list, list]:
-    sure = [f for f in findings if f.get("confidence") != "unsure"]
-    return sure, [f for f in findings if f.get("confidence") == "unsure"]
-
-
 def status(outcome: Outcome) -> tuple[str, str]:
     """(GitLab commit status state, description)."""
     if not outcome.ok:
-        return "failed", f"正式分支額外 review 未完成,需要人工確認:{outcome.problem}"[:255]
+        return "failed", f"review 沒跑完,請重審:{outcome.problem}"[:255]
     if outcome.findings:
-        sure, unsure = _split(outcome.findings)
-        return "failed", f"正式分支額外 review:{len(sure)} 個確定問題,{len(unsure)} 個需要人工確認"
-    return "success", "正式分支額外 review 通過:沒有測試內容或可疑的地方"
-
-
-def _where(f: dict) -> str:
-    return f"`{f['file']}:{f['line']}`" if f.get("line") else f"`{f['file']}`"
-
-
-def slack_text(project_path: str, iid, web_url: str | None, target_branch: str | None,
-               outcome: Outcome) -> str:
-    """The Slack report of a gate that did not pass. Whatever the gate is not sure
-    about (an unsure finding, or a check that did not complete) is spelled out as
-    a human check, never folded into a count."""
-    sure, unsure = _split(outcome.findings)
-    head = f"`{project_path}` MR !{iid} 合進 `{target_branch}` 前的正式分支額外 review"
-    lines = []
-    if not outcome.ok:
-        lines += [f":warning: *需要人工確認* — {head}沒有完整跑完:{outcome.problem}",
-                  f"請人工檢查{UNFINISHED_CHECK},確認後再合併。"]
-    else:
-        lines.append(f":no_entry: {head}沒過")
-    if sure:
-        lines.append(f"確定有問題({len(sure)}):")
-        lines += [f"• {_where(f)} {f.get('title', '')}" for f in sure]
-    if unsure:
-        lines.append(f":warning: *AI 信心不足,需要人工確認({len(unsure)})*:")
-        lines += [f"• {_where(f)} {f.get('title', '')} — 請確認:{f['human_check']}"
-                  for f in unsure]
-    lines.append(web_url or "")
-    return "\n".join(lines)
+        return "failed", f"review 有 {len(outcome.findings)} 則留言要處理"
+    return "success", "review 通過"

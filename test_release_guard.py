@@ -147,6 +147,15 @@ class TestNormalize(unittest.TestCase):
                 self.assertIsNone(release_guard.normalize(self.ok(findings=[FINDING, bad]),
                                                           ["a.py", "b.py"]))
 
+    def test_finding_about_no_line_of_code_becomes_an_mr_note(self):
+        release = {**UNSURE, "file": None, "line": None, "title": "前端要同批上線"}
+        [f] = release_guard.normalize(self.ok(findings=[release]), ["a.py", "b.py"])
+        self.assertIsNone(f["file"])
+
+    def test_a_line_without_a_file_is_malformed(self):
+        self.assertIsNone(release_guard.normalize(
+            self.ok(findings=[{**FINDING, "file": None, "line": 3}]), ["a.py", "b.py"]))
+
     def test_unsure_finding_carries_what_a_human_must_check(self):
         [f] = release_guard.normalize(self.ok(findings=[UNSURE]), ["a.py", "b.py"], "zh-TW")
         self.assertEqual(f["confidence"], "unsure")

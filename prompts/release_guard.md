@@ -76,7 +76,13 @@ could not verify — the production value of a switch, whether a file is bundled
 whether a link or button is reachable, whether a host is a test host — is
 `"unsure"`, with `human_check` naming the one concrete thing a person must look
 at (which setting, which page, which file:line). An `unsure` finding is never
-dropped: it goes to Slack as a human check.
+dropped: it is posted to the developer as an MR comment that leads with that check.
+
+## Where a finding goes
+A finding about a line of code names that `file` and `line`. A finding that is not
+about any one line — release order with another repository, a setting outside this
+repository, a process to follow — sets both `file` and `line` to null; it is posted
+as a general comment on the MR instead of being pinned to an unrelated line.
 
 ## Process (follow strictly)
 1. Read `./__CONTEXT_FILE__`.
@@ -93,7 +99,8 @@ dropped: it goes to Slack as a human check.
                   "category": "security" (bypass / secret / exposed test endpoint)
                               | "correctness" (anything else),
                   "title": "<= 60 chars, name the leak and its consequence",
-                  "file": "<a path from files>", "line": <new-file line number, or null>,
+                  "file": "<a path from files>, or null (see Where a finding goes)",
+                  "line": <new-file line number, or null>,
                   "problem": "what test-only thing ships, 1-2 sentences",
                   "impact": "what a production user or attacker gets, 1-2 sentences",
                   "fix": "delete it, or gate it behind the named environment switch",

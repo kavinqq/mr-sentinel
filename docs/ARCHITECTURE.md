@@ -37,19 +37,25 @@ scheduler (launchd / cron / systemd, every 60s)
                            no skeptic, over EVERY added line in batches; strict output schema
                            incl. checked_files. Unreadable diff / missing test_hosts / failed or
                            malformed batch / too many batches = failed, never passed.
-                           Every finding is `sure` or `unsure` (+ `human_check`); Slack lists the
-                           unsure ones, and any incomplete check, as 需要人工確認.
+                           Every finding is `sure` or `unsure` (+ `human_check`), posted as an
+                           ordinary MR comment marked with its head (`gate-head`); one about
+                           no line of code is an MR-level note. No separate Slack message.
                            Verdict → GitLab commit status `mr-sentinel/release-gate`
        7. post             post_comment.py: rule → guard → review findings, duplicates dropped;
                            inline discussion first, note fallback
-       8. notify           optional Slack completion message
-       9. auto-merge       if deep-clean + auto_merge_on_clean (a clean lite pass is re-run deep first):
+       8. auto-merge       if deep-clean + auto_merge_on_clean (a clean lite pass is re-run deep first):
                            merge pinned to the reviewed sha (unless draft/head moved/unmergeable/
                            CI not green/CI config but no pipeline), then :done: on the notification.
                            Every auto-merge (appeals too) re-runs the marker rule and needs the
-                           release guard's pass for that exact head (review_meta.json `guard`,
-                           or an admin's `waived_by` sign-off on it); anything unknown fails closed.
-                           A blocked merge lists each failed job/status and offers 🔀 (and ✅)
+                           guard to have run on that exact head and target with every comment
+                           it posted for that head closed (or an admin `override` in
+                           review_meta.json); then the status turns green. Anything unknown fails
+                           closed. A blocked merge says why in plain words and offers 🔀 / 🔁 / ✅
+                           A failed CI job / a conflict is not a Slack note but a High finding
+                           (MR-level comment, job-log tail as evidence) posted before the history
+                           sync, so it counts and can be appealed like any other
+       9. notify           ONE Slack completion message (已自動合併, or for a non-bug blocker such
+                           as Draft: 還沒自動合併 + 原因 / 下一步 and its buttons)
       10. cleanup          worktree removed (finally-block, even on crash)
 
 scheduler (second entry, every 15s)          — or long-lived with --socket
@@ -61,9 +67,9 @@ scheduler (second entry, every 15s)          — or long-lived with --socket
                           threads a human answered → engine.run_appeal → reply +
                           resolve accepted → summary → auto-merge rails if none open
        ├─ merge retry     🔀 / ✅ button → merge_retry.py (detached, per-MR lock): ✅ (admin)
-       │                  first signs off the gate's unsure / unfinished hold on this head
-       │                  (status success, meta `waived_by`, gate threads resolved, MR note);
-       │                  then the appeal rule (no open thread, deep) → auto-merge rails
+       │                  first overrides a stalemate on this head (every open AI thread
+       │                  answered + resolved, meta `override`, MR note); then the appeal
+       │                  rule (no open thread, deep) → auto-merge rails
        ├─ usage           bare mention -> the command list for that user
        ├─ settings        writes overrides.json (whitelisted keys only)
        └─ rerun           un-claim → delete its own unanswered comments → spawn
@@ -199,7 +205,7 @@ prose is not. The final message is used for nothing.
 | `final_gates.py` | the final gates as one fail-closed verdict + commit status |
 | `release_guard.py` | release-guard pass plumbing: batches covering every added line, keyword hints, strict output validation |
 | `appeal.py` | re-judge findings the developer disputed; verdict replies, resolve, summary |
-| `merge_retry.py` | 🔀 retry a blocked merge of a clean MR; ✅ an admin's sign-off on the release gate first |
+| `merge_retry.py` | 🔀 retry a blocked merge of a clean MR; ✅ an admin's override of a stalemate first |
 | `blocks.py` | Block Kit buttons: build, retire after a click, parse a click back to a Command (pure) |
 | `commands.py` | parse / authorize / render usage, settings, status (pure) |
 | `overrides.py` | Slack-settable config layer: whitelist, validate, merge |

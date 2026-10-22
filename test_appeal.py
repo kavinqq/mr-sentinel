@@ -99,6 +99,7 @@ class Harness:
                  mock.patch.object(appeal.reviewer, "_slack_say",
                                    side_effect=lambda cfg, text, ts, b=None: self.said.append((text, b))), \
                  mock.patch.object(appeal.reviewer, "_maybe_auto_merge") as self.merge, \
+                 mock.patch.object(appeal.reviewer, "sync_release_status") as self.sync, \
                  mock.patch.object(appeal.history_sync, "sync_mr") as self.history, \
                  mock.patch.object(appeal.fetch_mr, "build_context", return_value={
                      "diff_refs": {"head_sha": self.ctx_head}}), \
@@ -223,6 +224,16 @@ class TestRunAppeal(unittest.TestCase):
         self.assertEqual(h.deep_modes, [])
         h.merge.assert_not_called()
         self.assertIn("請手動合併", h.said[-1][0])
+
+    def test_stalemate_offers_the_admin_override(self):
+        h = Harness([disputed("d1")], [{"id": "d1", "verdict": "reject", "reason": "仍會 None"}]).run()
+        self.assertIn("waive", [json.loads(b["value"])["verb"] for b in h.said[-1][1]])
+        h.sync.assert_called_once()           # the release status follows only its own comments
+
+    def test_all_accepted_without_auto_merge_still_turns_the_release_status_green(self):
+        h = Harness([disputed("d1")], self.ACCEPT).run()
+        h.merge.assert_not_called()
+        h.sync.assert_called_once()
 
     def test_auto_merge_off_never_merges(self):
         h = Harness([disputed("d1")], [{"id": "d1", "verdict": "accept", "reason": "ok"}],

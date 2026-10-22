@@ -348,7 +348,7 @@ class Bot:
         elif cmd.verb == "merge":
             note = f":twisted_rightwards_arrows: <@{user}> 按了重新合併,檢查中(結果會回在下面)"
         elif cmd.verb == "waive":
-            note = f":hourglass: <@{user}> 送出人工放行,確認中 — 還沒合併(結果會回在下面)"
+            note = f":hourglass: <@{user}> 裁定放行,處理中 — 還沒合併(結果會回在下面)"
         else:
             note = f":recycle: <@{user}> 已觸發重審(`{cmd.args[-1] if cmd.args else 'auto'}`)"
         new_blocks = blocks.resolved(click["blocks"], note)

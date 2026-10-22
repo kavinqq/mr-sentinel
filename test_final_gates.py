@@ -51,8 +51,7 @@ class TestRun(unittest.TestCase):
         out, _ = self.run_gates([PLAIN], clean)
         self.assertTrue(out.passed)
         self.assertEqual(out.record("h", "master"),
-                         {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 0,
-                          "sure": 0, "human_checks": []})
+                         {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 0})
 
     def test_rule_hit_fails_even_when_the_guard_is_clean(self):
         out, _ = self.run_gates([MARKER, PLAIN], clean)
@@ -167,45 +166,18 @@ UNSURE_LEAK = {**LEAK, "title": "預設 API 指向 UAT", "confidence": "unsure",
                "human_check": "確認正式機有設定 `API_HOST`"}
 
 
-class TestRecord(unittest.TestCase):
-    def test_keeps_what_only_a_human_can_sign_off(self):
-        rec = final_gates.Outcome(rule=[RULE_HIT], guard=[UNSURE_LEAK]).record("h", "master")
-        self.assertEqual((rec["leaks"], rec["sure"]), (2, 1))
-        self.assertEqual(len(rec["human_checks"]), 1)
-        self.assertIn("確認正式機有設定 `API_HOST`", rec["human_checks"][0])
+class TestStatusWording(unittest.TestCase):
+    """GitLab shows this to the developer: plain words, one count, no internal names."""
 
-    def test_incomplete_guard_has_nothing_sure(self):
-        rec = final_gates.Outcome(rule=[], guard=None, problem="x").record("h", "master")
-        self.assertEqual((rec["ok"], rec["sure"]), (False, 0))
-        self.assertIn("沒跑完:x", rec["human_checks"][0])        # the sign-off says what it covered
-
-
-class TestSlackText(unittest.TestCase):
-    def text(self, outcome):
-        return final_gates.slack_text("g/app", 5, "http://gl/5", "master", outcome)
-
-    def test_sure_and_unsure_findings_are_listed_apart(self):
-        text = self.text(final_gates.Outcome(rule=[RULE_HIT], guard=[UNSURE_LEAK]))
-        sure, unsure = text.split("需要人工確認")
-        self.assertIn("`a.tsx:3`", sure)
-        self.assertIn("`b.py:1`", unsure)
-        self.assertIn("確認正式機有設定 `API_HOST`", unsure)
-        self.assertIn("`master`", text)
-
-    def test_only_sure_findings_ask_for_no_human_check(self):
-        text = self.text(final_gates.Outcome(rule=[RULE_HIT], guard=[]))
-        self.assertNotIn("需要人工確認", text)
-
-    def test_incomplete_check_asks_for_a_human_check(self):
-        text = self.text(final_gates.Outcome(rule=[RULE_HIT], guard=None, problem="guard failed"))
-        self.assertIn("需要人工確認", text)
-        self.assertIn("guard failed", text)
-        self.assertIn("`a.tsx:3`", text)
-
-    def test_status_counts_unsure_findings_separately(self):
+    def test_counts_every_comment_alike(self):
         _, description = final_gates.status(
             final_gates.Outcome(rule=[RULE_HIT], guard=[UNSURE_LEAK]))
-        self.assertIn("1 個需要人工確認", description)
+        self.assertIn("2 則留言", description)
+        self.assertNotIn("正式分支", description)
+
+    def test_unfinished_says_rerun(self):
+        _, description = final_gates.status(final_gates.Outcome(rule=[], guard=None, problem="x"))
+        self.assertIn("重審", description)
 
 
 if __name__ == "__main__":

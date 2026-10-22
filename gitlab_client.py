@@ -233,3 +233,8 @@ def list_commit_statuses(base: str, token: str, project, sha: str, per_page: int
         if len(batch) < per_page:
             return out
     raise RuntimeError(f"commit {sha[:8]} has more than {per_page * max_pages} statuses")
+
+
+def get_job_trace(base: str, token: str, project, job_id) -> str:
+    """A CI job's raw log (ANSI colour codes included)."""
+    return _call(f"{_project(base, project)}/jobs/{int(job_id)}/trace", token)

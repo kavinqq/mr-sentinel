@@ -52,9 +52,21 @@ def merge_buttons(project: str, iid) -> list[dict]:
 
 
 def waive_buttons(project: str, iid) -> list[dict]:
-    """Admin-only (commands.TIERS): sign off what the release gate was unsure
-    about, then merge as `merge_buttons` would."""
+    """Admin-only (commands.TIERS): when the developer says a comment needs no fix
+    and the AI keeps disagreeing, release whatever is still open, then merge as
+    `merge_buttons` would (merge_retry.py)."""
     return [_button(WAIVE, WAIVE_LABEL, {"verb": "waive", "args": [f"{project}!{iid}"]})]
+
+
+def merged_buttons(first: list[dict], then: list[dict]) -> list[dict]:
+    """Two button rows as one: the first wins on a repeated action (Slack rejects
+    duplicate action_ids in a message)."""
+    seen, out = set(), []
+    for button in first + then:
+        if button["action_id"] not in seen:
+            seen.add(button["action_id"])
+            out.append(button)
+    return out
 
 def message(text: str, buttons: list[dict]) -> list[dict]:
     """The text as one mrkdwn section, buttons underneath."""

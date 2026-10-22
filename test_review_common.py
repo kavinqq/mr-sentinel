@@ -476,3 +476,15 @@ class TestAppeals(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGateHead(unittest.TestCase):
+    def test_release_comment_names_its_head_invisibly(self):
+        body = rc.format_comment_body({"title": "t", "gate_head": "abc1234"})
+        thread = {"notes": [{"body": body}]}
+        self.assertEqual(rc.gate_head(thread), "abc1234")
+        self.assertIn("<!--", body.splitlines()[-1])
+
+    def test_ordinary_comment_has_no_head(self):
+        body = rc.format_comment_body({"title": "t"})
+        self.assertIsNone(rc.gate_head({"notes": [{"body": body}]}))
