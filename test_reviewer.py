@@ -631,6 +631,21 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
         trigger = m["history_sync"].sync_mr.call_args.kwargs["trigger"]
         self.assertIn("1 則", trigger)                          # counted in the history
 
+    def test_merge_check_sees_this_reviews_own_verdict(self):
+        """Regression (!316): the merge check ran before this review's meta was written,
+        so a first review read "not reviewed" and needed a pointless rerun."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        seen = {}
+        m["try_auto_merge"].side_effect = lambda *a, **k: (
+            seen.update(reviewer.read_review_meta(Path(d.name) / "100")) or (True, "", [], []))
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        self.assertEqual((seen.get("head_sha"), (seen.get("guard") or {}).get("head_sha")),
+                         ("h", "h"))
+
     def test_merge_is_announced_in_the_completion_message(self):
         _, m, _ = self.review({"findings": []}, outcome())
         m["_slack_say"].assert_not_called()

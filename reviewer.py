@@ -758,6 +758,8 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         #    history sync so it counts. try_auto_merge never raises, and a crash around
         #    it is caught: it must not read as a failed review, which main() would
         #    answer by deleting the comments and reviewing again.
+        # the merge check reads this review's verdict from the meta (_release_blocker)
+        write_review_meta(work, mode, head_sha, len(findings), guard_record)
         merged, merge_report, merge_buttons = False, None, []
         try:
             if auto_merge and outcome.passed and review_common.auto_merge_eligible(mode, result):
@@ -769,10 +771,10 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                     posted += post_comment.post_findings(
                         base, token, project_path, iid, bugs, ctx["diff_refs"],
                         signature=build_signature(MERGE_CHECK_LABEL))
+                    write_review_meta(work, mode, head_sha, len(findings), guard_record)
         except Exception:
             log.exception("auto-merge step of MR !%s crashed", iid)
 
-        write_review_meta(work, mode, head_sha, len(findings), guard_record)
         # into the db -> blame -> follow-ups -> every score -> change log (never raises)
         history_sync.sync_mr(config, project_path, iid,
                              trigger=f"review 完成 {project_path.rsplit('/', 1)[-1]}!{iid}"
