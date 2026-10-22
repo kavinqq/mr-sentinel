@@ -148,43 +148,59 @@ def _deep_gate(config, project, iid, work, wt, wt_sha) -> tuple[str, dict] | Non
 
 
 def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_gate=None) -> int:
-    """Report from what GitLab says *now*, not from what we asked it to do.
+    """Report from what GitLab says *now*, not from what we asked it to do, in one
+    message: the verdicts, and once nothing is left open, whether it merged and why not.
 
     `deep_gate` runs the confirmation a lite review needs before it may merge; None
     (no worktree at hand) leaves such an MR for a manual merge."""
     base, token, review_cfg = config["gitlab_url"], config["gitlab_token"], config["review"]
-    say = lambda text, buttons=None: reviewer._slack_say(config, text, thread_ts, buttons)
     # accepted appeals stop counting: re-record the MR and re-score everyone
     history_sync.sync_mr(config, project, iid,
                          trigger=f"申訴判斷 {project.rsplit('/', 1)[-1]}!{iid}")
     _, after = review_common.collect_appeals(
         gitlab_client.list_discussions(base, token, project, iid), me)
     still_open = review_common.open_findings(after)
-    say(review_common.appeal_summary_text(project, iid, web_url, verdicts, after),
-        _buttons(project, iid) + blocks.waive_buttons(project, iid) if still_open else None)
     log.info("appeal on !%s: %s judged, %s still open %s", iid, len(verdicts), still_open,
              dict(after))
 
     # the release status follows only its own comments, whatever else is still open
     reviewer.sync_release_status(config, base, token, project,
                                  gitlab_client.get_mr(base, token, project, iid))
-    if not still_open and review_cfg.get("auto_merge_on_clean"):
-        meta = reviewer.read_review_meta(work)
-        if meta.get("mode") == "deep" and meta.get("head_sha"):
-            reviewer._maybe_auto_merge(config, base, token, project, iid, web_url, thread_ts,
-                                       reviewed_sha=meta["head_sha"])
-        elif meta.get("mode") == "lite" and deep_gate:
-            _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts,
-                                   deep_gate, say, work)
-        else:
-            say(f":information_source: `{project}` !{iid}: 理由都成立,但上次是 "
-                f"{meta.get('mode') or '未知'} review,依規則只有 deep review 才自動合併 — "
-                f"請手動合併\n{web_url or ''}")
+    merged, report, buttons = False, None, None
+    if still_open:
+        buttons = _buttons(project, iid) + blocks.waive_buttons(project, iid)
+    elif not review_cfg.get("auto_merge_on_clean"):
+        report = "*原因*:自動合併功能沒開\n*下一步*:到 GitLab 手動合併"
+    else:
+        merged, report, buttons = _merge_outcome(config, base, token, project, iid,
+                                                 deep_gate, work)
+    reviewer._slack_say(config, review_common.appeal_summary_text(
+        project, iid, web_url, verdicts, after, merged=merged, merge_report=report),
+        thread_ts, buttons or None)
+    if merged:
+        reviewer._mark_notification_merged(config, thread_ts)
     return 0
 
 
-def _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts,
-                           deep_gate, say, work) -> None:
+def _merge_outcome(config, base, token, project, iid, deep_gate, work
+                   ) -> tuple[bool, str | None, list]:
+    """Merge once nothing is left open, by the same rule as a clean review: the last
+    review deep and on the head being merged. Returns (merged, report, buttons)."""
+    meta = reviewer.read_review_meta(work)
+    if meta.get("mode") == "deep" and meta.get("head_sha"):
+        merged, report, buttons, _ = reviewer.try_auto_merge(
+            config, base, token, project, iid, reviewed_sha=meta["head_sha"])
+        return merged, report, buttons
+    if meta.get("mode") == "lite" and deep_gate:
+        return _merge_after_deep_gate(config, base, token, project, iid, deep_gate, work)
+    mode = {"lite": "快速審查(lite)"}.get(meta.get("mode"), meta.get("mode") or "未知的審查")
+    return (False, f"*原因*:上次是{mode},只有完整審查(deep)通過才會自動合併\n"
+                   f"*下一步*:按「🔁 重審」,或到 GitLab 手動合併",
+            blocks.rerun_buttons(project, iid, label="🔁 重審"))
+
+
+def _merge_after_deep_gate(config, base, token, project, iid, deep_gate, work
+                           ) -> tuple[bool, str | None, list]:
     """Appeals cleared a lite review's findings. Lite is one gate, so the same rule as a
     clean lite review applies: a deep pass must agree before anything merges."""
     try:
@@ -197,23 +213,22 @@ def _merge_after_deep_gate(config, base, token, project, iid, web_url, thread_ts
                                  and isinstance(gate[1].get("findings"), list)):
         gate = None                       # malformed output: neither clean nor a list to show
     if gate is None:
-        say(f":warning: `{project}` !{iid}: 理由都成立,但 deep 確認沒跑完"
-            f"(或 MR 又有新 commit),不自動合併 — 請手動合併\n{web_url or ''}", retry)
-        return
+        return (False, "*原因*:合併前的完整審查(deep)確認沒跑完,或 MR 又有新 commit\n"
+                       "*下一步*:按「🔁 重審」,或到 GitLab 手動合併", retry)
     head_sha, result = gate
     if not review_common.is_clean_result(result):
         found = [f for f in result["findings"] if isinstance(f, dict)]
-        listing = "\n".join(f"• {review_common.SEVERITY_EMOJI.get(f.get('severity'), '')} "
-                             f"{f.get('title', '?')} ({f.get('file', '?')}:{f.get('line') or '?'})"
-                             for f in found[:5])
-        say(f":warning: `{project}` !{iid}: 理由都成立,但 deep 確認發現 {len(found)} 個問題"
-            f",不自動合併 — 請確認後手動處理\n{listing}\n{web_url or ''}", retry)
-        return
+        listing = "".join(f"• {review_common.SEVERITY_EMOJI.get(f.get('severity'), '')} "
+                          f"{f.get('title', '?')} ({f.get('file', '?')}:{f.get('line') or '?'})\n"
+                          for f in found[:5])
+        return (False, f"*原因*:合併前的完整審查(deep)確認又發現 {len(found)} 個問題\n"
+                       f"{listing}*下一步*:確認後修好按「🔁 重審」,或到 GitLab 手動合併", retry)
     # a later 🔀 retry (merge_retry) needs to know this head passed a deep review
     meta = reviewer.read_review_meta(work)
     reviewer.save_review_meta(work, {**meta, "mode": "deep", "head_sha": head_sha})
-    reviewer._maybe_auto_merge(config, base, token, project, iid, web_url, thread_ts,
-                               reviewed_sha=head_sha)
+    merged, report, buttons, _ = reviewer.try_auto_merge(
+        config, base, token, project, iid, reviewed_sha=head_sha)
+    return merged, report, buttons
 
 
 def spawn_detached(project: str, iid, mr_id) -> None:

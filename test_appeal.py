@@ -98,7 +98,10 @@ class Harness:
                  mock.patch.object(appeal.reviewer, "_run_git"), \
                  mock.patch.object(appeal.reviewer, "_slack_say",
                                    side_effect=lambda cfg, text, ts, b=None: self.said.append((text, b))), \
-                 mock.patch.object(appeal.reviewer, "_maybe_auto_merge") as self.merge, \
+                 mock.patch.object(appeal.reviewer, "try_auto_merge",
+                                   return_value=getattr(self, "merge_result",
+                                                        (True, "", [], []))) as self.merge, \
+                 mock.patch.object(appeal.reviewer, "_mark_notification_merged"), \
                  mock.patch.object(appeal.reviewer, "sync_release_status") as self.sync, \
                  mock.patch.object(appeal.history_sync, "sync_mr") as self.history, \
                  mock.patch.object(appeal.fetch_mr, "build_context", return_value={
@@ -193,7 +196,7 @@ class TestRunAppeal(unittest.TestCase):
         h.merge.assert_not_called()
         self.assertEqual([d for d, _ in h.replies], ["d1"])   # only the appeal verdict
         text, buttons = h.said[-1]
-        self.assertIn("deep 確認發現 1 個問題", text)
+        self.assertIn("確認又發現 1 個問題", text)
         self.assertIn("仍會 None", text)
         self.assertEqual([json.loads(b["value"])["verb"] for b in buttons], ["rerun"])
 
@@ -201,7 +204,7 @@ class TestRunAppeal(unittest.TestCase):
         h = Harness([disputed("d1")], self.ACCEPT, deep_rc=1,
                     auto_merge_on_clean=True, meta=self.LITE).run()
         h.merge.assert_not_called()
-        self.assertIn("deep 確認沒跑完", h.said[-1][0])
+        self.assertIn("確認沒跑完", h.said[-1][0])
 
     def test_malformed_deep_output_is_not_clean(self):
         for bad in ({"oops": 1}, {"findings": "none"}, [], None, "clean"):
@@ -210,20 +213,40 @@ class TestRunAppeal(unittest.TestCase):
                             auto_merge_on_clean=True, meta=self.LITE).run()
                 self.assertEqual(h.rc, 0)                       # a warning, not a crash
                 h.merge.assert_not_called()
-                self.assertIn("deep 確認沒跑完", h.said[-1][0])   # not "found 0 problems"
+                self.assertIn("確認沒跑完", h.said[-1][0])   # not "found 0 problems"
 
     def test_head_moved_since_the_appeal_was_judged_skips_the_deep_pass(self):
         h = Harness([disputed("d1")], self.ACCEPT, ctx_head="head3",
                     auto_merge_on_clean=True, meta=self.LITE).run()
         self.assertEqual(h.deep_modes, [])
         h.merge.assert_not_called()
-        self.assertIn("請手動合併", h.said[-1][0])
+        self.assertIn("手動合併", h.said[-1][0])
 
     def test_unknown_mode_still_asks_for_a_manual_merge(self):
         h = Harness([disputed("d1")], self.ACCEPT, auto_merge_on_clean=True).run()
         self.assertEqual(h.deep_modes, [])
         h.merge.assert_not_called()
-        self.assertIn("請手動合併", h.said[-1][0])
+        self.assertIn("手動合併", h.said[-1][0])
+
+    def test_blocked_merge_says_why_in_the_same_message(self):
+        h = Harness([disputed("d1")], self.ACCEPT, auto_merge_on_clean=True,
+                    meta={"mode": "deep", "head_sha": "h1"})
+        h.merge_result = (False, "*原因*:CI 沒過(failed)\n*下一步*:找 admin", [], [])
+        h.run()
+        self.assertEqual(len(h.said), 1)                       # one message, not two
+        self.assertIn("全部 AI 留言都處理完了,但 *還沒合併*", h.said[0][0])
+        self.assertIn("CI 沒過", h.said[0][0])
+        self.assertNotIn(":tada:", h.said[0][0])
+
+    def test_merge_is_announced_in_the_same_message(self):
+        h = Harness([disputed("d1")], self.ACCEPT, auto_merge_on_clean=True,
+                    meta={"mode": "deep", "head_sha": "h1"}).run()
+        self.assertEqual(len(h.said), 1)
+        self.assertIn("已自動合併", h.said[0][0])
+
+    def test_auto_merge_off_says_merge_by_hand(self):
+        h = Harness([disputed("d1")], self.ACCEPT, meta={"mode": "deep", "head_sha": "h1"}).run()
+        self.assertIn("自動合併功能沒開", h.said[-1][0])
 
     def test_stalemate_offers_the_admin_override(self):
         h = Harness([disputed("d1")], [{"id": "d1", "verdict": "reject", "reason": "仍會 None"}]).run()

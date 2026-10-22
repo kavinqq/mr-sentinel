@@ -396,7 +396,10 @@ def appeal_reply_body(verdict: str, reason: str, engine_label: str) -> str:
     return f"{head}\n\n{reason}\n\n{APPEAL_SIGNATURE} ({engine_label})\n{marker}"
 
 
-def appeal_summary_text(project: str, iid, web_url, judged: dict, counts_after: Counter) -> str:
+def appeal_summary_text(project: str, iid, web_url, judged: dict, counts_after: Counter,
+                        merged: bool = False, merge_report: str | None = None) -> str:
+    """The verdicts, and once nothing is left open, the merge outcome: merged, or
+    `merge_report` (*原因* / *下一步*) saying why not."""
     accepted = sum(1 for v, _ in judged.values() if v == "accept")
     rejected = len(judged) - accepted
     text = f":scales: 申訴結果 `{project}` !{iid} — ✅ 理由成立 {accepted} · ⚠️ 仍建議修 {rejected}"
@@ -408,7 +411,12 @@ def appeal_summary_text(project: str, iid, web_url, judged: dict, counts_after: 
     if pending:
         text += f"\n_(還有 {pending} 則 AI 留言沒人回覆)_"
     if not open_findings(counts_after):
-        text += "\n全部 AI 留言都處理完了 :tada:"
+        if merged:
+            text += "\n全部 AI 留言都處理完了 :tada:\n:white_check_mark: *已自動合併*"
+        elif merge_report:
+            text += f"\n全部 AI 留言都處理完了,但 *還沒合併*\n{merge_report}"
+        else:
+            text += "\n全部 AI 留言都處理完了 :tada:"
     if web_url:
         text += f"\n{web_url}"
     return text
