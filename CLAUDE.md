@@ -37,7 +37,9 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   `merge_retry.py` for a stalemate. The override only closes comments and never
   skips a check (an unfinished review needs a rerun). `reviewer.sync_release_status`
   turns the commit status green and always runs `_release_blocker` first. The
-  test-marker rule is re-run at merge and never overridden.
+  test-marker rule is re-run at merge: a hit this head's review posted is a
+  comment like any other (appeal / ✅, owner's call 2026-10-22 after a comment
+  merely mentioning 測試用 blocked !66); a hit it never posted holds on its own.
 
 - Schedulers (launchd/cron) run with a **minimal PATH**: plists must use absolute
   interpreter paths, and external CLIs are resolved via `engines.resolve_cli()`.

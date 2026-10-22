@@ -866,10 +866,21 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
                 gl = self._merge([], guard, threads=[release_thread("h")], override=override)
                 gl.merge_mr.assert_not_called()
 
-    def test_override_never_covers_the_marker_rule(self):
-        override = {"head_sha": "h", "target_branch": "master", "by": "冠霖"}
-        gl = self._merge([], self.PASSED, hits=[GATE_HIT], override=override)
+    def test_answered_marker_hit_lets_it_merge(self):
+        """Regression (!66): a comment that only mentions 測試用 was appealed and accepted."""
+        gl = self._merge([], {**self.PASSED, "leaks": 1}, hits=[GATE_HIT],
+                         threads=[release_thread("h", closed=True)])
+        gl.merge_mr.assert_called_once()
+
+    def test_open_marker_hit_holds_it(self):
+        gl = self._merge([], {**self.PASSED, "leaks": 1}, hits=[GATE_HIT],
+                         threads=[release_thread("h")])
         gl.merge_mr.assert_not_called()
+
+    def test_marker_hit_the_review_never_posted_holds_it(self):
+        gl = self._merge([], self.PASSED, hits=[GATE_HIT])
+        gl.merge_mr.assert_not_called()
+        self.assertIn("測試字樣", gl.post_note.call_args.args[4])
 
     def test_override_for_an_older_head_does_not_carry_over(self):
         override = {"head_sha": "old", "target_branch": "master", "by": "冠霖"}

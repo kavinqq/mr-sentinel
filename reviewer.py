@@ -278,8 +278,8 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
     review must have run on that exact head and target, finished, with every
     comment it posted for that head closed — fixed, accepted on the developer's
     reply (the developer answers for it), or answered by an admin's override
-    (merge_retry). Nothing skips these checks; anything that cannot be confirmed
-    fails closed."""
+    (merge_retry). A marker hit is one of those comments; a hit the review did not
+    post holds on its own. Anything that cannot be confirmed fails closed."""
     review_cfg = config.get("review", {})
     if not final_gates.applies(mr.get("target_branch"), review_cfg,
                                _main_branch(base, token, project_path)):
@@ -300,10 +300,13 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
     exempt = artifact_gate.exempt_test_files(local, diff_refs.get("head_sha", ""),
                                              [c["new_path"] for c in changes if c.get("new_path")])
     hits = artifact_gate.scan(changes, review_cfg.get("language", "en"), exempt)
-    if hits:
-        return f"test-only code in {len(hits)} file(s)"
     meta = read_review_meta(REVIEWS_DIR / str(mr.get("id")))
     guard = meta.get("guard")
+    # a hit this head's review already posted is a comment like any other (answered
+    # below); one the review never posted cannot have been answered, so it holds
+    if hits and not (_same_change(guard, mr) and guard.get("ok")
+                     and guard.get("leaks", 0) >= len(hits)):
+        return f"test-only code in {len(hits)} file(s)"
     if not _same_change(guard, mr):
         return NOT_REVIEWED
     if not guard.get("ok"):

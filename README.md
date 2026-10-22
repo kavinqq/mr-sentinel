@@ -165,8 +165,10 @@ is answered "裁定放行" in the admin's name and resolved, the override is wri
 `review_meta.json`, a note on the MR lists each comment released and what state it
 was in, and then 🔀 runs. The override only closes comments — it skips no check:
 the last review must have finished on the current head and target (otherwise it
-asks for a rerun), and the test-marker rule is re-run at merge. A comment GitLab
-fails to resolve stays open and is retried on the next press.
+asks for a rerun), and the test-marker rule is re-run at merge — a marker hit the
+review posted is a comment like any other (appeal it, or ✅), one it never posted
+holds the merge. A comment GitLab fails to resolve stays open and is retried on
+the next press.
 
 Slack app setup (once): **Socket Mode** → enable, generate an app-level token
 with `connections:write` → `slack.app_token`. **Interactivity & Shortcuts** →

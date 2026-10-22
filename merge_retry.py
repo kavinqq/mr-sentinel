@@ -87,8 +87,8 @@ def _override(config: dict, project: str, mr: dict, work, user_id: str, say) -> 
     The Slack listener already authorized the click; the admin check is repeated
     here because this script can be started by hand with any `--waived-by`. Only a
     review that finished on this head and target can be overridden: the override
-    closes comments, it never stands in for a check that did not run, and the
-    marker rule is re-run at merge regardless (reviewer._release_blocker)."""
+    closes comments, and never stands in for a check that did not run
+    (reviewer._release_blocker re-checks everything at merge)."""
     base, token = config["gitlab_url"], config["gitlab_token"]
     if not commands.is_admin(user_id, config.get("slack", {})):
         say(f":no_entry: `{project}` !{mr['iid']}:<@{user_id}> 不是 admin,不能裁定放行")

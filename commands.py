@@ -184,8 +184,7 @@ def format_help(is_admin: bool, handle: str = BOT_HANDLE) -> str:
             "• `set effort high` — 改單一設定",
             "• `reset effort` / `reset all` — 回到 config.json 的值",
             "• `automerge on|off` — 乾淨時是否自動合併",
-            "• `waive !481` — 申訴僵持時裁定放行:還開著的 AI 留言都標成不用改,接著合併"
-            "(測試字樣規則不能放行)",
+            "• `waive !481` — 申訴僵持時裁定放行:還開著的 AI 留言都標成不用改,接著合併",
             f"• `pause 2h` / `resume` — 暫停通知與 review(最多 "
             f"{MAX_PAUSE_SECONDS // 3600} 小時,期間的 MR 會累積不會漏)",
             "",

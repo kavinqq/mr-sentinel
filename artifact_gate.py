@@ -39,8 +39,8 @@ _TEXT = {
         "impact": "合進上線分支後,正式環境的使用者會看到或觸發只該存在於測試環境的東西"
                   "(按鈕、帳號、繞過檢查的路徑)。",
         "fix": "刪掉;真的要留就改成只在測試環境生效(環境判斷或 feature flag),並在 MR 說明原因。",
-        "rule": "此則由測試標記規則比對產生,不經 AI 判斷也不會被 AI 覆核拿掉;"
-                "確定是誤判就在討論串說明後由人工 resolve。",
+        "rule": "此則由測試標記規則逐字比對產生,不經 AI 判斷;確定是誤判(例如只是註解提到測試),"
+                "在這則留言回覆說明,再按申訴。",
     },
     "en": {
         "title": "Test-only code would ship to production",
@@ -49,8 +49,8 @@ _TEXT = {
                   "something meant only for testing (a button, an account, a bypass).",
         "fix": "Delete it; if it must stay, gate it to non-production (environment check or "
                "feature flag) and say why in the MR description.",
-        "rule": "Raised by the test-marker rule, not by the AI: no review pass can drop it. "
-                "If it is a false positive, say so in the thread and resolve it by hand.",
+        "rule": "Raised by the test-marker rule word for word, not by the AI. If it is a "
+                "false positive (say, a comment that only mentions tests), reply here and appeal.",
     },
 }
 
