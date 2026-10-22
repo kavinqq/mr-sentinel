@@ -264,8 +264,9 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
 
     Re-reviewing an MR would otherwise stack a second round of comments on top of
     the first. Two rails keep the cleanup from destroying context:
-      - a discussion any *other* author has joined is left completely alone, so a
-        human's reply (and the comment it answers) never disappears;
+      - a discussion with any note that is not the bot's (is_bot_note) is left
+        completely alone, so a human's reply (and the comment it answers) never
+        disappears — even when that human is the account the bot runs on;
       - only notes carrying the AI signature are deleted, so operational notes
         and anything hand-written by us survive.
     """
@@ -274,8 +275,7 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
         notes = [n for n in (discussion.get("notes") or []) if not n.get("system")]
         if not notes:
             continue
-        authors = {(n.get("author") or {}).get("id") for n in notes}
-        if authors != {user_id}:
+        if not all(is_bot_note(n, user_id) for n in notes):
             continue
         deletable += [n["id"] for n in notes if marker in (n.get("body") or "")]
     return deletable
@@ -291,6 +291,15 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
 APPEAL_ACCEPT = "<!-- mr-sentinel:appeal=accept -->"
 APPEAL_REJECT = "<!-- mr-sentinel:appeal=reject -->"
 APPEAL_SIGNATURE = "— ⚖️ mr-sentinel appeal"
+
+
+def is_bot_note(note: dict, user_id) -> bool:
+    """Written by the bot account AND carrying one of the bot's markers. The bot may
+    run on a person's own account (its owner's token), so the author alone would
+    file that person's replies under the bot."""
+    body = note.get("body") or ""
+    return (note.get("author") or {}).get("id") == user_id and any(
+        marker in body for marker in (SIGNATURE_MARKER, APPEAL_ACCEPT, APPEAL_REJECT))
 
 
 def _human_notes(discussion: dict) -> list[dict]:
@@ -319,10 +328,8 @@ def discussion_status(discussion: dict, user_id) -> str | None:
     resolvable = [n for n in notes if n.get("resolvable")]
     if resolvable and all(n.get("resolved") for n in resolvable):
         return "closed"
-    last_ours = max((i for i, n in enumerate(notes)
-                     if (n.get("author") or {}).get("id") == user_id), default=0)
-    replied_after = any((n.get("author") or {}).get("id") != user_id
-                        for n in notes[last_ours + 1:])
+    last_ours = max((i for i, n in enumerate(notes) if is_bot_note(n, user_id)), default=0)
+    replied_after = any(not is_bot_note(n, user_id) for n in notes[last_ours + 1:])
     if replied_after:
         return "appeal"
     body = notes[last_ours].get("body") or ""
@@ -351,7 +358,7 @@ def collect_appeals(discussions: list[dict], user_id) -> tuple[list[dict], Count
             "file": position.get("new_path"),
             "line": position.get("new_line"),
             "finding": notes[0].get("body", ""),
-            "thread": [{"role": "ai" if (n.get("author") or {}).get("id") == user_id
+            "thread": [{"role": "ai" if is_bot_note(n, user_id)
                         else "developer",
                         "author": (n.get("author") or {}).get("name"),
                         "body": n.get("body", "")} for n in notes[1:]],

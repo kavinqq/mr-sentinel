@@ -488,3 +488,35 @@ class TestGateHead(unittest.TestCase):
     def test_ordinary_comment_has_no_head(self):
         body = rc.format_comment_body({"title": "t"})
         self.assertIsNone(rc.gate_head({"notes": [{"body": body}]}))
+
+
+class TestBotOnAPersonsAccount(unittest.TestCase):
+    """Regression (!66): the bot runs on its owner's own GitLab account, so the owner's
+    replies share the bot's author id. Only the bot's markers tell its notes apart."""
+    ME = 14
+    AI = "🟠 **Medium** · x\n\n— 🤖 mr-sentinel AI review (m)"
+
+    def thread(self, *extra):
+        return {"id": "d1", "notes": [{"id": 1, "author": {"id": self.ME}, "body": self.AI},
+                                      *extra]}
+
+    def owner_reply(self):
+        return {"id": 2, "author": {"id": self.ME}, "body": "誤判,這行是註解"}
+
+    def test_owners_reply_is_an_appeal(self):
+        self.assertEqual(rc.discussion_status(self.thread(self.owner_reply()), self.ME), "appeal")
+
+    def test_owners_reply_is_handed_to_the_judge_as_the_developer(self):
+        [appeal], _ = rc.collect_appeals([self.thread(self.owner_reply())], self.ME)
+        self.assertEqual([t["role"] for t in appeal["thread"]], ["developer"])
+
+    def test_our_verdict_after_the_owners_reply_is_still_ours(self):
+        verdict = {"id": 3, "author": {"id": self.ME}, "body": f"仍建議修 {rc.APPEAL_REJECT}"}
+        self.assertEqual(rc.discussion_status(self.thread(self.owner_reply(), verdict), self.ME),
+                         "rejected")
+
+    def test_rerun_never_deletes_a_thread_the_owner_answered(self):
+        self.assertEqual(rc.deletable_ai_notes([self.thread(self.owner_reply())], self.ME), [])
+
+    def test_rerun_still_deletes_an_unanswered_one(self):
+        self.assertEqual(rc.deletable_ai_notes([self.thread()], self.ME), [1])
