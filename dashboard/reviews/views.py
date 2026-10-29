@@ -5,6 +5,7 @@ import json
 from datetime import timedelta
 
 from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied
 from django.http import Http404, HttpResponseBadRequest
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -14,7 +15,7 @@ from django.views.decorators.http import require_GET, require_POST
 from history import db as hdb
 from history.parse import CATEGORIES
 
-from . import services
+from . import ops, services
 from .models import Finding, ScoringConfig
 
 
@@ -265,3 +266,23 @@ def trajectory_alert(request, alert_id: int):
     except ValueError as exc:
         messages.error(request, str(exc))
     return redirect(_back(request, reverse("trajectory")))
+
+
+@require_GET
+def ops_status(request):
+    return _page(request, "reviews/ops.html", "服務狀態", **ops.page())
+
+
+@require_POST
+def ops_switch(request):
+    """Turns a live Slack listener off: superusers only, on top of staff + CSRF."""
+    if not request.user.is_superuser:
+        raise PermissionDenied
+    label, on = request.POST.get("label", ""), request.POST.get("on") == "1"
+    try:
+        result = ops.switch(label, on)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, f"{'開啟' if on else '關閉'} {ops.BY_LABEL[label].title}:{result}")
+    return redirect("ops")

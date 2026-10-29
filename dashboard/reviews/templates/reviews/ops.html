@@ -1,0 +1,43 @@
+{% extends "admin/base_site.html" %}
+{% block title %}服務狀態 | {{ site_title }}{% endblock %}
+{% block extrahead %}{{ block.super }}<meta http-equiv="refresh" content="{{ refresh }}">{% endblock %}
+{% block content %}
+<div class="ms ms-ops">
+  <div class="ms-head">
+    <div><h1>服務狀態</h1>
+      <p class="ms-sub">mr-sentinel 和 alert-doctor 在這台電腦上的排程與常駐服務 · 每 {{ refresh }} 秒自動更新</p></div>
+  </div>
+
+  <ul class="ms-ops-deps" aria-label="依賴">
+    {% for name, ok, detail in checks %}
+    <li><i class="ms-ops-dot {{ ok|yesno:'ok,bad' }}" aria-hidden="true"></i><b>{{ name }}</b><span class="ms-dim">{{ detail }}</span></li>
+    {% endfor %}
+  </ul>
+
+  {% for project, rows in groups %}
+  <h2 class="ms-ops-group">{{ project }}</h2>
+  {% for r in rows %}
+  <section class="ms-ops-svc">
+    <div class="ms-ops-row">
+      <i class="ms-ops-dot {{ r.kind }}" aria-hidden="true"></i>
+      <b>{{ r.service.title }}</b>
+      <span class="ms-dim">{{ r.service.schedule }}</span>
+      <span class="ms-ops-badge {{ r.kind }}">{{ r.label }}</span>
+      <span class="ms-dim">log 更新:{{ r.log_ago }}{% if r.status.runs %} · 執行 {{ r.status.runs }} 次{% endif %}</span>
+      {% if r.switchable and request.user.is_superuser %}
+      <form method="post" action="{% url 'ops_switch' %}">{% csrf_token %}
+        <input type="hidden" name="label" value="{{ r.service.label }}">
+        <input type="hidden" name="on" value="{{ r.on|yesno:'0,1' }}">
+        <button type="submit" class="ms-ops-btn {{ r.on|yesno:'stop,start' }}"
+                onclick="return confirm('{{ r.on|yesno:'關閉,開啟' }} {{ r.service.title|escapejs }}?')">{{ r.on|yesno:'關閉 Socket,開啟 Socket' }}</button>
+      </form>
+      {% endif %}
+    </div>
+    <details><summary>最近 {{ log_lines }} 行 log</summary>
+      {% for path, text in r.logs %}<p class="ms-ops-path">{{ path }}</p><pre>{{ text }}</pre>{% endfor %}
+    </details>
+  </section>
+  {% endfor %}
+  {% endfor %}
+</div>
+{% endblock %}

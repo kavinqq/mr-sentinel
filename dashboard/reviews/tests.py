@@ -11,7 +11,7 @@ from django.urls import reverse
 import review_common as rc
 from history import sync
 
-from . import services
+from . import ops, services
 from .models import Finding, FindingReview, ScoringConfig, SyncRequest
 
 ME = 42
@@ -559,3 +559,50 @@ class TestWeeklyAndProjects(DashboardCase):
         (row,) = resp.context["ranked"]
         self.assertEqual((row["review_cov"]["k"], row["review_cov"]["n"], row["review_cov"]["low"]), (5, 11, True))
         self.assertContains(resp, "覆蓋不足")
+
+
+class TestOps(DashboardCase):
+    """The 服務狀態 page reads launchctl and logs; nothing here touches real launchd."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(ops, "launchctl", return_value=(1, ""))
+        self.launchctl = patcher.start()
+        self.addCleanup(patcher.stop)
+        checks = mock.patch.object(ops, "checks", return_value=[("GitLab", True, "ok")])
+        checks.start()
+        self.addCleanup(checks.stop)
+
+    def test_page_lists_both_projects_with_switches_for_the_sockets_only(self):
+        resp = self.client.get(reverse("ops"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "alert-doctor")
+        self.assertContains(resp, 'name="label" value="tw.pocket.alert-doctor.collector"')
+        self.assertNotContains(resp, 'name="label" value="tw.pocket.alert-doctor.health"')
+
+    def test_staff_who_are_not_superusers_see_no_switch_and_cannot_post(self):
+        User.objects.create_user("staff", password="pw-for-tests-only", is_staff=True)
+        self.client.force_login(User.objects.get(username="staff"))
+        self.assertNotContains(self.client.get(reverse("ops")), "關閉 Socket")
+        with mock.patch.object(ops, "switch") as sw:
+            resp = self.client.post(reverse("ops_switch"), {"label": "tw.pocket.alert-doctor.collector"})
+        self.assertEqual(resp.status_code, 403)
+        sw.assert_not_called()
+
+    def test_switch_without_csrf_token_is_refused(self):
+        client = self.client_class(enforce_csrf_checks=True)
+        client.force_login(self.user)
+        with mock.patch.object(ops, "switch") as sw:
+            resp = client.post(reverse("ops_switch"), {"label": "tw.pocket.alert-doctor.collector"})
+        self.assertEqual(resp.status_code, 403)
+        sw.assert_not_called()
+
+    def test_switch_off_goes_through_the_allowlist(self):
+        with mock.patch.object(ops, "switch", return_value="ok") as sw:
+            resp = self.client.post(reverse("ops_switch"), {"label": "tw.pocket.alert-doctor.collector", "on": "0"})
+        self.assertRedirects(resp, reverse("ops"), fetch_redirect_response=False)
+        sw.assert_called_once_with("tw.pocket.alert-doctor.collector", False)
+
+    def test_non_socket_labels_are_never_switched(self):
+        self.client.post(reverse("ops_switch"), {"label": "com.example.mr-sentinel", "on": "0"})
+        self.launchctl.assert_not_called()

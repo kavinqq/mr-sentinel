@@ -950,3 +950,25 @@ a:hover .ms-ptag { box-shadow: inset 0 0 0 1.5px var(--pd); }
 .ms .ms-proj .ms-shift { gap: 8px; padding: 2px 0; min-width: 0; }
 .ms .ms-proj .ms-shift svg { width: 92px; }
 .ms .ms-proj-nums dd small { display: block; font-weight: 400; color: var(--ms-muted); font-size: .8rem; }
+
+/* 服務狀態 */
+.ms-ops-deps { list-style: none; margin: 0 0 8px; padding: 10px 16px; border: 1px solid var(--ms-line); border-radius: 8px; }
+.ms-ops-deps li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 3px 0; }
+.ms-ops-group { font-size: 0.9rem; font-weight: 600; color: var(--ms-faint); text-transform: uppercase;
+                letter-spacing: .05em; margin: 24px 0 8px; }
+.ms-ops-svc { border: 1px solid var(--ms-line); border-radius: 8px; padding: 10px 16px; margin: 8px 0; }
+.ms-ops-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ms-ops-row form { margin-left: auto; }
+.ms-ops-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+.ms-ops-dot.ok { background: var(--ms-senior); } .ms-ops-dot.bad { background: var(--ms-high); }
+.ms-ops-dot.off { background: var(--ms-none); } .ms-ops-dot.idle { background: var(--ms-midplus); }
+.ms-ops-badge { font-size: 0.85rem; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; }
+.ms-ops-badge.ok { color: var(--ms-senior); } .ms-ops-badge.bad { color: var(--ms-high); }
+.ms-ops-badge.off { color: var(--ms-none); } .ms-ops-badge.idle { color: var(--ms-midplus); }
+.ms .ms-ops-btn { border: 0; padding: 5px 12px; font-weight: 600; color: #fff; }
+.ms .ms-ops-btn.stop, .ms .ms-ops-btn.stop:hover { background: var(--ms-high); }
+.ms .ms-ops-btn.start, .ms .ms-ops-btn.start:hover { background: var(--ms-senior); }
+.ms-ops-svc summary { cursor: pointer; color: var(--ms-muted); font-size: 0.9rem; margin-top: 6px; }
+.ms-ops-path { font-size: 0.85rem; color: var(--ms-faint); margin: 8px 0 2px; }
+.ms-ops-svc pre { background: var(--ms-subtle); border: 1px solid var(--ms-line); border-radius: 6px; padding: 8px;
+                  overflow-x: auto; font-size: 0.8rem; max-height: 320px; white-space: pre; }

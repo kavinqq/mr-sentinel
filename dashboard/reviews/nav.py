@@ -48,6 +48,9 @@ def sidebar(request):
             _nav("專案風險", "folder_managed", reverse_lazy("projects")),
             _nav("評分變動紀錄", "timeline", reverse_lazy("score_log")),
         ]},
+        {"title": "系統", "separator": True, "items": [
+            _nav("服務狀態", "dns", reverse_lazy("ops")),
+        ]},
         {"title": "個人軌跡", "separator": True, "items": trajectory_items()},
         {"title": "設定", "separator": True, "items": [
             _nav("成員管理", "group", reverse_lazy("members")),

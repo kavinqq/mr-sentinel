@@ -30,5 +30,7 @@ urlpatterns = [
     path("admin/review/trajectory/alerts/<int:alert_id>/", _admin(views.trajectory_alert),
          name="trajectory_alert"),
     path("admin/review/sync/", _admin(views.sync_request), name="sync_request"),
+    path("admin/system/", _admin(views.ops_status), name="ops"),
+    path("admin/system/switch/", _admin(views.ops_switch), name="ops_switch"),
     path("admin/", admin.site.urls),
 ]
