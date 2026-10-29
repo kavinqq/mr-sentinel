@@ -715,7 +715,8 @@ class Bot:
         self.save()
 
     def do_appeal(self, cmd, user, thread_ts):
-        """💬 "replied, no fix needed": hand the developer's replies to the AI."""
+        """💬 "replied, no fix needed": hand the developer's replies to the AI. New
+        commits since the last review mean some comments were fixed too: re-review."""
         resolved = self.resolve_target(cmd, user, thread_ts, verb="appeal")
         if resolved is None:
             return None
@@ -723,6 +724,9 @@ class Bot:
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
         discussions = gitlab_client.list_discussions(base, token, project, iid)
         appeals, counts = review_common.collect_appeals(discussions, self.gitlab_user_id())
+        if self.has_new_commits(base, token, project, iid, mr_id):
+            return self.rerun_mr(project, iid, mr_id, "auto", thread_ts, replies=len(appeals),
+                                 judge=self.needs_judging(appeals, discussions))
         if not appeals and review_common.unresolved_accepts(discussions, self.gitlab_user_id()):
             # nothing new to judge, but an earlier accept never got resolved: retry it
             appeal.spawn_detached(project, iid, mr_id)
@@ -762,12 +766,34 @@ class Bot:
     def do_waive(self, cmd, user, thread_ts):
         return self.do_merge(cmd, user, thread_ts, waive=True)
 
+    def has_new_commits(self, base, token, project, iid, mr_id) -> bool:
+        """The MR head moved past the last review's (False when no review is on record)."""
+        reviewed = reviewer.read_review_meta(reviewer.REVIEWS_DIR / str(mr_id)).get("head_sha")
+        if not reviewed:
+            return False
+        mr = gitlab_client.get_mr(base, token, project, iid)
+        return mr.get("state") == "opened" and mr.get("sha") not in (None, reviewed)
+
     def do_rerun(self, cmd, user, thread_ts):
         mode = next((a.lower() for a in cmd.args if a.lower() in ("auto", "lite", "deep")), "auto")
         resolved = self.resolve_target(cmd, user, thread_ts)
         if resolved is None:
             return None
         project, iid, mr_id = resolved
+        base, token = self.config["gitlab_url"], self.config["gitlab_token"]
+        discussions = gitlab_client.list_discussions(base, token, project, iid)
+        appeals, _ = review_common.collect_appeals(discussions, self.gitlab_user_id())
+        return self.rerun_mr(project, iid, mr_id, mode, thread_ts, replies=len(appeals),
+                             judge=self.needs_judging(appeals, discussions))
+
+    def needs_judging(self, appeals, discussions) -> bool:
+        """Replies to judge, or an earlier accept whose resolve failed (appeal.py retries it)."""
+        return bool(appeals or review_common.unresolved_accepts(discussions, self.gitlab_user_id()))
+
+    def rerun_mr(self, project, iid, mr_id, mode, thread_ts, replies: int = 0,
+                 judge: bool = False):
+        """Reset and re-review; with `judge`, appeal.py --review-after first judges the
+        `replies`, since a developer fixes some comments and answers others."""
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
 
         # The reviewer's per-MR lock is held across reset + spawn: checking it and
@@ -787,10 +813,15 @@ class Bot:
             unclaimed = self.unclaim(base, token, project, iid)
             deleted = self.clear_previous_comments(base, token, project, iid) if recorded else 0
 
-            reviewer.spawn_detached(project, iid, mr_id, mode)
+            if judge:
+                appeal.spawn_detached(project, iid, mr_id, review_mode=mode)
+            else:
+                reviewer.spawn_detached(project, iid, mr_id, mode)
         self.spend_budget()
 
         detail = []
+        if replies:
+            detail.append(f"先判斷 {replies} 則回覆,再重審")
         if not unclaimed:
             detail.append("本來就沒有認領標記")
         if deleted:

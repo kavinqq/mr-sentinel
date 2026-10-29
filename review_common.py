@@ -366,6 +366,33 @@ def collect_appeals(discussions: list[dict], user_id) -> tuple[list[dict], Count
     return appeals, counts
 
 
+def not_yet_raised(findings: list, discussions: list[dict], user_id, head: str | None = None
+                   ) -> list:
+    """Findings minus those already on the MR as an AI thread someone answered: same
+    file and same title. A rerun keeps those threads, so posting again would repeat a
+    finding the appeal already settled, or open a second copy.
+
+    The line alone never matches — a new problem on an answered line must still be
+    raised. `head` limits it to threads a final gate posted for that head, whose
+    verdict holds per head."""
+    raised = []
+    for discussion in discussions:
+        if discussion_status(discussion, user_id) in (None, "unanswered"):
+            continue
+        if head is not None and gate_head(discussion) != head:
+            continue
+        first = _human_notes(discussion)[0]
+        raised.append(((first.get("position") or {}).get("new_path"), first.get("body") or ""))
+
+    def seen(f) -> bool:
+        title, file = f.get("title"), f.get("file")
+        # a finding GitLab refused inline went up as a plain note naming the file in its body
+        return bool(title) and any(
+            title in body and (path == file if path else not file or f"`{file}" in body)
+            for path, body in raised)
+    return [f for f in findings if not seen(f)]
+
+
 def unresolved_accepts(discussions: list[dict], user_id) -> list[str]:
     """Threads we accepted that GitLab still shows open — the resolve call failed
     (e.g. 403). Retried on every appeal press, so they cannot get stuck."""

@@ -11,9 +11,13 @@ auto-merge as a clean review.
 
 Thread state lives on GitLab (see review_common.discussion_status), so pressing
 the button again only judges replies that are new since the last verdict.
+
+Developers usually fix some comments and answer others in one go, so either
+button checks both sides: 🔁 with replies waiting, or 💬 after new commits, runs
+this with `--review-after`, which judges the replies and then reviews the MR in
+the same process, under the same lock, instead of reporting and merging itself.
 """
 import argparse
-import fcntl
 import json
 import logging
 import subprocess
@@ -46,7 +50,10 @@ def _buttons(project: str, iid) -> list[dict]:
             + blocks.appeal_buttons(project, iid))
 
 
-def run_appeal(project: str, iid, mr_id, config: dict, state: dict) -> int:
+def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
+               review_after: bool = False) -> int:
+    """`review_after`: a re-review follows, so only judge and post the verdicts; that
+    review reports the outcome and tries the merge."""
     base, token = config["gitlab_url"], config["gitlab_token"]
     review_cfg = config["review"]
     work = REVIEWS_DIR / str(mr_id)
@@ -59,12 +66,16 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict) -> int:
     appeals, _ = review_common.collect_appeals(discussions, me)
     retries = review_common.unresolved_accepts(discussions, me)
     if not appeals and not retries:
+        if review_after:
+            return 0
         say(f":scales: `{project}` !{iid}: 沒有新的開發者回覆要判斷"
             f"(先在 GitLab 的 AI 留言底下回覆理由)")
         return 0
     for discussion_id in retries:          # earlier accept whose resolve was refused
         _resolve(base, token, project, iid, discussion_id)
     if not appeals:
+        if review_after:
+            return 0
         return _finish(config, project, iid, None, {}, me, thread_ts, work)
 
     mr = gitlab_client.get_mr(base, token, project, iid)
@@ -72,7 +83,8 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict) -> int:
     wt = work / "appeal-wt"
     local, failure = reviewer.prepare_worktree(project, iid, mr["sha"], wt, review_cfg)
     if failure:
-        say(f":warning: `{project}` !{iid}: 申訴判斷無法準備程式碼 ({failure})", _buttons(project, iid))
+        say(f":warning: `{project}` !{iid}: 申訴判斷無法準備程式碼 ({failure})",
+            None if review_after else _buttons(project, iid))
         return 1
 
     try:
@@ -86,7 +98,8 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict) -> int:
         engine = engines.get_engine(review_cfg["engine"])
         if engine.run_appeal(work, ctx_path, out_path, wt, review_cfg) != 0:
             log.error("appeal engine failed for !%s", iid)
-            say(f":warning: `{project}` !{iid}: 申訴判斷沒跑完,可以再按一次", _buttons(project, iid))
+            say(f":warning: `{project}` !{iid}: 申訴判斷沒跑完,可以再按一次",
+                None if review_after else _buttons(project, iid))
             return 1
         verdicts = review_common.valid_verdicts(json.loads(out_path.read_text()),
                                                 [a["id"] for a in appeals])
@@ -107,6 +120,11 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict) -> int:
                                            review_common.appeal_reply_body(verdict, reason, label))
             if verdict == "accept":
                 _resolve(base, token, project, iid, discussion_id)
+        if review_after:
+            accepted = sum(v == "accept" for v, _ in verdicts.values())
+            say(f":scales: `{project}` !{iid} 先判斷了 {len(verdicts)} 則回覆:成立 {accepted}、"
+                f"不成立 {len(verdicts) - accepted}(理由回在 GitLab 討論串),接著重審")
+            return 0
         return _finish(config, project, iid, web_url, verdicts, me, thread_ts, work,
                        deep_gate=lambda: _deep_gate(config, project, iid, work, wt, mr["sha"]))
     finally:
@@ -231,13 +249,15 @@ def _merge_after_deep_gate(config, base, token, project, iid, deep_gate, work
     return merged, report, buttons
 
 
-def spawn_detached(project: str, iid, mr_id) -> None:
-    """Same shape as reviewer.spawn_detached: the listener must never wait on a model."""
+def spawn_detached(project: str, iid, mr_id, review_mode: str | None = None) -> None:
+    """Same shape as reviewer.spawn_detached: the listener must never wait on a model.
+    `review_mode` re-reviews the MR in that mode once the replies are judged."""
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    review_args = ["--review-after", review_mode] if review_mode else []
     with open(REVIEWS_DIR / f"{mr_id}.spawn.log", "a") as spawn_log:
         subprocess.Popen(
             [sys.executable, str(SCRIPT_DIR / "appeal.py"),
-             "--project", project, "--iid", str(iid), "--mr-id", str(mr_id)],
+             "--project", project, "--iid", str(iid), "--mr-id", str(mr_id), *review_args],
             stdout=spawn_log, stderr=subprocess.STDOUT,
             start_new_session=True, cwd=str(SCRIPT_DIR),
         )
@@ -248,6 +268,8 @@ def main() -> int:
     ap.add_argument("--project", required=True)
     ap.add_argument("--iid", required=True)
     ap.add_argument("--mr-id", required=True)
+    ap.add_argument("--review-after", choices=("auto", "lite", "deep"),
+                    help="judge the replies, then re-review the MR in this mode")
     args = ap.parse_args()
 
     REVIEWS_DIR.mkdir(exist_ok=True)
@@ -269,9 +291,10 @@ def main() -> int:
             # only costs us the Slack thread; the warning below must still reach someone
             log.exception("state.json unreadable; replying top-level")
             state = {}
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        # spawned for a combined rerun, the Slack listener still holds the lock
+        # around its reset: wait for it the way a spawned review does
+        wait = reviewer.SPAWN_LOCK_WAIT if args.review_after else 0
+        if not reviewer.take_lock(lock_file, wait):
             # the click already retired its button, so say so rather than vanish
             log.info("MR !%s busy (review or appeal running), skipping", args.iid)
             reviewer._slack_say(config, f":hourglass: `{args.project}` !{args.iid} 正在 review "
@@ -280,7 +303,8 @@ def main() -> int:
                                 _buttons(args.project, args.iid))
             return 0
         try:
-            return run_appeal(args.project, args.iid, args.mr_id, config, state)
+            rc = run_appeal(args.project, args.iid, args.mr_id, config, state,
+                            review_after=bool(args.review_after))
         except Exception as exc:
             # the click already retired its button: a silent crash would leave
             # the user waiting forever, so every failure surfaces with a retry
@@ -289,8 +313,14 @@ def main() -> int:
                                         f"({type(exc).__name__}: {str(exc)[:120]}),"
                                         f"已完成的部分保留在 GitLab;可以再按一次",
                                 review_common.slack_ts_for(state, args.mr_id),
-                                _buttons(args.project, args.iid))
-            return 1
+                                None if args.review_after else _buttons(args.project, args.iid))
+            rc = 1
+        if args.review_after:
+            # same process, same lock: nothing can slip in between, and the review
+            # reports its own crash
+            return reviewer.run_locked(args.project, args.iid, args.mr_id, config, state,
+                                       args.review_after)
+        return rc
 
 
 if __name__ == "__main__":

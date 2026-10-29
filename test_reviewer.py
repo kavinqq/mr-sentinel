@@ -1,4 +1,5 @@
 """Tests for reviewer pure helpers."""
+import json
 import tempfile
 import unittest
 import urllib.error
@@ -72,6 +73,25 @@ class TestAutoMerge(unittest.TestCase):
     def test_merges_when_clean_and_green(self):
         gl = self._run(self.GREEN)
         gl.merge_mr.assert_called_once()
+
+    def test_an_earlier_comment_still_open_holds_a_clean_rerun(self):
+        """The developer fixed some comments, answered one, the appeal rejected it, and
+        the rerun came back clean: that answered comment still holds the merge."""
+        ai = "🟠 [Medium] x\n\n" + rc.SIGNATURE_MARKER
+        rejected = f"不成立 {rc.APPEAL_REJECT}\n\n{rc.SIGNATURE_MARKER}"
+        with mock.patch.object(reviewer, "gitlab_client") as gl:
+            gl.get_mr.return_value = self.GREEN
+            gl.get_current_user.return_value = {"id": 42}
+            gl.list_discussions.return_value = [{"id": "d1", "notes": [
+                {"id": 1, "author": {"id": 42}, "body": ai, "resolvable": True},
+                {"id": 2, "author": {"id": 99}, "body": "不用修"},
+                {"id": 3, "author": {"id": 42}, "body": rejected}]}]
+            merged, report, buttons, _ = reviewer.try_auto_merge(
+                self.CFG, "http://gl", "tok", "g/p", 10, reviewed_sha="h")
+        self.assertFalse(merged)
+        gl.merge_mr.assert_not_called()
+        self.assertIn("還有 1 則 review 留言沒處理完", report)
+        self.assertIn("waive", str(buttons))
 
     def test_merge_is_pinned_to_reviewed_sha(self):
         gl = self._run(self.GREEN)
@@ -564,6 +584,33 @@ class ReviewHarness:
     @staticmethod
     def statuses(m):
         return [c.args[5] for c in m["_set_status"].call_args_list]
+
+
+class TestAnsweredFindingsInReview(ReviewHarness, unittest.TestCase):
+    """A rerun keeps the threads someone answered; the review must not raise them again."""
+    AI = "🟠 [Medium] None 沒處理\n\n" + rc.SIGNATURE_MARKER
+    OLD = {"severity": "medium", "category": "correctness", "title": "None 沒處理",
+           "file": "a.py", "line": 3}
+
+    def test_a_lite_pass_finding_only_answered_ones_is_confirmed_by_deep(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["gitlab_client"].list_discussions.return_value = [{"id": "d1", "notes": [
+            {"id": 1, "author": {"id": 7}, "body": self.AI,
+             "position": {"new_path": "a.py", "new_line": 3}},
+            {"id": 2, "author": {"id": 99}, "body": "不用修"}]}]
+        modes = []
+
+        def run_review(work, ctx_path, out_path, wt, cfg, mode):
+            modes.append(mode)
+            out_path.write_text(json.dumps({"findings": [self.OLD] if mode == "lite" else []}))
+            return 0
+        m["engines"].get_engine.return_value.run_review.side_effect = run_review
+        m["engines"].get_engine.return_value.label.return_value = "m"
+        reviewer.run_review("g/app", 5, 100, self.CFG, {}, False, force_mode="lite")
+        self.assertEqual(modes, ["lite", "deep"])
+        self.assertEqual(self.posted(m), [])
 
 
 class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):

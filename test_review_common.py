@@ -474,6 +474,44 @@ class TestAppeals(unittest.TestCase):
         self.assertIn(":tada:", rc.appeal_summary_text("g/app", 5, None, judged, Counter(closed=2)))
 
 
+class TestNotYetRaised(unittest.TestCase):
+    AI = "🟠 [Medium] None 沒處理\n\n" + rc.SIGNATURE_MARKER
+
+    def thread(self, *replies, line=3):
+        return {"id": "d", "notes": [
+            {"id": 1, "author": {"id": 42}, "body": self.AI,
+             "position": {"new_path": "a.py", "new_line": line}},
+            *({"id": 2 + i, "author": {"id": 99}, "body": r} for i, r in enumerate(replies))]}
+
+    def test_an_answered_finding_is_not_raised_again_even_on_another_line(self):
+        found = [{"file": "a.py", "line": 9, "title": "None 沒處理"},
+                 {"file": "b.py", "line": 3, "title": "None 沒處理"}]
+        kept = rc.not_yet_raised(found, [self.thread("不用修", line=3)], 42)
+        self.assertEqual(kept, [found[1]])
+
+    def test_a_new_problem_on_an_answered_line_is_still_raised(self):
+        found = [{"file": "a.py", "line": 3, "title": "越權存取"}]
+        self.assertEqual(rc.not_yet_raised(found, [self.thread("不用修")], 42), found)
+
+    def test_a_finding_posted_as_a_plain_note_is_matched_by_its_body(self):
+        note = {"id": "d", "notes": [
+            {"id": 1, "author": {"id": 42}, "body": "`a.py:3`\n\n" + self.AI},
+            {"id": 2, "author": {"id": 99}, "body": "不用修"}]}
+        found = [{"file": "a.py", "line": 3, "title": "None 沒處理"}]
+        self.assertEqual(rc.not_yet_raised(found, [note], 42), [])
+
+    def test_a_gate_finding_is_only_matched_against_its_own_head(self):
+        gated = self.thread("不用修")
+        gated["notes"][0]["body"] += "\n" + rc.GATE_HEAD_MARKER.format("h1")
+        found = [{"file": "a.py", "line": 3, "title": "None 沒處理"}]
+        self.assertEqual(rc.not_yet_raised(found, [gated], 42, head="h1"), [])
+        self.assertEqual(rc.not_yet_raised(found, [gated], 42, head="h2"), found)
+
+    def test_an_unanswered_thread_does_not_hide_a_finding(self):
+        found = [{"file": "a.py", "line": 3, "title": "x"}]
+        self.assertEqual(rc.not_yet_raised(found, [self.thread()], 42), found)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -35,7 +35,9 @@ class Harness:
     discussions reflect the replies posted during the run."""
 
     def __init__(self, discussions, verdicts, engine_rc=0, meta=None, during_run=None,
-                 resolve_error=None, deep=CLEAN, deep_rc=0, ctx_head="head2", **review):
+                 resolve_error=None, deep=CLEAN, deep_rc=0, ctx_head="head2", review_after=False,
+                 **review):
+        self.review_after = review_after
         self.discussions = discussions
         self.during_run = during_run          # mutate GitLab while the "model" runs
         self.resolve_error = resolve_error
@@ -108,7 +110,8 @@ class Harness:
                      "diff_refs": {"head_sha": self.ctx_head}}), \
                  mock.patch.object(appeal.fetch_mr, "write_context"), \
                  mock.patch.object(appeal.engines, "get_engine", return_value=engine):
-                self.rc = appeal.run_appeal("g/app", "5", "100", self.cfg, {})
+                self.rc = appeal.run_appeal("g/app", "5", "100", self.cfg, {},
+                                            review_after=self.review_after)
                 meta_path = reviews / "100" / "review_meta.json"
                 self.meta_after = json.loads(meta_path.read_text()) if meta_path.exists() else None
         return self
@@ -135,6 +138,24 @@ class TestRunAppeal(unittest.TestCase):
         h.merge.assert_not_called()
         self.assertEqual([a["id"] for a in h.ctx["appeals"]], ["d1", "d2"])
         self.assertIn("申訴", h.history.call_args.kwargs["trigger"])   # re-scored after verdicts
+
+    def test_before_a_rerun_it_only_judges_and_leaves_reporting_and_merging_to_the_review(self):
+        h = Harness([disputed("d1"), disputed("d2")],
+                    [{"id": "d1", "verdict": "accept", "reason": "ok"},
+                     {"id": "d2", "verdict": "reject", "reason": "no"}],
+                    auto_merge_on_clean=True, meta={"mode": "deep", "head_sha": "h1"},
+                    review_after=True).run()
+        self.assertEqual((h.rc, h.resolved), (0, ["d1"]))
+        h.merge.assert_not_called()
+        h.sync.assert_not_called()
+        (text, buttons), = h.said
+        self.assertIn("成立 1、不成立 1", text)
+        self.assertIn("接著重審", text)
+        self.assertIsNone(buttons)                    # the review that follows brings its own
+
+    def test_before_a_rerun_with_nothing_to_judge_it_stays_quiet(self):
+        h = Harness([{"id": "d1", "notes": [note(ME, AI)]}], [], review_after=True).run()
+        self.assertEqual(h.said, [])
 
     def test_nothing_to_judge_skips_the_engine(self):
         h = Harness([{"id": "d1", "notes": [note(ME, AI)]}], []).run()
@@ -325,6 +346,23 @@ class TestMain(unittest.TestCase):
         text, buttons = said[-1]
         self.assertIn("申訴中途失敗", text)
         self.assertTrue(buttons)
+
+    def test_review_after_runs_in_the_same_process_even_when_the_judging_crashed(self):
+        """No spawn between the two steps: nothing can take the lock in between."""
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(appeal, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(appeal, "load_config", return_value=config()), \
+             mock.patch.object(appeal, "load_state", return_value={}), \
+             mock.patch.object(appeal, "run_appeal", side_effect=RuntimeError("boom")), \
+             mock.patch.object(appeal.reviewer, "_slack_say"), \
+             mock.patch.object(appeal.reviewer, "spawn_detached") as spawn, \
+             mock.patch.object(appeal.reviewer, "run_locked", return_value=0) as review, \
+             mock.patch("sys.argv", ["appeal.py", "--project", "g/app", "--iid", "5",
+                                     "--mr-id", "100", "--review-after", "deep"]), \
+             self.assertLogs("mr_sentinel.appeal", "ERROR"):
+            self.assertEqual(appeal.main(), 0)
+        review.assert_called_once_with("g/app", "5", "100", config(), {}, "deep")
+        spawn.assert_not_called()
 
 
 if __name__ == "__main__":

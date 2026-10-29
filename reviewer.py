@@ -168,6 +168,9 @@ def try_auto_merge(config: dict, base: str, token: str, project_path: str, iid, 
         release = _release_blocker(config, base, token, project_path, mr)
         if release is None:
             mr = sync_release_status(config, base, token, project_path, mr, cleared=True)
+        # a clean rerun says nothing about comments from earlier rounds a developer
+        # answered and the appeal rejected: those still hold the merge
+        open_threads = _open_ai_threads(base, token, project_path, iid)
     except Exception as exc:
         log.exception("auto-merge: get_mr failed")
         return (False, f"*原因*:查 GitLab 合併狀態失敗({type(exc).__name__})\n"
@@ -175,7 +178,8 @@ def try_auto_merge(config: dict, base: str, token: str, project_path: str, iid, 
 
     rail = review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
     # our own failed status turns the pipeline red: name the reason behind it instead
-    blocker = rail if rail == "new commits since review" else (release or rail)
+    blocker = rail if rail == "new commits since review" else (
+        release or (f"{OPEN_COMMENTS}{open_threads}" if open_threads else None) or rail)
     if blocker:
         log.info("MR !%s clean but not auto-merged: %s", iid, blocker)
         why, next_step = blocker_text(blocker)
@@ -209,6 +213,13 @@ def try_auto_merge(config: dict, base: str, token: str, project_path: str, iid, 
                        f"*下一步*:到 GitLab 看 MR 狀態,處理後{RETRY_MERGE}", retry_merge, [])
     log.info("MR !%s auto-merged (AI review clean)", iid)
     return True, "", [], []
+
+
+def _open_ai_threads(base: str, token: str, project_path: str, iid) -> int:
+    me = gitlab_client.get_current_user(base, token)["id"]
+    _, counts = review_common.collect_appeals(
+        gitlab_client.list_discussions(base, token, project_path, iid), me)
+    return review_common.open_findings(counts)
 
 
 def without_covered(ai: list, gate_findings: list) -> list:
@@ -406,8 +417,9 @@ def blocker_text(blocker: str) -> tuple[str, str]:
         return "上次 review 有一部分沒跑完", RERUN_HINT
     if blocker.startswith(OPEN_COMMENTS):
         return (f"還有 {blocker[len(OPEN_COMMENTS):]} 則 review 留言沒處理完",
-                f"修好就按「🔁 修好了，重審」;不用修就在 GitLab 那則留言回覆,"
-                f"再按「{blocks.APPEAL_LABEL}」")
+                f"在 GitLab 每則留言底下回覆 —— 修好的寫「已修正」,不用修的寫理由 ——"
+                f"再按「🔁 修好了，重審」或「{blocks.APPEAL_LABEL}」,兩個都會一起檢查"
+                f"新的 commit 和你的回覆")
     return blocker, f"處理後{RETRY_MERGE}"
 
 
@@ -713,6 +725,10 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             print("stats    :", ctx["stats"])
             return 0
 
+        # a rerun keeps the threads someone answered: never raise one of those again,
+        # and decide on a deep confirmation from what is actually new
+        answered = gitlab_client.list_discussions(base, token, project_path, iid)
+
         def run(m: str) -> dict | None:
             if out_path.exists():
                 out_path.unlink()
@@ -720,7 +736,11 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             if rc != 0:
                 log.error("engine failed for MR !%s (%s, rc=%s)", iid, m, rc)
                 return None
-            return json.loads(out_path.read_text())
+            found = json.loads(out_path.read_text())
+            if isinstance(found, dict) and isinstance(found.get("findings"), list):
+                found["findings"] = review_common.not_yet_raised(found["findings"], answered,
+                                                                 me["id"])
+            return found
 
         auto_merge = bool(review_cfg.get("auto_merge_on_clean"))
         result, mode = _review_with_confirmation(run, mode, auto_merge)
@@ -729,7 +749,8 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         #     before release, so a failed review must not skip them
         outcome = (final_gates.run(engine, work, ctx, local, wt, review_cfg) if gated
                    else final_gates.NOT_APPLICABLE)
-        gate_findings = outcome.findings
+        gate_findings = review_common.not_yet_raised(outcome.findings, answered, me["id"],
+                                                     head=head_sha)
         # an ungated review leaves no verdict: if the MR is retargeted to a main
         # branch later, _release_blocker must not read "not applicable" as "passed"
         guard_record = outcome.record(head_sha, ctx.get("target_branch")) if gated else None
@@ -748,7 +769,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             return 1
 
         # 7. post comments (scripts post; the AI never does)
-        ai_findings = without_covered(result.get("findings", []), gate_findings)
+        ai_findings = without_covered(result.get("findings", []), outcome.findings)
         findings = gate_findings + ai_findings
         result["findings"] = findings
         posted = _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
@@ -763,6 +784,14 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         #    answer by deleting the comments and reviewing again.
         # the merge check reads this review's verdict from the meta (_release_blocker)
         write_review_meta(work, mode, head_sha, len(findings), guard_record)
+        if len(gate_findings) < len(outcome.findings):
+            # some gate findings were already answered for this head: the status
+            # final_gates just set counts them as open, re-check it against GitLab
+            try:
+                sync_release_status(config, base, token, project_path,
+                                    gitlab_client.get_mr(base, token, project_path, iid))
+            except Exception:
+                log.exception("release status re-check for MR !%s failed", iid)
         merged, merge_report, merge_buttons = False, None, []
         try:
             if auto_merge and outcome.passed and review_common.auto_merge_eligible(mode, result):
@@ -926,21 +955,26 @@ def main() -> int:
         if not take_lock(lock_file, RETRY_LOCK_WAIT if args.attempt > 0 else SPAWN_LOCK_WAIT):
             log.info("review for MR !%s already running, skipping", args.iid)
             return 0
-        try:
-            return run_review(args.project, args.iid, args.mr_id, config, state, args.dry_run,
-                              force_mode=args.mode)
-        except Exception as exc:
-            # the MR may already carry our :eyes: (claimed = never retried by the
-            # poller), so a log-only failure would leave it silently unreviewed
-            log.exception("review of MR !%s failed", args.iid)
-            if args.dry_run:
-                return 1
-            # reset + spawn stay under the lock; a Slack rerun refuses while it is held
-            _fail_status(config, args.project, args.iid, f"{type(exc).__name__}")
-            if not _retry_automatically(config, state, args.project, args.iid, args.mr_id,
-                                        args.attempt, exc, args.mode):
-                _report_crash(config, state, args.project, args.iid, args.mr_id, exc)
+        return run_locked(args.project, args.iid, args.mr_id, config, state, args.mode,
+                          args.attempt, args.dry_run)
+
+
+def run_locked(project_path: str, iid, mr_id, config: dict, state: dict, mode: str = "auto",
+               attempt: int = 0, dry_run: bool = False) -> int:
+    """One review; the caller holds the per-MR lock. A crash is reported, never raised."""
+    try:
+        return run_review(project_path, iid, mr_id, config, state, dry_run, force_mode=mode)
+    except Exception as exc:
+        # the MR may already carry our :eyes: (claimed = never retried by the
+        # poller), so a log-only failure would leave it silently unreviewed
+        log.exception("review of MR !%s failed", iid)
+        if dry_run:
             return 1
+        # reset + spawn stay under the lock; a Slack rerun refuses while it is held
+        _fail_status(config, project_path, iid, f"{type(exc).__name__}")
+        if not _retry_automatically(config, state, project_path, iid, mr_id, attempt, exc, mode):
+            _report_crash(config, state, project_path, iid, mr_id, exc)
+        return 1
 
 
 if __name__ == "__main__":

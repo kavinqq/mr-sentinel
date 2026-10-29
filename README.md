@@ -153,6 +153,15 @@ rails apply, pinned to the sha the last *deep* review covered (a lite review,
 or code pushed after the review, is never merged this way). Appeals share the
 hourly rerun budget.
 
+**Either button checks both sides.** Developers usually fix some comments and
+answer others, then press one button. 🔁 with replies waiting judges those replies
+first and then re-reviews; 💬 after new commits since the last review re-reviews
+after judging (or straight away if nobody replied). In that combined run the
+verdicts go to GitLab plus one Slack line, and the review that follows reports
+and tries the merge (`appeal.py --review-after`). A clean re-review never merges
+while a comment from an earlier round is still open (an answer the appeal
+rejected): the merge waits for it like any other open comment.
+
 **🔀 重新合併 (`merge !N`).** For a clean MR whose auto-merge was blocked (a red CI
 run that has since been retried, a conflict that was fixed): `merge_retry.py`
 re-checks the same rule as an appeal (every AI thread closed, last review deep)

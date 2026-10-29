@@ -19,7 +19,8 @@ findings in light of the reply.
    - the developer's argument is factually correct;
    - it is a product / business decision or an accepted trade-off that is the
      team's call, and the code does not contradict what they describe;
-   - on reflection the finding was a false positive, or the risk is negligible in practice.
+   - on reflection the finding was a false positive, or the risk is negligible in practice;
+   - the developer says it is fixed and the checkout shows the failure no longer happens.
 4. **reject** only when you can point to concrete code showing the failure in
    the finding still happens AND the developer's argument is factually wrong or
    does not address it. For security findings (authz/IDOR, injection, data
