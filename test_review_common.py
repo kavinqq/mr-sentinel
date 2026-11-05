@@ -561,6 +561,53 @@ class TestAppeals(unittest.TestCase):
         self.assertIn(":tada:", rc.appeal_summary_text("g/app", 5, None, judged, Counter(closed=2)))
 
 
+class TestOpenThreads(unittest.TestCase):
+    """What is still open by our rules, so GitLab and Slack can point straight at it."""
+    AI = "🟡 **Low** · 測試驗的是死碼\n\n" + rc.SIGNATURE_MARKER
+
+    def test_lists_open_threads_with_what_gitlab_shows(self):
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": 99}}
+        reject = {"id": 3, "author": {"id": 42}, **r,
+                  "body": rc.appeal_reply_body("reject", "貼錯串", "m")}
+        closed = {"id": "c", "notes": [{"id": 9, "author": {"id": 42}, "body": self.AI, **r,
+                                        "resolved_by": {"id": 42}},
+                                       {"id": 10, "author": {"id": 42}, **r, "resolved_by": {"id": 42},
+                                        "body": rc.appeal_reply_body("accept", "ok", "m")}]}
+        rejected = {"id": "r", "notes": [{"id": 1, "author": {"id": 42}, "body": self.AI, **r},
+                                         {"id": 2, "author": {"id": 99}, "body": "x", **r}, reject]}
+        [t] = rc.open_threads([closed, rejected], 42)
+        self.assertEqual((t["id"], t["status"], t["note_id"], t["title"], t["shown_resolved"]),
+                         ("r", "rejected", 1, "測試驗的是死碼", True))
+
+    def test_lines_link_each_thread(self):
+        t = {"id": "r", "status": "rejected", "note_id": 1, "title": "死碼", "severity": "low",
+             "shown_resolved": False}
+        text = rc.open_thread_lines([t], "http://gl/mr/60")
+        self.assertIn("<http://gl/mr/60#note_1|死碼>", text)
+        self.assertIn("申訴被駁回", text)
+
+    def test_a_title_cannot_break_the_link(self):
+        t = {"id": "r", "status": "rejected", "note_id": 1, "title": "Array<T> & |x>",
+             "severity": "low", "shown_resolved": False}
+        self.assertIn("|Array&lt;T&gt; &amp; |x&gt;>", rc.open_thread_lines([t], "http://gl/mr"))
+
+    def test_whole_links_only_within_the_budget(self):
+        """A message is cut at 3000 characters; half a link is a broken link."""
+        many = [{"id": str(i), "status": "unanswered", "note_id": i, "title": "很長" * 50,
+                 "severity": "medium", "shown_resolved": False} for i in range(10)]
+        text = rc.open_thread_lines(many, "http://gl/mr/60", budget=400)
+        self.assertLessEqual(len(text), 400)
+        self.assertEqual(text.count("<"), text.count(">"))
+        self.assertIn("…還有", text)
+
+    def test_long_lists_are_cut_with_a_count(self):
+        many = [{"id": str(i), "status": "unanswered", "note_id": i, "title": f"t{i}",
+                 "severity": "medium", "shown_resolved": False} for i in range(12)]
+        text = rc.open_thread_lines(many, "http://gl/mr/60", limit=10)
+        self.assertEqual(text.count("#note_"), 10)
+        self.assertIn("還有 2 則", text)
+
+
 class TestNotYetRaised(unittest.TestCase):
     AI = "🟠 [Medium] None 沒處理\n\n" + rc.SIGNATURE_MARKER
 

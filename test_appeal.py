@@ -296,6 +296,26 @@ class TestRunAppeal(unittest.TestCase):
         h = Harness([disputed("d1")], self.ACCEPT, meta={"mode": "deep", "head_sha": "h1"}).run()
         self.assertIn("自動合併功能沒開", h.said[-1][0])
 
+    def test_a_reject_reopens_a_thread_the_developer_resolved_and_links_it(self):
+        """!60: a rejected comment the developer had resolved hid among the closed ones."""
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": DEV}}
+        resolved = {"id": "d1", "notes": [note(ME, AI, id=11, **r), note(DEV, "貼錯串", **r)]}
+        h = Harness([resolved], [{"id": "d1", "verdict": "reject", "reason": "沒回應本則"}])
+        with mock.patch.object(appeal.gitlab_client, "unresolve_discussion") as reopen:
+            h.run()
+        self.assertIn("d1", [c.args[4] for c in reopen.call_args_list])
+        self.assertIn("<u#note_11|", h.said[-1][0])
+
+    def test_a_failed_reopen_neither_breaks_the_summary_nor_claims_success(self):
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": DEV}}
+        resolved = {"id": "d1", "notes": [note(ME, AI, id=11, **r), note(DEV, "貼錯串", **r)]}
+        h = Harness([resolved], [{"id": "d1", "verdict": "reject", "reason": "沒回應本則"}])
+        with mock.patch.object(appeal.gitlab_client, "unresolve_discussion",
+                               side_effect=RuntimeError("IncompleteRead")):
+            h.run()
+        self.assertIn("#note_11|", h.said[-1][0])
+        self.assertNotIn("已標成未解決", h.said[-1][0])
+
     def test_stalemate_offers_the_admin_override(self):
         h = Harness([disputed("d1")], [{"id": "d1", "verdict": "reject", "reason": "仍會 None"}]).run()
         self.assertIn("waive", [json.loads(b["value"])["verb"] for b in h.said[-1][1]])

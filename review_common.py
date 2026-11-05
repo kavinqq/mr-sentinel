@@ -3,7 +3,7 @@ import random
 import re
 from collections import Counter
 
-from history.parse import category_marker
+from history.parse import category_marker, parse_comment
 
 NOISE_SUFFIXES = (".lock", "-lock.json", ".min.js", ".min.css", ".map", ".svg", ".png", ".jpg", ".gif")
 NOISE_NAMES = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock", "composer.lock", "Cargo.lock", "go.sum")
@@ -504,6 +504,56 @@ def appeal_summary_text(project: str, iid, web_url, judged: dict, counts_after: 
     if web_url:
         text += f"\n{web_url}"
     return text
+
+
+OPEN_STATE_WORDS = {"unanswered": "沒人回覆", "rejected": "申訴被駁回",
+                    "appeal": "有回覆還沒判", "accepted": "已接受但沒關成功"}
+
+
+def open_threads(discussions: list[dict], user_id) -> list[dict]:
+    """AI threads still open by our rules (discussion_status), with whether GitLab
+    shows them resolved anyway — a developer's own resolve — so they can be reopened
+    and GitLab's unresolved-thread count and navigation point at what is left."""
+    found = []
+    for discussion in discussions:
+        status = discussion_status(discussion, user_id)
+        if status in (None, "closed"):
+            continue
+        notes = _human_notes(discussion)
+        resolvable = [n for n in notes if n.get("resolvable")]
+        parsed = parse_comment(notes[0].get("body"))
+        found.append({"id": str(discussion.get("id")), "status": status,
+                      "note_id": notes[0].get("id"), "title": parsed["title"] or "AI 留言",
+                      "severity": parsed["severity"],
+                      "shown_resolved": bool(resolvable) and all(n.get("resolved")
+                                                                 for n in resolvable)})
+    return found
+
+
+def _slack_escape(text: str) -> str:
+    """Slack mrkdwn control characters; a title like `Array<string>` would break the link."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def open_thread_lines(threads: list[dict], web_url: str, limit: int = 10,
+                      budget: int = 1500) -> str:
+    """Slack lines linking straight to each open thread. Whole lines only, within
+    `budget` characters: a message is cut at 3000 (blocks.message), and a link cut in
+    half is a broken one."""
+    lines, used = [], 0
+    budget -= 80                  # room for the "…還有 N 則" line
+    for t in threads[:limit]:
+        title = t["title"] if len(t["title"]) <= 60 else t["title"][:59] + "…"
+        line = (f"• {SEVERITY_EMOJI.get(t['severity'], '')} "
+                f"<{web_url}#note_{t['note_id']}|{_slack_escape(title)}>"
+                f"({OPEN_STATE_WORDS.get(t['status'], t['status'])})")
+        if used + len(line) > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    if len(lines) < len(threads):
+        lines.append(f"• …還有 {len(threads) - len(lines)} 則,在 MR 頁面頂端按「下一個未解決的討論」")
+    return "\n".join(lines)
 
 
 def open_findings(counts: Counter) -> int:

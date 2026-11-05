@@ -90,9 +90,11 @@ class TestMergeRetry(unittest.TestCase):
         self.assertEqual(h.merge.call_args.kwargs["reviewed_sha"], "abc1234")
 
     def test_open_ai_thread_blocks(self):
-        h = Harness(DEEP, [{"id": "d1", "notes": [{"author": {"id": ME}, "body": AI}]}]).run()
+        h = Harness(DEEP, [{"id": "d1", "notes": [{"id": 7, "author": {"id": ME},
+                                                   "body": AI}]}]).run()
         h.merge.assert_not_called()
         self.assertIn("1 則 AI 留言沒處理完", h.last)
+        self.assertIn("#note_7|", h.last)                # straight to the comment
 
     def test_an_unfinished_review_never_merges(self):
         """Codex P1: a failed deep review used to be recorded as deep for this head."""

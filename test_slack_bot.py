@@ -562,10 +562,12 @@ class TestAppeal(unittest.TestCase):
             if reviewed else {}
         with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
              mock.patch.object(gl, "list_discussions", return_value=discussions), \
-             mock.patch.object(gl, "get_mr", return_value={"id": 100, "state": mr_state,
-                                                          "sha": head, "target_branch": target}), \
+             mock.patch.object(gl, "get_mr", return_value={
+                 "id": 100, "state": mr_state, "sha": head, "target_branch": target,
+                 "web_url": "http://gl/g/app/-/merge_requests/481"}), \
              mock.patch.object(slack_bot.reviewer, "read_review_meta", return_value=meta), \
              mock.patch.object(slack_bot.Bot, "mr_busy", return_value=busy), \
+             mock.patch.object(gl, "unresolve_discussion") as self.reopened, \
              mock.patch.object(gl, "get_award_emojis", return_value=[]), \
              mock.patch.object(gl, "delete_note", side_effect=delete_error) as self.deleted, \
              mock.patch.object(slack_bot.reviewer, "spawn_detached") as self.review_spawn, \
@@ -758,6 +760,41 @@ class TestCheckButtonScenarios(TestAppeal):
             spawn.assert_not_called()
             self.merge_spawn.assert_not_called()
             self.assertIn("目前有 1 則還沒處理", h.last)
+
+    def test_10b_what_is_left_is_reopened_on_gitlab_and_linked(self):
+        """!60: the one rejected comment hid among 17 resolved ones on GitLab."""
+        with BotHarness() as h:
+            self.appeal(h, [self.finding(**self.R)])
+            self.assertEqual([c.args[4] for c in self.reopened.call_args_list], ["d1"])
+            self.assertIn("http://gl/g/app/-/merge_requests/481#note_1", h.last)
+
+    def test_10c_a_busy_mr_is_listed_but_not_touched(self):
+        """Codex: an admin override may be closing that thread right now."""
+        import fcntl
+        with BotHarness() as h:
+            slack_bot.reviewer.REVIEWS_DIR.mkdir(parents=True)
+            with open(slack_bot.reviewer.REVIEWS_DIR / ".lock-100", "w") as running:
+                fcntl.flock(running, fcntl.LOCK_EX)
+                self.appeal(h, [self.finding(**self.R)])
+            self.reopened.assert_not_called()
+            self.assertIn("#note_1", h.last)
+
+    def test_10d_the_lock_is_taken_before_the_read_it_acts_on(self):
+        """Codex: a read before the lock may be stale by the time it is reopened."""
+        order = []
+        real_take = slack_bot.reviewer.take_lock
+        with BotHarness() as h, \
+             mock.patch.object(slack_bot.reviewer, "take_lock",
+                               side_effect=lambda f, *a: order.append("lock") or real_take(f, *a)):
+            gl = slack_bot.gitlab_client
+            calls = []
+            with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
+                 mock.patch.object(gl, "unresolve_discussion"), \
+                 mock.patch.object(gl, "list_discussions",
+                                   side_effect=lambda *a: calls.append(order[:]) or
+                                   [self.finding(**self.R)]):
+                h.bot.reopen_under_lock("http://gl", "t", "g/app", "481", "100")
+        self.assertEqual(calls, [["lock"]])
 
     def test_11_everything_closed_but_not_merged_checks_the_merge(self):
         bot_resolved = {"resolvable": True, "resolved": True, "resolved_by": {"id": 42}}

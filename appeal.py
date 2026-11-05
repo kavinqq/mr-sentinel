@@ -122,6 +122,15 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
                                                                            judged_on=review_common.mr_version(mr)))
             if verdict == "accept":
                 _resolve(base, token, project, iid, discussion_id)
+        # a reject on a thread the developer had resolved must show open again
+        if any(v == "reject" for v, _ in verdicts.values()):
+            try:
+                rejected = [t for t in review_common.open_threads(
+                    gitlab_client.list_discussions(base, token, project, iid), me)
+                    if verdicts.get(t["id"], ("",))[0] == "reject"]
+                reviewer.reopen_shown_resolved(base, token, project, iid, rejected)
+            except Exception:
+                log.exception("reopening rejected threads on !%s failed", iid)
         if review_after:
             accepted = sum(v == "accept" for v, _ in verdicts.values())
             say(f":scales: `{project}` !{iid} 先判斷了 {len(verdicts)} 則回覆:成立 {accepted}、"
@@ -183,15 +192,18 @@ def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_g
     # accepted appeals stop counting: re-record the MR and re-score everyone
     history_sync.sync_mr(config, project, iid,
                          trigger=f"申訴判斷 {project.rsplit('/', 1)[-1]}!{iid}")
-    _, after = review_common.collect_appeals(
-        gitlab_client.list_discussions(base, token, project, iid), me)
+    discussions = gitlab_client.list_discussions(base, token, project, iid)
+    _, after = review_common.collect_appeals(discussions, me)
     still_open = review_common.open_findings(after)
     log.info("appeal on !%s: %s judged, %s still open %s", iid, len(verdicts), still_open,
              dict(after))
+    left = review_common.open_threads(discussions, me)
+    reopened = reviewer.reopen_shown_resolved(base, token, project, iid, left)
 
     # the release status follows only its own comments, whatever else is still open
-    reviewer.sync_release_status(config, base, token, project,
-                                 gitlab_client.get_mr(base, token, project, iid))
+    mr = gitlab_client.get_mr(base, token, project, iid)
+    web_url = web_url or mr.get("web_url")
+    reviewer.sync_release_status(config, base, token, project, mr)
     merged, report, buttons = False, None, None
     if still_open:
         buttons = _buttons(project, iid) + blocks.waive_buttons(project, iid)
@@ -200,9 +212,12 @@ def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_g
     else:
         merged, report, buttons = _merge_outcome(config, base, token, project, iid,
                                                  deep_gate, work)
-    reviewer._slack_say(config, review_common.appeal_summary_text(
-        project, iid, web_url, verdicts, after, merged=merged, merge_report=report),
-        thread_ts, buttons or None)
+    text = review_common.appeal_summary_text(project, iid, web_url, verdicts, after,
+                                             merged=merged, merge_report=report)
+    if left and web_url:
+        text += ("\n*還沒過的留言*" + ("(GitLab 上也已標成未解決)" if reopened else "") + ":\n"
+                 + review_common.open_thread_lines(left, web_url))
+    reviewer._slack_say(config, text, thread_ts, buttons or None)
     if merged:
         reviewer._mark_notification_merged(config, thread_ts)
     return 0

@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 from collections import Counter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -338,6 +339,26 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
         # a comment that never reached GitLab cannot be answered there
         return NOT_REVIEWED
     return None
+
+
+def reopen_shown_resolved(base: str, token: str, project_path: str, iid,
+                          threads: list[dict]) -> bool:
+    """Make GitLab show open what is open by our rules (review_common.open_threads):
+    a developer's own resolve, or a reject on a thread they had resolved, otherwise
+    hides it among the closed ones — and GitLab's unresolved-thread count and its
+    "next unresolved thread" button are how people find what is left. Best effort:
+    never raises; False when one could not be reopened. Callers hold the MR's lock,
+    or a thread an admin override just closed could be reopened."""
+    all_open = True
+    for thread in threads:
+        if not thread["shown_resolved"]:
+            continue
+        try:
+            gitlab_client.unresolve_discussion(base, token, project_path, iid, thread["id"])
+        except Exception:
+            log.exception("could not reopen %s on !%s", thread["id"], iid)
+            all_open = False
+    return all_open
 
 
 def _same_change(record: dict | None, mr: dict) -> bool:

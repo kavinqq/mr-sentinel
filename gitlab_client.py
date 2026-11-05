@@ -140,6 +140,11 @@ def resolve_discussion(base: str, token: str, project, iid, discussion_id) -> No
           method="PUT", form={"resolved": "true"})
 
 
+def unresolve_discussion(base: str, token: str, project, iid, discussion_id) -> None:
+    _call(f"{_mr(base, project, iid)}/discussions/{discussion_id}", token,
+          method="PUT", form={"resolved": "false"})
+
+
 def list_mrs(base: str, token: str, project, updated_after: str | None = None,
              created_after: str | None = None, per_page: int = 100, max_pages: int = 50) -> list:
     """Every MR in any state, oldest update first, all pages (review history sync)."""

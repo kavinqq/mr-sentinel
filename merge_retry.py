@@ -76,8 +76,7 @@ def _override_threads(base: str, token: str, project: str, iid, name: str) -> li
     return lines
 
 
-STATE_WORDS = {"unanswered": "沒人回覆", "rejected": "申訴被駁回",
-               "appeal": "有回覆還沒判", "accepted": "已接受但沒關成功"}
+STATE_WORDS = review_common.OPEN_STATE_WORDS
 
 
 def _override(config: dict, project: str, mr: dict, work, user_id: str, say) -> bool:
@@ -141,12 +140,15 @@ def run_merge(project: str, iid, mr_id, config: dict, state: dict,
     # the release status follows only its own comments, whatever else is still open
     reviewer.sync_release_status(config, base, token, project, mr)
     me = gitlab_client.get_current_user(base, token)["id"]
-    _, counts = review_common.collect_appeals(
-        gitlab_client.list_discussions(base, token, project, iid), me)
+    discussions = gitlab_client.list_discussions(base, token, project, iid)
+    _, counts = review_common.collect_appeals(discussions, me)
     still_open = review_common.open_findings(counts)
     if still_open:
+        left = review_common.open_threads(discussions, me)
+        reviewer.reopen_shown_resolved(base, token, project, iid, left)
+        links = f"\n{review_common.open_thread_lines(left, web_url)}" if web_url else ""
         say(f":warning: `{project}` !{iid} 還有 {still_open} 則 AI 留言沒處理完,不合併 — "
-            f"照意見改好的 push 上去,不用改的回覆理由,再按「{blocks.CHECK_LABEL}」\n{web_url or ''}",
+            f"照意見改好的 push 上去,不用改的回覆理由,再按「{blocks.CHECK_LABEL}」{links}",
             blocks.check_buttons(project, iid) + blocks.waive_buttons(project, iid))
         return 0
     if not config["review"].get("auto_merge_on_clean"):

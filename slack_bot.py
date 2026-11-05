@@ -772,6 +772,9 @@ class Bot:
                      f"檢查合併條件中", thread_ts)
             return True
         waiting = counts.get("unanswered", 0) + counts.get("rejected", 0)
+        left = self.reopen_under_lock(base, token, project, iid, mr_id)
+        links = (f"\n*還沒處理的留言*:\n{review_common.open_thread_lines(left, mr['web_url'])}"
+                 if left and mr.get("web_url") else "")
         self.say(f":speech_balloon: `{project}` !{iid} 沒看到新的 commit,也沒看到新的回覆"
                  + (f"(目前有 {waiting} 則還沒處理)" if waiting else "")
                  + "\n• 照 AI 意見改好的:push 上去,再按一次"
@@ -779,8 +782,22 @@ class Bot:
                  f"*Add comment now(立刻加入留言)*,再按一次「{blocks.CHECK_LABEL}」"
                  "\n• 選 Start a review 會變成草稿,只有你自己看得到,要按 Submit review 才算送出"
                  "\n• 頁面最下方的留言框不算回覆,一定要回在 AI 那則留言底下"
-                 "\n• 改原本的回覆不算,被 AI 駁回後要補充請新增一則回覆", thread_ts)
+                 "\n• 改原本的回覆不算,被 AI 駁回後要補充請新增一則回覆" + links, thread_ts)
         return None
+
+    def reopen_under_lock(self, base, token, project, iid, mr_id) -> list[dict]:
+        """Open threads, reopened on GitLab where a developer resolved them — on a
+        fresh read under the MR's lock, so an admin override closing one meanwhile is
+        never undone. Busy: just list them."""
+        reviewer.REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+        me = self.gitlab_user_id()
+        with open(reviewer.REVIEWS_DIR / f".lock-{mr_id}", "w") as lock_file:
+            locked = reviewer.take_lock(lock_file)        # before the read it acts on
+            left = review_common.open_threads(
+                gitlab_client.list_discussions(base, token, project, iid), me)
+            if locked:
+                reviewer.reopen_shown_resolved(base, token, project, iid, left)
+        return left
 
     @staticmethod
     def judging_text(appeals, retries) -> str:
