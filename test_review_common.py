@@ -561,6 +561,72 @@ class TestAppeals(unittest.TestCase):
         self.assertIn(":tada:", rc.appeal_summary_text("g/app", 5, None, judged, Counter(closed=2)))
 
 
+class TestSettledAs(unittest.TestCase):
+    """How a finding was settled decides whether it may come back: a fix can be undone,
+    a reason or a ruling is about the code as it is."""
+    AI = "🟠 [Medium] x\n\n" + rc.SIGNATURE_MARKER
+
+    def thread(self, *later):
+        return {"id": "d", "notes": [{"id": 1, "author": {"id": 42}, "body": self.AI,
+                                      "position": {"new_path": "a.py", "new_line": 3}},
+                                     {"id": 2, "author": {"id": 99}, "body": "已修正"}, *later]}
+
+    def test_a_confirmed_fix_is_marked_and_said_so(self):
+        body = rc.appeal_reply_body("accept", "a.py:3 已改", "m", fixed=True)
+        self.assertIn("已確認修正", body)
+        self.assertIn(rc.APPEAL_FIXED, body)
+        self.assertNotIn(rc.APPEAL_FIXED, rc.appeal_reply_body("accept", "ok", "m"))
+
+    def test_already_raised_says_how_each_was_settled(self):
+        fixed = {"id": 3, "author": {"id": 42},
+                 "body": rc.appeal_reply_body("accept", "已改", "m", fixed=True)}
+        reason = {"id": 3, "author": {"id": 42}, "body": rc.appeal_reply_body("accept", "ok", "m")}
+        self.assertEqual(rc.already_raised([self.thread(fixed)], 42)[0]["settled_as"], "fixed")
+        self.assertEqual(rc.already_raised([self.thread(reason)], 42)[0]["settled_as"], "reason")
+        self.assertIsNone(rc.already_raised([self.thread()], 42)[0]["settled_as"])
+
+    def test_an_accept_from_before_the_markers_is_unknown(self):
+        """Codex P1: it may have been a fix; treated as a reason, an undone fix slips by."""
+        legacy = {"id": 3, "author": {"id": 42}, "body": f"✅ 理由成立 {rc.APPEAL_ACCEPT}"}
+        self.assertEqual(rc.already_raised([self.thread(legacy)], 42)[0]["settled_as"], "unknown")
+
+    def test_a_fix_or_unknown_settlement_never_hides_the_finding_coming_back(self):
+        """Codex P1: the title filter dropped the re-raised finding of an undone fix."""
+        fixed = {"id": 3, "author": {"id": 42},
+                 "body": rc.appeal_reply_body("accept", "已改", "m", fixed=True)}
+        legacy = {"id": 3, "author": {"id": 42}, "body": f"ok {rc.APPEAL_ACCEPT}"}
+        reason = {"id": 3, "author": {"id": 42}, "body": rc.appeal_reply_body("accept", "ok", "m")}
+        found = [{"file": "a.py", "line": 3, "title": "x"}]
+        self.assertEqual(rc.not_yet_raised(found, [self.thread(fixed)], 42), found)
+        self.assertEqual(rc.not_yet_raised(found, [self.thread(legacy)], 42), found)
+        self.assertEqual(rc.not_yet_raised(found, [self.thread(reason)], 42), [])
+
+    def test_fixed_verdicts_are_read_from_the_engine(self):
+        result = {"verdicts": [{"id": "a", "verdict": "accept", "reason": "r", "fixed": True},
+                               {"id": "b", "verdict": "accept", "reason": "r"},
+                               {"id": "c", "verdict": "reject", "reason": "r", "fixed": True}]}
+        self.assertEqual(rc.fixed_verdicts(result, ["a", "b", "c"]), {"a": True})
+
+    def test_label_and_verdict_come_from_the_same_entry(self):
+        """Codex P1: a malformed duplicate lent its fixed=false to the valid accept."""
+        result = {"verdicts": [{"id": "a", "verdict": "accept", "reason": "", "fixed": False},
+                               {"id": "a", "verdict": "accept", "reason": "已修正"}]}
+        self.assertEqual(rc.valid_verdicts(result, ["a"]), {"a": ("accept", "已修正")})
+        self.assertEqual(rc.fixed_verdicts(result, ["a"]), {})
+
+    def test_an_unlabelled_accept_is_unknown_not_a_reason(self):
+        """Codex P1: a missing label read as a reason let an undone fix be skipped."""
+        result = {"verdicts": [{"id": "a", "verdict": "accept", "reason": "r"},
+                               {"id": "b", "verdict": "accept", "reason": "r", "fixed": "yes"},
+                               {"id": "c", "verdict": "accept", "reason": "r", "fixed": False}]}
+        kinds = rc.fixed_verdicts(result, ["a", "b", "c"])
+        self.assertEqual(kinds, {"c": False})
+        unlabelled = {"id": 3, "author": {"id": 42},
+                      "body": rc.appeal_reply_body("accept", "r", "m", fixed=kinds.get("a"))}
+        self.assertEqual(rc.already_raised([self.thread(unlabelled)], 42)[0]["settled_as"],
+                         "unknown")
+
+
 class TestOpenThreads(unittest.TestCase):
     """What is still open by our rules, so GitLab and Slack can point straight at it."""
     AI = "🟡 **Low** · 測試驗的是死碼\n\n" + rc.SIGNATURE_MARKER
@@ -656,7 +722,8 @@ class TestAlreadyRaised(unittest.TestCase):
         accept = {"id": 9, "author": {"id": 42}, "body": rc.appeal_reply_body("accept", "ok", "m")}
         answered["notes"].append(accept)
         self.assertEqual(rc.already_raised([answered], 42), [{
-            "file": "a.py", "line": 3, "status": "closed", "finding": self.AI,
+            "file": "a.py", "line": 3, "status": "closed", "settled_as": "reason",
+            "finding": self.AI,
             "replies": [{"role": "developer", "body": "後端之後會上線"},
                         {"role": "ai", "body": accept["body"]}]}])
 

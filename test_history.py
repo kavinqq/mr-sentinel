@@ -227,6 +227,15 @@ class TestStoreMr(DbCase):
         self.assertEqual(files, ["a.py"])                         # lock file is noise
         self.assertEqual(self.conn.execute("SELECT reviewed FROM mrs").fetchone()[0], 1)
 
+    def test_a_confirmed_fix_is_a_real_finding_not_an_accepted_appeal(self):
+        """Codex: recorded as "accept", a fixed high finding dropped out of scoring."""
+        fixed = rc.appeal_reply_body("accept", "已改", "m", fixed=True)
+        ds = [{"id": "d1", "notes": [note(1, ME, ai_body("high", "leak", "security"),
+                                          position={"new_path": "a.py", "new_line": 3}),
+                                     note(2, DEV, "已修正"), note(3, ME, fixed)]}]
+        self.store(ds, files=["a.py"])
+        self.assertEqual(self.finding(1)["appeal_verdict"], "fixed")
+
     def test_deleted_comments_are_kept_as_absent(self):
         ds = [{"id": "d1", "notes": [note(1, ME, ai_body())]},
               {"id": "d2", "notes": [note(2, ME, ai_body())]}]

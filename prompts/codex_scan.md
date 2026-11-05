@@ -11,7 +11,9 @@ You are reviewing a GitLab merge request.
    posted and someone answered (the developer's replies and our verdicts are
    included). Do NOT report any of those again, however you would word it —
    the same defect in the same code is settled there. Report one only if the
-   code has since changed so that a genuinely different defect now exists.
+   code has since changed so that a genuinely different defect now exists — or
+   if its `settled_as` is "fixed" or "unknown" and the defect is present in the
+   code again (a later push may have undone a fix).
 2. Go through every diff hunk looking for REAL defects, in priority order:
    correctness bugs → security (authz/IDOR/injection/PII leaks) → data loss →
    race conditions → and only then maintainability. Inspect files under

@@ -34,7 +34,12 @@ findings in light of the reply.
 ## Output
 Write exactly this JSON to `./__OUTPUT_FILE__`, one verdict per appeal id:
 
-{"verdicts": [{"id": "<appeal id>", "verdict": "accept" | "reject", "reason": "..."}]}
+{"verdicts": [{"id": "<appeal id>", "verdict": "accept" | "reject", "fixed": true | false, "reason": "..."}]}
+
+`fixed`: true only when you accept because the checkout shows the code was changed
+so the failure no longer happens; false when you accept an argument, a decision or
+a trade-off about the code as it is. A fix can be undone by a later push, so later
+reviews treat the two differently.
 
 `reason`: 1-3 sentences in __LANGUAGE__, addressed to the developer. When
 accepting, say briefly what convinced you. When rejecting, name the exact

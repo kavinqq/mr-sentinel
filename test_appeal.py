@@ -185,7 +185,7 @@ class TestRunAppeal(unittest.TestCase):
         self.assertEqual(h.merge.call_args.kwargs["reviewed_sha"], "h1")
         self.assertIsNone(h.said[-1][1])                      # nothing open -> no buttons
 
-    ACCEPT = [{"id": "d1", "verdict": "accept", "reason": "ok"}]
+    ACCEPT = [{"id": "d1", "verdict": "accept", "fixed": False, "reason": "ok"}]
     LITE = {"mode": "lite", "head_sha": "h1"}
 
     def test_all_accepted_after_lite_review_merges_only_once_a_deep_pass_is_clean(self):
@@ -315,6 +315,13 @@ class TestRunAppeal(unittest.TestCase):
             h.run()
         self.assertIn("#note_11|", h.said[-1][0])
         self.assertNotIn("已標成未解決", h.said[-1][0])
+
+    def test_an_accept_on_a_fix_is_recorded_as_a_fix(self):
+        """A fix can be undone later; an accepted reason cannot — later reviews differ."""
+        h = Harness([disputed("d1")], [{"id": "d1", "verdict": "accept", "fixed": True,
+                                        "reason": "a.py:3 已改"}]).run()
+        self.assertIn("已確認修正", h.replies[0][1])
+        self.assertIn(rc.APPEAL_FIXED, h.replies[0][1])
 
     def test_stalemate_offers_the_admin_override(self):
         h = Harness([disputed("d1")], [{"id": "d1", "verdict": "reject", "reason": "仍會 None"}]).run()

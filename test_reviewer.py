@@ -657,6 +657,77 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
             rc = reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
         return rc, m, reviewer.read_review_meta(Path(d.name) / "100")
 
+    def test_the_gate_is_told_what_was_already_settled(self):
+        """!60: same code, 7 → 8 → 12 gate comments, answered ones coming back reworded."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["gitlab_client"].list_discussions.return_value = [{"id": "d1", "notes": [
+            {"id": 1, "author": {"id": 7}, "body": "🟠 [Medium] x\n\n" + rc.SIGNATURE_MARKER,
+             "position": {"new_path": "a.py", "new_line": 3}},
+            {"id": 2, "author": {"id": 99}, "body": "不用修"}]}]
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        gate_ctx = reviewer.final_gates.run.call_args.args[2]
+        self.assertEqual([r["file"] for r in gate_ctx["already_raised"]], ["a.py"])
+
+    def test_a_failed_review_never_leaves_the_status_green(self):
+        """Codex P2: a clean gate set success, and the failed review returned early."""
+        _, m, _ = self.review(None, outcome())
+        self.assertEqual(self.statuses(m)[-1], "failed")
+
+    def test_a_status_that_cannot_be_rechecked_stays_failed(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        with mock.patch.object(reviewer, "_release_blocker", side_effect=RuntimeError("502")), \
+             mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        self.assertEqual(self.statuses(m)[-1], "failed")
+
+    def test_merge_check_findings_that_do_not_all_post_turn_the_status_red(self):
+        """Codex P2: posted after the status recheck, so nothing set it back."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        bug = {"severity": "high", "title": "CI 失敗", "file": None, "line": None}
+        m["try_auto_merge"].return_value = (False, None, [], [bug])
+        m["post_comment"].post_findings.side_effect = lambda *a, **k: 0
+        cfg = {**self.CFG, "review": {**self.CFG.get("review", {}), "auto_merge_on_clean": True}}
+        with mock.patch.object(reviewer, "_release_blocker", return_value=None), \
+             mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, cfg, {}, False)
+        m["try_auto_merge"].assert_called_once()
+        self.assertEqual(self.statuses(m)[-1], "failed")
+
+    def test_any_blocker_found_on_the_recheck_keeps_the_status_red(self):
+        """Codex P2: only open comments did; an unreadable diff left it green."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        with mock.patch.object(reviewer, "_release_blocker",
+                               return_value="test-marker rule could not read the diff"), \
+             mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        self.assertEqual(self.statuses(m)[-1], "failed")
+
+    def test_a_quiet_rerun_turns_the_status_red_while_a_comment_is_open(self):
+        """Codex P2: the run's own clean verdict set success; nothing set it back."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        with mock.patch.object(reviewer, "_release_blocker",
+                               return_value=f"{reviewer.OPEN_COMMENTS}1"), \
+             mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        self.assertEqual(self.statuses(m)[-1], "failed")
+
+
     def test_rule_hit_is_posted_even_when_ai_says_clean(self):
         rc, m, meta = self.review({"findings": []}, outcome(rule=[GATE_HIT]))
         self.assertEqual(rc, 0)
@@ -904,11 +975,15 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
     PASSED = {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 0}
 
     def _merge(self, changes, guard_meta, cfg=None, hits=(), threads=(), override=None,
-               reviewed_target=None):
+               reviewed_target=None, probe=None):
+        def blocker(*a):
+            verdict = REAL_RELEASE_BLOCKER(*a)
+            if probe is not None:
+                probe.append(verdict)
+            return verdict
         with tempfile.TemporaryDirectory() as d, \
              mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
-             mock.patch.object(reviewer, "_release_blocker",
-                               side_effect=lambda *a: REAL_RELEASE_BLOCKER(*a)), \
+             mock.patch.object(reviewer, "_release_blocker", side_effect=blocker), \
              mock.patch.object(reviewer.artifact_gate, "collect", return_value=changes), \
              mock.patch.object(reviewer.artifact_gate, "exempt_test_files", return_value=set()), \
              mock.patch.object(reviewer.artifact_gate, "scan", return_value=list(hits)), \
@@ -1002,6 +1077,15 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
         gl = self._merge([], {**self.PASSED, "leaks": 1}, threads=[release_thread("h", closed=True)])
         gl.merge_mr.assert_called_once()
 
+    def test_an_open_comment_for_this_head_holds_even_when_the_rerun_found_nothing(self):
+        """Codex P2: a quiet rerun used to turn the status green with a comment open.
+        Checked on the release rail itself: the merge has a second, broader check."""
+        verdicts = []
+        gl = self._merge([], {**self.PASSED, "leaks": 0}, threads=[release_thread("h")],
+                         probe=verdicts)
+        gl.merge_mr.assert_not_called()
+        self.assertTrue(verdicts[0].startswith(reviewer.OPEN_COMMENTS), verdicts)
+
     def test_an_open_release_comment_holds_it(self):
         gl = self._merge([], {**self.PASSED, "leaks": 1}, threads=[release_thread("h")])
         gl.merge_mr.assert_not_called()
@@ -1059,6 +1143,39 @@ def release_thread(head, closed=False, resolver=7):
 MR_HEAD = {"id": 100, "iid": 10, "sha": "h", "target_branch": "master",
            "detailed_merge_status": "mergeable",
            "head_pipeline": {"status": "failed", "web_url": "http://gl/p/1"}}
+
+
+class TestSyncAfterAnUnfinishedReview(unittest.TestCase):
+    def test_a_merge_retry_never_turns_an_unfinished_review_green(self):
+        """Codex P2: merge_retry's sync set success back over the failed review."""
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "_release_blocker", return_value=None), \
+             mock.patch.object(reviewer, "gitlab_client") as gl:
+            gl.list_commit_statuses.return_value = [
+                {"name": reviewer.final_gates.STATUS_NAME, "status": "failed"}]
+            (Path(d) / "100").mkdir()
+            reviewer.write_review_meta(Path(d) / "100", reviewer.UNFINISHED_MODE, "h", 0,
+                                       {"head_sha": "h", "target_branch": "master", "ok": True,
+                                        "leaks": 0}, "master")
+            reviewer.sync_release_status({}, "http://gl", "t", "g/p", MR_HEAD)
+        gl.set_commit_status.assert_not_called()
+
+
+class TestUnfinishedBlocksTheRelease(unittest.TestCase):
+    def test_a_review_recorded_unfinished_is_a_release_blocker(self):
+        """Codex P2: comments that did not all post left the status green."""
+        cfg = {"review": {"release_guard": {"test_hosts": ["uat.example"]}}}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "gitlab_client") as gl:
+            gl.get_project.return_value = {"default_branch": "master"}
+            (Path(d) / "100").mkdir()
+            reviewer.write_review_meta(Path(d) / "100", reviewer.UNFINISHED_MODE, "h", 0,
+                                       {"head_sha": "h", "target_branch": "master", "ok": True,
+                                        "leaks": 0}, "master")
+            self.assertEqual(REAL_RELEASE_BLOCKER(cfg, "http://gl", "t", "g/p", MR_HEAD),
+                             reviewer.UNFINISHED)
 
 
 class TestBlockedMergeMessage(unittest.TestCase):

@@ -67,7 +67,8 @@ def _override_threads(base: str, token: str, project: str, iid, name: str) -> li
         try:
             if state != "accepted":
                 gitlab_client.reply_discussion(base, token, project, iid, did,
-                    f"✅ **{name} 裁定放行**,這則不用改。\n\n{review_common.APPEAL_ACCEPT}")
+                    f"✅ **{name} 裁定放行**,這則不用改。\n\n{review_common.APPEAL_ACCEPT}\n"
+                    f"{review_common.APPEAL_REASON}")
             gitlab_client.resolve_discussion(base, token, project, iid, did)
             lines.append(f"- {title}(原本:{STATE_WORDS.get(state, state)})")
         except Exception:

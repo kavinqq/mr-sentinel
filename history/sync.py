@@ -26,6 +26,8 @@ def appeal_verdict(discussion: dict, user_id) -> str | None:
         if (note.get("author") or {}).get("id") != user_id:
             continue
         body = note.get("body") or ""
+        if review_common.APPEAL_FIXED in body:
+            return "fixed"                # the finding was real: it keeps counting
         if review_common.APPEAL_ACCEPT in body:
             return "accept"
         if review_common.APPEAL_REJECT in body:

@@ -16,6 +16,7 @@ is safe, REPORT it as `unsure`.
   - `test_hosts`: hosts, domains and IP prefixes this team uses for test / UAT /
     development. Any of them in shipped code is a strong signal.
   - `environment_notes`: the team's own words on how environments are told apart.
+  - `already_raised`: findings already settled with the developer (see "Already settled").
   - `batch`: a large change is split into batches; you see batch `index` of `total`.
   - `files`: the files in THIS batch. `changes`: their diffs — every added line of
     these files is here. `all_changed_files`: the whole MR, for context only.
@@ -23,6 +24,18 @@ is safe, REPORT it as `unsure`.
     `why`, `test_path`). Hints only — you must still read every added line.
 - The change's source is checked out (read-only) at: `__WORKTREE__`
 - Write your result to `./__OUTPUT_FILE__`. Writing or modifying ANY other file is forbidden.
+
+## Already settled
+`already_raised` lists findings an earlier review of this MR posted on these files
+and that were closed, with `settled_as`:
+- `"reason"` — accepted on an argument, or an admin ruling, about the code as it is.
+  Do NOT report it again, however you would word it, unless the code it points at
+  has changed so that a different problem exists.
+- `"fixed"` — closed because the code was fixed. If the problem it describes is
+  present in the code you see now, the fix was undone: report it again.
+- `"unknown"` — closed before the reason was recorded: treat it like `"fixed"`.
+This list excuses nothing else: keep reporting everything new you notice, `unsure`
+included.
 
 ## What counts as a test leak (report these)
 1. Test-only features: buttons, pages, routes, menu items, API endpoints, admin

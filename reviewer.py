@@ -302,6 +302,8 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
     problem = release_guard.config_problem(review_cfg.get("release_guard", {}))
     if problem:
         return problem
+    if read_review_meta(REVIEWS_DIR / str(mr.get("id"))).get("mode") == UNFINISHED_MODE:
+        return UNFINISHED                  # failed, partly posted, or being redone
     local = review_common.resolve_local_path(project_path, review_cfg)
     try:
         api = gitlab_client.get_mr_changes(base, token, project_path, mr["iid"]).get("changes") or []
@@ -326,8 +328,9 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
         return NOT_REVIEWED
     if not guard.get("ok"):
         return UNFINISHED
-    if not guard.get("leaks"):
-        return None
+    # comments posted for this head — by this run or an earlier one — must all be
+    # closed, even when this run found nothing: a rerun that stays quiet about an
+    # open one does not answer it
     me = gitlab_client.get_current_user(base, token)["id"]
     states = [review_common.discussion_status(d, me)
               for d in gitlab_client.list_discussions(base, token, project_path, mr["iid"])
@@ -335,7 +338,7 @@ def _release_blocker(config: dict, base: str, token: str, project_path: str,
     open_count = sum(state != "closed" for state in states)
     if open_count:
         return f"{OPEN_COMMENTS}{open_count}"
-    if len(states) < guard["leaks"]:
+    if len(states) < guard.get("leaks", 0):
         # a comment that never reached GitLab cannot be answered there
         return NOT_REVIEWED
     return None
@@ -376,8 +379,9 @@ def sync_release_status(config: dict, base: str, token: str, project_path: str,
     Runs _release_blocker itself unless the caller just did (`cleared`). Only a
     failed status of ours on a gated head is touched, never raised: the caller
     re-checks the pipeline anyway, and a red one simply stays a blocker."""
-    if not _same_change(read_review_meta(REVIEWS_DIR / str(mr.get("id"))).get("guard"), mr):
-        return mr
+    meta = read_review_meta(REVIEWS_DIR / str(mr.get("id")))
+    if not _same_change(meta.get("guard"), mr) or meta.get("mode") == UNFINISHED_MODE:
+        return mr                 # an unfinished review never turns the status green
     try:
         if not cleared and _release_blocker(config, base, token, project_path, mr) is not None:
             return mr
@@ -761,8 +765,8 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         # a rerun keeps the threads someone answered: never raise one of those again,
         # and decide on a deep confirmation from what is actually new
         answered = gitlab_client.list_discussions(base, token, project_path, iid)
-        fetch_mr.write_context(ctx_path, {
-            **ctx, "already_raised": review_common.already_raised(answered, me["id"])})
+        settled = review_common.already_raised(answered, me["id"])
+        fetch_mr.write_context(ctx_path, {**ctx, "already_raised": settled})
         if out_path.exists():
             out_path.unlink()
 
@@ -796,7 +800,10 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
 
         # 6b. the final gates run whatever the review said: they are the last check
         #     before release, so a failed review must not skip them
-        outcome = (final_gates.run(engine, work, ctx, local, wt, review_cfg) if gated
+        # the gate re-reads the whole MR every time (nothing chains, nothing is missed),
+        # but what was settled with the developer stays settled unless that code changed
+        outcome = (final_gates.run(engine, work, {**ctx, "already_raised": settled}, local, wt,
+                                   review_cfg) if gated
                    else final_gates.NOT_APPLICABLE)
         gate_findings = review_common.not_yet_raised(outcome.findings, answered, me["id"],
                                                      head=head_sha)
@@ -809,6 +816,10 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             posted = _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
             write_review_meta(work, UNFINISHED_MODE, head_sha, len(gate_findings), guard_record,
                               ctx.get("target_branch"))
+            if gated:
+                # a clean gate does not make an unfinished review a passed one
+                _set_status(config, project_path, head_sha, ref, web_url, "failed",
+                            "review 沒跑完,請重審")
             _slack_say(config, f":warning: `{project_path}` MR !{iid}: review 沒跑完 — "
                                f"按「🔁 再試一次」"
                                + (f";已經發出的 {posted} 則留言如果不用改,回覆理由後按"
@@ -836,14 +847,25 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         # a finding that never reached GitLab cannot hold the merge as a comment
         write_review_meta(work, mode if posted == len(findings) else UNFINISHED_MODE, head_sha,
                           len(findings), guard_record, ctx.get("target_branch"))
-        if len(gate_findings) < len(outcome.findings):
-            # some gate findings were already answered for this head: the status
-            # final_gates just set counts them as open, re-check it against GitLab
+        if gated:
+            # the status final_gates just set knows only this run's findings: comments
+            # posted for this head earlier (answered, or still open) decide it — an
+            # open one turns it red again, since a quiet rerun does not answer it
             try:
-                sync_release_status(config, base, token, project_path,
-                                    gitlab_client.get_mr(base, token, project_path, iid))
+                mr_now = gitlab_client.get_mr(base, token, project_path, iid)
+                blocker = _release_blocker(config, base, token, project_path, mr_now)
+                if blocker:
+                    # anything still holding it — an open comment, a check that could
+                    # not complete — keeps the status red, whatever this run found
+                    _set_status(config, project_path, head_sha, ref, web_url, "failed",
+                                blocker_text(blocker)[0])
+                else:
+                    sync_release_status(config, base, token, project_path, mr_now, cleared=True)
             except Exception:
+                # unknown is not passed: keep the gate closed until a rerun can tell
                 log.exception("release status re-check for MR !%s failed", iid)
+                _set_status(config, project_path, head_sha, ref, web_url, "failed",
+                            "review 留言狀態查不到,請重審")
         merged, merge_report, merge_buttons = False, None, []
         try:
             if auto_merge and outcome.passed and review_common.auto_merge_eligible(mode, result):
@@ -858,6 +880,10 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                     write_review_meta(work, mode if posted == len(findings) else UNFINISHED_MODE,
                                       head_sha, len(findings), guard_record,
                                       ctx.get("target_branch"))
+                    if gated and posted < len(findings):
+                        # the status was rechecked before these were posted
+                        _set_status(config, project_path, head_sha, ref, web_url, "failed",
+                                    "review 留言沒有全部發出,請重審")
         except Exception:
             log.exception("auto-merge step of MR !%s crashed", iid)
 

@@ -40,6 +40,14 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   test-marker rule is re-run at merge: a hit this head's review posted is a
   comment like any other (appeal / ✅, owner's call 2026-10-22 after a comment
   merely mentioning 測試用 blocked !66); a hit it never posted holds on its own.
+  Settled findings stay settled (owner's call, 2026-11-05, after !60's gate gave 7,
+  8, then 12 comments on one commit): every review — the gate included — still
+  reads the whole MR, but gets `already_raised` and must not raise those again
+  unless their code changed. The gate gets the finding and its state only, never a
+  developer's reply (text they control). A rejected or self-resolved comment is
+  reopened on GitLab so its unresolved-thread count shows what is left. An
+  incremental "review only what changed" design was tried and dropped: chaining
+  rounds kept missing reverted fixes, races and failed rounds (two Codex passes).
 
 - Schedulers (launchd/cron) run with a **minimal PATH**: plists must use absolute
   interpreter paths, and external CLIs are resolved via `engines.resolve_cli()`.

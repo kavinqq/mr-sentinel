@@ -187,6 +187,16 @@ def build_batches(ctx: dict, changes: list[dict], guard_cfg: dict,
         return None
 
     hosts = guard_cfg.get("test_hosts") or []
+    settled = ctx.get("already_raised") or []
+
+    def settled_for(files: set) -> list[dict]:
+        # closed ones only — an open one is still the gate's to report, or its status
+        # would go green with the comment open. The finding and how it was settled,
+        # never a developer's reply: text they control, at the last check before release
+        return [{k: r.get(k) for k in ("file", "line", "finding", "settled_as")}
+                for r in settled if r.get("status") == "closed"
+                and (r.get("file") in files or not r.get("file"))]
+
     return [{
         "project": ctx.get("project"), "iid": ctx.get("iid"),
         "title": ctx.get("title"), "description": ctx.get("description"),
@@ -197,6 +207,7 @@ def build_batches(ctx: dict, changes: list[dict], guard_cfg: dict,
         "files": sorted({p["new_path"] for p in group}),
         "all_changed_files": [c.get("new_path") for c in changes],
         "candidates": candidates(group, hosts),
+        "already_raised": settled_for({p["new_path"] for p in group}),
         "changes": group,
     } for i, group in enumerate(groups)]
 

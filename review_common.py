@@ -295,6 +295,12 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
 APPEAL_ACCEPT = "<!-- mr-sentinel:appeal=accept -->"
 APPEAL_REJECT = "<!-- mr-sentinel:appeal=reject -->"
 APPEAL_SIGNATURE = "— ⚖️ mr-sentinel appeal"
+# an accept because the code was fixed, not because a reason was: the finding was
+# real (history keeps scoring it), and a later push may undo the fix
+APPEAL_FIXED = "<!-- mr-sentinel:appeal=fixed -->"
+# an accept on an argument or an admin ruling about the code as it is. Accepts from
+# before either marker existed say neither: they are "unknown" (settled_as)
+APPEAL_REASON = "<!-- mr-sentinel:appeal=reason -->"
 # the MR version (head + target, mr_version) a verdict was given on: a reject on
 # another version may have been fixed since, as asked, without a reply
 JUDGED_ON_MARKER = "<!-- mr-sentinel:judged-on={} -->"
@@ -414,6 +420,8 @@ def not_yet_raised(findings: list, discussions: list[dict], user_id, head: str |
             continue
         if head is not None and gate_head(discussion) != head:
             continue
+        if settled_as(discussion, user_id) in ("fixed", "unknown"):
+            continue          # raised again = the fix was undone; it must get through
         first = _human_notes(discussion)[0]
         raised.append(((first.get("position") or {}).get("new_path"), first.get("body") or ""))
 
@@ -440,6 +448,7 @@ def already_raised(discussions: list[dict], user_id) -> list[dict]:
             "file": position.get("new_path"),
             "line": position.get("new_line"),
             "status": status,
+            "settled_as": settled_as(discussion, user_id),
             "finding": first.get("body") or "",
             "replies": [{"role": "ai" if is_bot_note(n, user_id) else "developer",
                          "body": n.get("body") or ""} for n in replies],
@@ -457,27 +466,68 @@ def unresolved_accepts(discussions: list[dict], user_id) -> list[str]:
 def valid_verdicts(result: dict, appeal_ids) -> dict:
     """Engine output -> {id: (verdict, reason)}; anything malformed is dropped,
     so a thread the model failed to judge simply stays open."""
-    out = {}
+    return {str(v["id"]): (v["verdict"], v["reason"].strip())
+            for v in _valid_verdict_entries(result, appeal_ids)}
+
+
+def _valid_verdict_entries(result: dict, appeal_ids) -> list[dict]:
+    """Well-formed verdict entries in order; a later one for the same id wins, in
+    valid_verdicts and fixed_verdicts alike, so both read the same entry."""
     wanted = set(appeal_ids)
-    for v in (result or {}).get("verdicts") or []:
-        if not isinstance(v, dict):
-            continue
-        vid, verdict, reason = str(v.get("id")), v.get("verdict"), v.get("reason")
-        if vid in wanted and verdict in ("accept", "reject") and isinstance(reason, str) \
-                and reason.strip():
-            out[vid] = (verdict, reason.strip())
-    return out
+    return [v for v in (result or {}).get("verdicts") or []
+            if isinstance(v, dict) and str(v.get("id")) in wanted
+            and v.get("verdict") in ("accept", "reject")
+            and isinstance(v.get("reason"), str) and v["reason"].strip()]
 
 
 def appeal_reply_body(verdict: str, reason: str, engine_label: str,
-                      judged_on: str | None = None) -> str:
-    if verdict == "accept":
+                      judged_on: str | None = None, fixed: bool | None = False) -> str:
+    """`fixed` (fixed_verdicts): True = the checkout shows the code fixed, False = a
+    reason accepted, None = the engine did not say — recorded as neither, "unknown"."""
+    if verdict == "accept" and fixed:
+        head, marker = "✅ **已確認修正**", f"{APPEAL_ACCEPT}\n{APPEAL_FIXED}"
+    elif verdict == "accept" and fixed is None:
         head, marker = "✅ **理由成立**,這則就不用修了。", APPEAL_ACCEPT
+    elif verdict == "accept":
+        head, marker = "✅ **理由成立**,這則就不用修了。", f"{APPEAL_ACCEPT}\n{APPEAL_REASON}"
     else:
         head, marker = "⚠️ **仍建議修正**", APPEAL_REJECT
     if judged_on:
         marker += "\n" + JUDGED_ON_MARKER.format(judged_on)
     return f"{head}\n\n{reason}\n\n{APPEAL_SIGNATURE} ({engine_label})\n{marker}"
+
+
+def fixed_verdicts(result: dict, appeal_ids) -> dict[str, bool]:
+    """{id: fixed} for accepts the engine labelled with a real boolean: True = the code
+    is fixed, False = a reason about the code as it is. A missing or malformed label
+    is left out — unknown, which later reviews treat like a fix (settled_as)."""
+    kinds = {}
+    for v in _valid_verdict_entries(result, appeal_ids):     # the entries valid_verdicts keeps
+        if v["verdict"] == "accept" and isinstance(v.get("fixed"), bool):
+            kinds[str(v["id"])] = v["fixed"]
+        else:
+            kinds.pop(str(v["id"]), None)
+    return kinds
+
+
+def settled_as(discussion: dict, user_id) -> str | None:
+    """How our latest verdict settled the thread: "fixed" (the code changed — a later
+    push can undo it), "reason" (an argument or an admin ruling about the code as it
+    is), "unknown" (an accept from before the markers: treated like "fixed", since
+    it may have been one), or None."""
+    for note in reversed(_human_notes(discussion)):
+        if not is_bot_note(note, user_id):
+            continue
+        body = note.get("body") or ""
+        if APPEAL_FIXED in body:
+            return "fixed"
+        if APPEAL_REASON in body:
+            return "reason"
+        if APPEAL_ACCEPT in body:
+            return "unknown"
+        if APPEAL_REJECT in body:
+            return None
+    return None
 
 
 def appeal_summary_text(project: str, iid, web_url, judged: dict, counts_after: Counter,

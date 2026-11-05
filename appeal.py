@@ -102,8 +102,9 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
             say(f":warning: `{project}` !{iid}: 申訴判斷沒跑完,可以再按一次",
                 None if review_after else _buttons(project, iid))
             return 1
-        verdicts = review_common.valid_verdicts(json.loads(out_path.read_text()),
-                                                [a["id"] for a in appeals])
+        engine_result = json.loads(out_path.read_text())
+        verdicts = review_common.valid_verdicts(engine_result, [a["id"] for a in appeals])
+        fixed = review_common.fixed_verdicts(engine_result, [a["id"] for a in appeals])
 
         # the model ran for minutes: a thread that got another reply meanwhile is
         # judged on stale input, so leave it for the next press
@@ -118,8 +119,10 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
         label = appeal_label(review_cfg)
         for discussion_id, (verdict, reason) in verdicts.items():
             gitlab_client.reply_discussion(base, token, project, iid, discussion_id,
-                                           review_common.appeal_reply_body(verdict, reason, label,
-                                                                           judged_on=review_common.mr_version(mr)))
+                                           review_common.appeal_reply_body(
+                                               verdict, reason, label,
+                                               judged_on=review_common.mr_version(mr),
+                                               fixed=fixed.get(discussion_id)))
             if verdict == "accept":
                 _resolve(base, token, project, iid, discussion_id)
         # a reject on a thread the developer had resolved must show open again
