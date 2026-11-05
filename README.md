@@ -129,11 +129,11 @@ messages carry buttons, so the common case needs no typing at all:
 
 | Message | Buttons |
 |---|---|
-| AI Review 完成 | 🔁 修好了，重審 (depth picked by MR size; type `rerun !N deep` to force deep) · 💬 已留言,我覺得不用修 · ✅ 已人工確認,放行合併 (admin; the last two only when comments were posted) |
-| 申訴結果 (findings still open) | 🔁 修好了，重審 · 💬 已留言,我覺得不用修 · ✅ 已人工確認,放行合併 (admin) |
+| AI Review 完成 | with comments posted: 🔁 已修正或已回覆,重新檢查 · ✅ 已人工確認,放行合併 (admin); without: 🔁 重審 (depth picked by MR size; type `rerun !N deep` to force deep) |
+| 申訴結果 (findings still open) | 🔁 已修正或已回覆,重新檢查 · ✅ 已人工確認,放行合併 (admin) |
 | review did not finish | 🔁 再試一次 |
 | auto-merge blocked by new commits | 🔁 重審最新 commit |
-| auto-merge blocked otherwise (*原因* / *下一步* in plain words, each failed CI job listed) | 🔀 重新合併 · 🔁 重審 (when the latest commit was not fully reviewed) · 💬 / ✅ (when review comments are still open) |
+| auto-merge blocked otherwise (*原因* / *下一步* in plain words, each failed CI job listed) | 🔀 重新合併 · 🔁 重審 (when the latest commit was not fully reviewed) · 🔁 重新檢查 / ✅ (when review comments are still open) |
 
 A click is turned back into the typed command (`rerun g/app!481 deep`) and goes
 through the same permission check and hourly rerun budget. A permission refusal
@@ -142,12 +142,40 @@ answered in the thread exactly like the typed command. Once it runs, the buttons
 "♻️ @who 已觸發重審", so a message can only be pressed once. Typed commands keep
 working, and arrive instantly over the same socket.
 
-**💬 已留言,我覺得不用修 (appeal).** Reply under an AI comment on GitLab with
-why it needs no fix, then press the button (or `@bot appeal !N`). The AI reads
-every thread where someone replied after its last word, checks the argument
-against the code, and answers in that thread: ✅ accepted → the thread is
-resolved; ⚠️ rejected → the reason, thread stays open (reply again and press
-again). Unclear cases are accepted — the developer has context the model lacks.
+**🔁 已修正或已回覆,重新檢查 (appeal).** One button for a developer done with
+the AI comments: fixed ones pushed (no reply needed), the rest answered on GitLab
+with why they need no fix. Telling the two apart is ours, not the developer's —
+two buttons for it were pressed the wrong way round. `@bot appeal !N` does the
+same. Every case (`test_slack_bot.TestCheckButtonScenarios`, h1 = reviewed head):
+
+| # | What the developer did | What happens | Passes when |
+|---|---|---|---|
+| 1 | fixed, pushed, no reply | old comment deleted, re-review on the new code | the re-review no longer finds it |
+| 2 | fixed, pushed, replied 已修正 | reply judged against the new code, then re-review | AI confirms the fix |
+| 3 | fixed some + answered others, pushed | replies judged, unanswered deleted, re-review | both of the above |
+| 4 | AI rejected, then fixed as asked, no reply | the reject is judged again on the new code, then re-review | AI sees the failure gone |
+| 5 | no review on record | treated as changed code: re-review | as 1 |
+| 6 | answered, nothing pushed | replies judged only — no re-review of unchanged code (once all close, a lite review still gets its one deep confirmation before merging) | AI accepts the reason |
+| 7 | reject from an older version (commit or target), review already moved on | the reject is judged again (verdicts record head + target) | as 4 |
+| 8 | AI rejected on this head, nothing new | told to reply or push; no quota spent | — (reply, fix, or admin ✅) |
+| 9 | pressed before doing anything | told both ways (push the fix / reply with a reason) | — |
+| 10 | resolved it themselves, no reply, no push | still open; told the same | — (a self-resolve closes nothing) |
+| 11 | everything closed, not merged | merge check (🔀 rules), no quota | every merge rail passes |
+| 12 | an accept GitLab refused to resolve | resolve retried, no quota | GitLab accepts it |
+| 13 | MR merged or closed | says so | — |
+| 14 | last review did not finish, or a finding failed to post | re-review (such a review is recorded `unfinished`, and nothing merges on it) | as 1 |
+| 15 | MR retargeted, same commit (or no target on record: a review from before it was recorded) | re-review, rejects re-judged; a merge on a review for another — or an unknown — target is refused on every path | as 1 |
+| 16 | a rerun could not clear the old comments (history write or delete failed) | remembered in `bot_state`; the next press re-reviews and retries the cleanup | as 1 |
+| 17 | quota used up | merge check, resolve retry and the how-to still work; only a model run is refused | — |
+| 18 | pressed while a review or judgement runs | told to wait; no quota spent | — |
+| 19 | edited the old reply instead of adding one | not seen as new; the how-to says to add a reply | — |
+| 20 | a merge is pressed while a re-review is resetting or running, or the re-review dies early | the old verdict is voided before its comments are deleted and again when the review starts, so nothing merges on it | the new review finishes |
+| 21 | the model's output has no findings list | a failed review (`unfinished`), never a clean one | as 14 |
+
+The AI checks each argument against the code and answers in that thread: ✅
+accepted → the thread is resolved; ⚠️ rejected → the reason, thread stays open.
+Every verdict records the MR version it was given on (head commit and target
+branch), so a reject is re-judged once either changes. Unclear cases are accepted — the developer has context the model lacks.
 Only a resolve by the bot account closes a comment: GitLab lets the MR author
 resolve and cannot restrict it, so a comment the developer resolved themselves
 still counts as unanswered (no reply) or waiting to be judged (with a reply), and
@@ -158,10 +186,9 @@ rails apply, pinned to the sha the last *deep* review covered (a lite review,
 or code pushed after the review, is never merged this way). Appeals share the
 hourly rerun budget.
 
-**Either button checks both sides.** Developers usually fix some comments and
-answer others, then press one button. 🔁 with replies waiting judges those replies
-first and then re-reviews; 💬 after new commits since the last review re-reviews
-after judging (or straight away if nobody replied). In that combined run the
+**🔁 重審 (rerun)** — offered only when a review did not finish or a comment could
+not be posted, and typed as `rerun !N` — re-reviews the same code too, and judges
+replies waiting (and rejects from an older head) first. In that combined run the
 verdicts go to GitLab plus one Slack line, and the review that follows reports
 and tries the merge (`appeal.py --review-after`). A clean re-review never merges
 while a comment from an earlier round is still open (an answer the appeal

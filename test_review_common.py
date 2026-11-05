@@ -485,6 +485,33 @@ class TestAppeals(unittest.TestCase):
         self.assertEqual(self.status(note(ME, AI_BODY, resolvable=True, resolved=True),
                                      note(DEV, "x", resolvable=True, resolved=False)), "appeal")
 
+    def test_a_reject_is_judged_again_once_the_version_moved(self):
+        """Fixed as asked without a reply: the judge looks at the new code — or at the
+        same commit aimed at another target branch."""
+        v1 = rc.mr_version({"sha": "h1", "target_branch": "master"})
+        reject = note(ME, rc.appeal_reply_body("reject", "still broken", "m", judged_on=v1))
+        threads = [thread(note(ME, AI_BODY), note(DEV, "x"), reject, did="r")]
+        self.assertEqual(rc.collect_appeals(threads, ME)[0], [])
+        self.assertEqual(rc.collect_appeals(threads, ME, version=v1)[0], [])
+        retargeted = rc.mr_version({"sha": "h1", "target_branch": "main"})
+        self.assertEqual(len(rc.collect_appeals(threads, ME, version=retargeted)[0]), 1)
+        [again], counts = rc.collect_appeals(threads, ME, version="h2:master")
+        self.assertEqual((again["id"], again["status"], again["thread"][-1]["role"]),
+                         ("r", "rejected", "ai"))
+        self.assertEqual(counts["rejected"], 1)
+
+    def test_a_reject_from_before_heads_were_recorded_is_judged_again(self):
+        reject = note(ME, rc.appeal_reply_body("reject", "still broken", "m"))
+        threads = [thread(note(ME, AI_BODY), note(DEV, "x"), reject, did="r")]
+        self.assertEqual(len(rc.collect_appeals(threads, ME, version="h1:master")[0]), 1)
+
+    def test_a_verdict_records_the_version_it_was_given_on(self):
+        version = rc.mr_version({"sha": "abc123", "target_branch": "release/1.2"})
+        body = rc.appeal_reply_body("accept", "ok", "m", judged_on=version)
+        self.assertEqual(rc.judged_on(body), "abc123:release/1.2")
+        self.assertIn(rc.APPEAL_ACCEPT, body)
+        self.assertIsNone(rc.judged_on(rc.appeal_reply_body("accept", "ok", "m")))
+
     def test_unresolved_accepts_lists_only_stuck_threads(self):
         accept = rc.appeal_reply_body("accept", "ok", "m")
         stuck = thread(note(ME, AI_BODY, resolvable=True), note(DEV, "x", resolvable=True),

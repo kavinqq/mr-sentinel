@@ -146,9 +146,8 @@ def run_merge(project: str, iid, mr_id, config: dict, state: dict,
     still_open = review_common.open_findings(counts)
     if still_open:
         say(f":warning: `{project}` !{iid} 還有 {still_open} 則 AI 留言沒處理完,不合併 — "
-            f"修好就按重審,不用修就回覆後按「{blocks.APPEAL_LABEL}」\n{web_url or ''}",
-            blocks.rerun_buttons(project, iid, label="🔁 修好了，重審")
-            + blocks.appeal_buttons(project, iid) + blocks.waive_buttons(project, iid))
+            f"照意見改好的 push 上去,不用改的回覆理由,再按「{blocks.CHECK_LABEL}」\n{web_url or ''}",
+            blocks.check_buttons(project, iid) + blocks.waive_buttons(project, iid))
         return 0
     if not config["review"].get("auto_merge_on_clean"):
         say(f":information_source: `{project}` !{iid}: 自動合併功能沒開,請 admin 開啟"
@@ -156,7 +155,8 @@ def run_merge(project: str, iid, mr_id, config: dict, state: dict,
         return 0
     meta = reviewer.read_review_meta(work)
     if meta.get("mode") != "deep" or not meta.get("head_sha"):
-        mode = {"lite": "快速審查(lite)"}.get(meta.get("mode"), meta.get("mode") or "未知的審查")
+        mode = {"lite": "快速審查(lite)", reviewer.UNFINISHED_MODE: "沒跑完(或留言沒發完)的審查"
+                }.get(meta.get("mode"), meta.get("mode") or "未知的審查")
         say(f":information_source: `{project}` !{iid}: 上次是{mode},只有完整審查(deep)"
             f"通過才會自動合併 — 按「🔁 重審」再跑一次\n{web_url or ''}",
             blocks.rerun_buttons(project, iid, label="🔁 重審"))

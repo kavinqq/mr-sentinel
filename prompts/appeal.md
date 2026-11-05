@@ -7,6 +7,9 @@ findings in light of the reply.
   `{"mr": {...}, "appeals": [{"id", "file", "line", "finding", "thread": [{"role": "ai"|"developer", "author", "body"}]}]}`
   `finding` is your original comment; `thread` is everything said after it, oldest first
   (a previous verdict of yours may be in there, followed by a new developer reply).
+  A thread that ends with your own reject and no new reply is there because new
+  commits landed since: the developer may have fixed it as you asked, without
+  saying so. Judge it on the checkout — accept if the failure no longer happens.
 - The MR source code is checked out (read-only reference) at: `__WORKTREE__`
 - You MUST write your result to `./__OUTPUT_FILE__`. Writing or modifying ANY other file is forbidden.
 

@@ -94,6 +94,13 @@ class TestMergeRetry(unittest.TestCase):
         h.merge.assert_not_called()
         self.assertIn("1 則 AI 留言沒處理完", h.last)
 
+    def test_an_unfinished_review_never_merges(self):
+        """Codex P1: a failed deep review used to be recorded as deep for this head."""
+        h = Harness({**DEEP, "mode": merge_retry.reviewer.UNFINISHED_MODE}).run()
+        h.merge.assert_not_called()
+        self.assertIn("沒跑完", h.last)
+        self.assertEqual(json.loads(h.said[-1][1][0]["value"])["verb"], "rerun")
+
     def test_lite_review_needs_a_rerun(self):
         h = Harness({**DEEP, "mode": "lite"}).run()
         h.merge.assert_not_called()

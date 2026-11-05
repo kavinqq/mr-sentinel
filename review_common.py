@@ -295,6 +295,20 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
 APPEAL_ACCEPT = "<!-- mr-sentinel:appeal=accept -->"
 APPEAL_REJECT = "<!-- mr-sentinel:appeal=reject -->"
 APPEAL_SIGNATURE = "— ⚖️ mr-sentinel appeal"
+# the MR version (head + target, mr_version) a verdict was given on: a reject on
+# another version may have been fixed since, as asked, without a reply
+JUDGED_ON_MARKER = "<!-- mr-sentinel:judged-on={} -->"
+_JUDGED_ON_RE = re.compile(r"<!-- mr-sentinel:judged-on=(\S+) -->")
+
+
+def mr_version(mr: dict) -> str:
+    """Head and target: the same commit aimed at another branch is another change."""
+    return f"{mr.get('sha')}:{mr.get('target_branch')}"
+
+
+def judged_on(body: str) -> str | None:
+    match = _JUDGED_ON_RE.search(body or "")
+    return match.group(1) if match else None
 
 
 def is_bot_note(note: dict, user_id) -> bool:
@@ -350,20 +364,29 @@ def discussion_status(discussion: dict, user_id) -> str | None:
     return "unanswered"
 
 
-def collect_appeals(discussions: list[dict], user_id) -> tuple[list[dict], Counter]:
-    """Threads ready to be judged (as the engine's input) + a count per status."""
+def collect_appeals(discussions: list[dict], user_id, version: str | None = None
+                    ) -> tuple[list[dict], Counter]:
+    """Threads ready to be judged (as the engine's input) + a count per status.
+
+    With the MR's current `version` (mr_version), a thread we rejected on another
+    version (or before verdicts recorded one) is judged again too — the developer
+    may have fixed it as asked, without a reply. Its `status` stays "rejected"."""
     appeals, counts = [], Counter()
     for discussion in discussions:
         status = discussion_status(discussion, user_id)
         if status is None:
             continue
         counts[status] += 1
-        if status != "appeal":
-            continue
         notes = _human_notes(discussion)
+        if status == "rejected":
+            if version is None or judged_on(notes[-1].get("body")) == version:
+                continue
+        elif status != "appeal":
+            continue
         position = notes[0].get("position") or {}
         appeals.append({
             "id": str(discussion.get("id")),
+            "status": status,
             "notes": len(notes),          # snapshot: a reply added mid-run voids the verdict
             "file": position.get("new_path"),
             "line": position.get("new_line"),
@@ -446,11 +469,14 @@ def valid_verdicts(result: dict, appeal_ids) -> dict:
     return out
 
 
-def appeal_reply_body(verdict: str, reason: str, engine_label: str) -> str:
+def appeal_reply_body(verdict: str, reason: str, engine_label: str,
+                      judged_on: str | None = None) -> str:
     if verdict == "accept":
         head, marker = "✅ **理由成立**,這則就不用修了。", APPEAL_ACCEPT
     else:
         head, marker = "⚠️ **仍建議修正**", APPEAL_REJECT
+    if judged_on:
+        marker += "\n" + JUDGED_ON_MARKER.format(judged_on)
     return f"{head}\n\n{reason}\n\n{APPEAL_SIGNATURE} ({engine_label})\n{marker}"
 
 
@@ -464,7 +490,7 @@ def appeal_summary_text(project: str, iid, web_url, judged: dict, counts_after: 
     stuck = counts_after.get("accepted", 0)
     if stuck:
         text += (f"\n:warning: {stuck} 則判定成立但 GitLab 拒絕 resolve(權限不足?)—"
-                 f"請手動 resolve,或修好權限後再按一次「不用修」重試")
+                 f"請手動 resolve,或修好權限後再按一次「重新檢查」重試")
     pending = counts_after.get("unanswered", 0)
     if pending:
         text += f"\n_(還有 {pending} 則 AI 留言沒人回覆)_"

@@ -203,6 +203,21 @@ class TestRunAppeal(unittest.TestCase):
                     meta={**self.LITE, "guard": guard}).run()
         self.assertEqual(h.meta_after["guard"], guard)
 
+    def test_a_reject_on_an_older_head_is_judged_again_on_this_one(self):
+        """Fixed as asked, no reply: the judge checks the reject against the new code
+        (the MR is at head2 in this harness)."""
+        old = note(ME, rc.appeal_reply_body("reject", "還是會 None", "m", judged_on="head1:None"))
+        h = Harness([disputed("d1", old)], self.ACCEPT, review_after=True).run()
+        self.assertEqual([a["id"] for a in h.ctx["appeals"]], ["d1"])
+        self.assertEqual(h.resolved, ["d1"])
+        same = note(ME, rc.appeal_reply_body("reject", "還是會 None", "m", judged_on="head2:None"))
+        self.assertEqual(Harness([disputed("d1", same)], self.ACCEPT,
+                                 review_after=True).run().resolved, [])
+
+    def test_verdicts_record_the_version_they_were_given_on(self):
+        h = Harness([disputed("d1")], self.ACCEPT).run()
+        self.assertEqual(rc.judged_on(h.replies[0][1]), "head2:None")
+
     def test_deep_pass_is_told_what_was_already_answered(self):
         """Codex P5 (!60 class): the deep pass re-raising a just-accepted finding
         blocked the merge with nothing left to appeal."""

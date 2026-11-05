@@ -63,11 +63,12 @@ scheduler (second entry, every 15s)          — or long-lived with --socket
        │                  (--socket: Socket Mode WebSocket — @mentions and button
        │                  clicks pushed in; a history tick on each connect catches up)
        ├─ buttons         click → Command → same authorize/rate limit → chat.update
-       └─ appeal          💬 button → appeal.py (detached, shares the per-MR lock):
+       └─ appeal          🔁 重新檢查 button → appeal.py (detached, shares the per-MR lock):
                           threads a human answered → engine.run_appeal → reply +
                           resolve accepted → summary → auto-merge rails if none open;
-                          🔁 with replies waiting / 💬 after new commits: rerun reset, then
-                          appeal.py --review-after judges and spawns reviewer.py
+                          🔁 重審 with replies waiting / 重新檢查 after new commits: rerun
+                          reset, then appeal.py --review-after judges (rejects from an
+                          older head included) and spawns reviewer.py
        ├─ merge retry     🔀 / ✅ button → merge_retry.py (detached, per-MR lock): ✅ (admin)
        │                  first overrides a stalemate on this head (every open AI thread
        │                  answered + resolved, meta `override`, MR note); then the appeal

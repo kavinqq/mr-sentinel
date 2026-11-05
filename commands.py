@@ -171,7 +171,7 @@ def format_help(is_admin: bool, handle: str = BOT_HANDLE) -> str:
         "• `rerun` — 列出可以重跑的 MR",
         "• `rerun !481` — 重跑(深度依 MR 大小自動決定)",
         "• `rerun !481 deep` — 強制三關對抗式審查(`lite` = 單關快掃)",
-        "• `appeal !481` — 已在 GitLab 回覆「不用修」的理由,請 AI 讀回覆重新判斷",
+        "• `appeal !481` — 改好了或已回覆理由:有新 commit 就重審,有回覆就讓 AI 判斷(同按鈕「重新檢查」)",
         "  (理由成立就 resolve 討論串;和重跑共用每小時上限)",
         "• `merge !481` — AI review 都過了卻沒自動合併(例如 CI 重跑好了),重新檢查後合併",
         "  _在 MR 通知的 thread 裡回覆可以省略 MR 編號_",

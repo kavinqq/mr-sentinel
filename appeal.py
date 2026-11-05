@@ -46,14 +46,14 @@ def appeal_label(review_cfg: dict) -> str:
 
 
 def _buttons(project: str, iid) -> list[dict]:
-    return (blocks.rerun_buttons(project, iid, label="🔁 修好了，重審")
-            + blocks.appeal_buttons(project, iid))
+    return blocks.check_buttons(project, iid)
 
 
 def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
                review_after: bool = False) -> int:
     """`review_after`: a re-review follows, so only judge and post the verdicts; that
-    review reports the outcome and tries the merge."""
+    review reports the outcome and tries the merge. A thread we rejected on another
+    head is judged again on this one (collect_appeals)."""
     base, token = config["gitlab_url"], config["gitlab_token"]
     review_cfg = config["review"]
     work = REVIEWS_DIR / str(mr_id)
@@ -62,8 +62,10 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
     say = lambda text, buttons=None: reviewer._slack_say(config, text, thread_ts, buttons)
 
     me = gitlab_client.get_current_user(base, token)["id"]
+    mr = gitlab_client.get_mr(base, token, project, iid)
     discussions = gitlab_client.list_discussions(base, token, project, iid)
-    appeals, _ = review_common.collect_appeals(discussions, me)
+    appeals, _ = review_common.collect_appeals(discussions, me,
+                                               version=review_common.mr_version(mr))
     retries = review_common.unresolved_accepts(discussions, me)
     if not appeals and not retries:
         if review_after:
@@ -78,7 +80,6 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
             return 0
         return _finish(config, project, iid, None, {}, me, thread_ts, work)
 
-    mr = gitlab_client.get_mr(base, token, project, iid)
     web_url = mr.get("web_url")
     wt = work / "appeal-wt"
     local, failure = reviewer.prepare_worktree(project, iid, mr["sha"], wt, review_cfg)
@@ -117,7 +118,8 @@ def run_appeal(project: str, iid, mr_id, config: dict, state: dict,
         label = appeal_label(review_cfg)
         for discussion_id, (verdict, reason) in verdicts.items():
             gitlab_client.reply_discussion(base, token, project, iid, discussion_id,
-                                           review_common.appeal_reply_body(verdict, reason, label))
+                                           review_common.appeal_reply_body(verdict, reason, label,
+                                                                           judged_on=review_common.mr_version(mr)))
             if verdict == "accept":
                 _resolve(base, token, project, iid, discussion_id)
         if review_after:
@@ -217,7 +219,8 @@ def _merge_outcome(config, base, token, project, iid, deep_gate, work
         return merged, report, buttons
     if meta.get("mode") == "lite" and deep_gate:
         return _merge_after_deep_gate(config, base, token, project, iid, deep_gate, work)
-    mode = {"lite": "快速審查(lite)"}.get(meta.get("mode"), meta.get("mode") or "未知的審查")
+    mode = {"lite": "快速審查(lite)", reviewer.UNFINISHED_MODE: "沒跑完(或留言沒發完)的審查"}.get(
+        meta.get("mode"), meta.get("mode") or "未知的審查")
     return (False, f"*原因*:上次是{mode},只有完整審查(deep)通過才會自動合併\n"
                    f"*下一步*:按「🔁 重審」,或到 GitLab 手動合併",
             blocks.rerun_buttons(project, iid, label="🔁 重審"))

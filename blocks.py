@@ -12,7 +12,7 @@ import commands
 # action_ids are unique within one message (Slack rejects duplicates)
 RERUN_AUTO = "rerun:auto"
 APPEAL = "appeal"
-APPEAL_LABEL = "已留言,我覺得不用修"
+CHECK_LABEL = "🔁 已修正或已回覆,重新檢查"
 MERGE = "merge"
 MERGE_LABEL = "🔀 重新合併"
 WAIVE = "waive"
@@ -29,18 +29,19 @@ def _button(action_id: str, label: str, value: dict, style: str | None = None) -
     return button
 
 
-def rerun_buttons(project: str, iid, label: str = "🔁 修好了，重審") -> list[dict]:
+def rerun_buttons(project: str, iid, label: str = "🔁 重審") -> list[dict]:
     """One button on purpose: `auto` lets MR size pick lite/deep, same as the
     poller. (`@bot rerun !N deep` still forces the 3-gate review by hand.)"""
     return [_button(RERUN_AUTO, label,
                     {"verb": "rerun", "args": [f"{project}!{iid}", "auto"]}, style="primary")]
 
 
-def appeal_buttons(project: str, iid) -> list[dict]:
-    """The developer has answered the AI comments on GitLab: ask the AI to weigh
-    those replies (appeal.py). Accepted threads get resolved."""
-    return [_button(APPEAL, f"💬 {APPEAL_LABEL}",
-                    {"verb": "appeal", "args": [f"{project}!{iid}"]})]
+def check_buttons(project: str, iid) -> list[dict]:
+    """The developer is done with the AI comments — fixed some, answered others.
+    One button on purpose: telling those apart is ours (slack_bot.do_appeal looks
+    for new commits and replies), not a choice that developers kept getting wrong."""
+    return [_button(APPEAL, CHECK_LABEL,
+                    {"verb": "appeal", "args": [f"{project}!{iid}"]}, style="primary")]
 
 
 

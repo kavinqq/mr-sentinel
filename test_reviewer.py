@@ -509,6 +509,22 @@ class TestResetForRerun(unittest.TestCase):
         gl.delete_award_emoji.assert_called_once_with("http://gl", "t", "g/app", 5, 1)
         gl.delete_note.assert_called_once_with("http://gl", "t", "g/app", 5, 50)
 
+    def test_an_automatic_retry_voids_the_verdict_before_deleting_comments(self):
+        """Codex P1: the crashed review had already written deep for this head."""
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "history_sync") as hs:
+            (Path(d) / "100").mkdir()
+            reviewer.write_review_meta(Path(d) / "100", "deep", "h", 1, None, "master")
+            gl.get_current_user.return_value = {"id": 7}
+            gl.get_award_emojis.return_value = []
+            gl.list_discussions.return_value = []
+            hs.sync_mr.return_value = True
+            reviewer.reset_for_rerun(self.CFG, "g/app", 5, mr_id=100)
+            self.assertEqual(reviewer.read_review_meta(Path(d) / "100")["mode"],
+                             reviewer.UNFINISHED_MODE)
+
     def test_touches_nothing_when_the_history_write_failed(self):
         result, gl = self._run(recorded=False)
         self.assertFalse(result)
@@ -721,12 +737,19 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
     def test_completion_offers_the_admin_override_with_the_usual_buttons(self):
         unsure = {**LEAK, "confidence": "unsure", "human_check": "確認字號"}
         _, m, _ = self.review({"findings": []}, outcome(guard=[unsure]))
-        self.assertEqual(self.completion_actions(m),
-                         ["mrs:rerun:auto", "mrs:appeal", "mrs:waive"])
+        self.assertEqual(self.completion_actions(m), ["mrs:appeal", "mrs:waive"])
 
     def test_unfinished_gate_offers_only_a_rerun(self):
         _, m, _ = self.review({"findings": []}, outcome(broken=True))
         self.assertEqual(self.completion_actions(m), ["mrs:rerun:auto"])
+
+    def test_comments_posted_but_a_check_unfinished_keeps_the_rerun(self):
+        """Codex: the text says 按「🔁 重審」, and 重新檢查 alone would not re-run the
+        unfinished check on unchanged code."""
+        _, m, _ = self.review({"findings": [{"severity": "medium", "title": "t", "file": "a.py",
+                                             "line": 1}]}, outcome(broken=True))
+        self.assertEqual(self.completion_actions(m),
+                         ["mrs:rerun:auto", "mrs:appeal", "mrs:waive"])
 
     def test_clean_gates_pass_and_merge_may_proceed(self):
         _, m, meta = self.review({"findings": []}, outcome())
@@ -741,6 +764,60 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
               {"file": "c.py", "line": 1, "title": "real", "severity": "medium"}]
         _, m, _ = self.review({"findings": ai}, outcome(rule=[GATE_HIT]))
         self.assertEqual(sorted(f["title"] for f in self.posted(m)), ["real", "t"])
+
+    def test_malformed_engine_output_is_a_failed_review_not_a_clean_one(self):
+        """Codex P1: `{}` used to read as "no findings" and could merge."""
+        for bad in ({}, {"findings": "none"}, [], "clean"):
+            with self.subTest(bad=bad):
+                d = tempfile.TemporaryDirectory()
+                self.addCleanup(d.cleanup)
+                m = self.patches(d.name, outcome())
+
+                def run_review(work, ctx_path, out_path, wt, cfg, mode, bad=bad):
+                    out_path.write_text(json.dumps(bad))
+                    return 0
+                m["engines"].get_engine.return_value.run_review.side_effect = run_review
+                rc = reviewer.run_review("g/app", 5, 100, self.CFG, {}, False, force_mode="deep")
+                self.assertEqual(rc, 1)
+                meta = reviewer.read_review_meta(Path(d.name) / "100")
+                self.assertEqual(meta["mode"], reviewer.UNFINISHED_MODE)
+                m["try_auto_merge"].assert_not_called()
+
+    def test_a_review_that_cannot_start_voids_the_last_verdict(self):
+        """Codex P1: a worktree failure returned before writing anything, leaving the
+        previous deep verdict in place for a merge retry."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        (Path(d.name) / "100").mkdir(exist_ok=True)
+        reviewer.write_review_meta(Path(d.name) / "100", "deep", "h", 1, None, "master")
+        with mock.patch.object(reviewer, "prepare_worktree", return_value=(None, "fetch")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        meta = reviewer.read_review_meta(Path(d.name) / "100")
+        self.assertEqual(meta["mode"], reviewer.UNFINISHED_MODE)
+
+    def test_a_failed_review_is_recorded_as_unfinished_not_deep(self):
+        """Codex P1: merge_retry merged on mode=deep for the head after a failed review."""
+        _, _, meta = self.review(None, outcome())
+        self.assertEqual((meta["mode"], meta["head_sha"]), (reviewer.UNFINISHED_MODE, "h"))
+
+    def test_findings_that_did_not_all_reach_gitlab_are_recorded_as_unfinished(self):
+        """Codex P1: an unposted finding is no open comment, so nothing would hold the merge."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["post_comment"].post_findings.side_effect = lambda *a, **k: len(a[4]) - 1
+        two = [{"severity": "medium", "title": t, "file": "a.py", "line": 1} for t in "xy"]
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": two}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        meta = reviewer.read_review_meta(Path(d.name) / "100")
+        self.assertEqual(meta["mode"], reviewer.UNFINISHED_MODE)
+        self.assertIn("mrs:rerun:auto", self.completion_actions(m))
+
+    def test_the_meta_records_the_target_branch(self):
+        _, _, meta = self.review({"findings": []}, outcome())
+        self.assertEqual(meta["target_branch"], self.CTX.get("target_branch"))
 
     def test_gates_still_post_and_record_when_the_engine_fails(self):
         rc, m, meta = self.review(None, outcome(rule=[GATE_HIT], guard=[LEAK]))
@@ -826,7 +903,8 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
     CFG = {"slack": {}, "review": {"release_guard": {"test_hosts": ["uat.example"]}}}
     PASSED = {"head_sha": "h", "target_branch": "master", "ok": True, "leaks": 0}
 
-    def _merge(self, changes, guard_meta, cfg=None, hits=(), threads=(), override=None):
+    def _merge(self, changes, guard_meta, cfg=None, hits=(), threads=(), override=None,
+               reviewed_target=None):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
              mock.patch.object(reviewer, "_release_blocker",
@@ -838,7 +916,8 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
              mock.patch.object(reviewer, "_slack_say"):
             if guard_meta is not None:
                 (Path(d) / "100").mkdir()
-                reviewer.write_review_meta(Path(d) / "100", "deep", "h", 0, guard_meta)
+                reviewer.write_review_meta(Path(d) / "100", "deep", "h", 0, guard_meta,
+                                           reviewed_target)
                 if override:
                     meta = reviewer.read_review_meta(Path(d) / "100")
                     reviewer.save_review_meta(Path(d) / "100", {**meta, "override": override})
@@ -855,6 +934,13 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
 
     def test_clean_rule_and_passed_guard_merge(self):
         self._merge([], self.PASSED).merge_mr.assert_called_once()
+
+    def test_a_review_for_another_target_never_merges(self):
+        """Codex P2: reviewed into uat-a, retargeted, merge pressed — every merge path."""
+        gl = self._merge([], self.PASSED, reviewed_target="uat-a")
+        gl.merge_mr.assert_not_called()
+        self.assertEqual(self._merge([], self.PASSED, reviewed_target="master")
+                         .merge_mr.call_count, 1)
 
     def test_rule_hit_blocks(self):
         gl = self._merge([], self.PASSED, hits=[GATE_HIT])
@@ -887,7 +973,12 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
     def test_retargeted_mr_without_a_guard_run_blocks_and_says_why(self):
         gl = self._merge([], None)
         gl.merge_mr.assert_not_called()
-        self.assertIn("最新的 commit 還沒完整 review 過", gl.post_note.call_args.args[4])
+        self.assertIn("目標分支改過", gl.post_note.call_args.args[4])
+
+    def test_a_review_with_no_target_on_record_never_merges(self):
+        """Codex P2: nothing says this target was ever reviewed — fail closed."""
+        gl = self._merge([], {**self.PASSED, "target_branch": None})
+        gl.merge_mr.assert_not_called()
 
     def test_guard_run_for_another_target_blocks(self):
         self._merge([], {**self.PASSED, "target_branch": "main"}).merge_mr.assert_not_called()
@@ -983,6 +1074,9 @@ class TestBlockedMergeMessage(unittest.TestCase):
              mock.patch.object(reviewer, "_release_blocker", return_value=release), \
              mock.patch.object(reviewer, "gitlab_client") as gl, \
              mock.patch.object(reviewer, "_slack_say") as say:
+            (Path(d) / str(mr["id"])).mkdir()
+            reviewer.write_review_meta(Path(d) / str(mr["id"]), "deep", "h", 0, None,
+                                       mr.get("target_branch"))
             gl.get_mr.return_value = mr
             gl.has_ci_config.return_value = True
             if isinstance(statuses, Exception):
@@ -1009,7 +1103,7 @@ class TestBlockedMergeMessage(unittest.TestCase):
         text, actions = self._run(release=f"{reviewer.OPEN_COMMENTS}2")
         self.assertIn("還有 2 則 review 留言沒處理完", text)
         self.assertNotIn("CI 沒過", text)
-        self.assertEqual(actions, ["mrs:rerun:auto", "mrs:appeal", "mrs:waive"])
+        self.assertEqual(actions, ["mrs:appeal", "mrs:waive"])
 
     def test_unreviewed_head_asks_for_a_rerun_without_internal_words(self):
         text, actions = self._run(release=reviewer.NOT_REVIEWED)

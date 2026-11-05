@@ -344,7 +344,7 @@ class Bot:
             self.save()
             return
         if cmd.verb == "appeal":
-            note = f":scales: <@{user}> 已送出「不用修」,AI 正在讀回覆"
+            note = f":mag: <@{user}> 按了重新檢查,處理中(結果會回在下面)"
         elif cmd.verb == "merge":
             note = f":twisted_rightwards_arrows: <@{user}> 按了重新合併,檢查中(結果會回在下面)"
         elif cmd.verb == "waive":
@@ -675,11 +675,7 @@ class Bot:
                      f"(`projects add` 可以加)", thread_ts)
             return None
 
-        rerun_log = self.bot_state.setdefault("rerun_log", [])
-        if costs_quota and not commands.rerun_allowed(rerun_log, self.now(),
-                                                      is_admin=self.is_admin(user)):
-            self.say(f":warning: 重跑太頻繁了(每小時上限 {commands.RERUN_LIMIT_PER_HOUR} 次,"
-                     f"admin 不受限)。每次重跑都會消耗模型額度,等一下再試。", thread_ts)
+        if costs_quota and self.quota_refused(user, thread_ts):
             return None
 
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
@@ -688,6 +684,21 @@ class Bot:
             self.say(f":warning: GitLab 上找不到 `{project}!{iid}`", thread_ts)
             return None
         return project, iid, mr_id
+
+    def quota_refused(self, user, thread_ts) -> bool:
+        rerun_log = self.bot_state.setdefault("rerun_log", [])
+        if commands.rerun_allowed(rerun_log, self.now(), is_admin=self.is_admin(user)):
+            return False
+        self.say(f":warning: 重跑太頻繁了(每小時上限 {commands.RERUN_LIMIT_PER_HOUR} 次,"
+                 f"admin 不受限)。每次重跑都會消耗模型額度,等一下再試。", thread_ts)
+        return True
+
+    @staticmethod
+    def mr_busy(mr_id) -> bool:
+        """A review or appeal holds the MR's lock right now."""
+        reviewer.REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(reviewer.REVIEWS_DIR / f".lock-{mr_id}", "w") as lock_file:
+            return not reviewer.take_lock(lock_file)
 
     def not_open_text(self, project: str, iid: str, mr_state: str | None) -> str:
         """Developers often close an MR and reopen the same change on a new branch,
@@ -715,41 +726,70 @@ class Bot:
         self.save()
 
     def do_appeal(self, cmd, user, thread_ts):
-        """💬 "replied, no fix needed": hand the developer's replies to the AI. New
-        commits since the last review mean some comments were fixed too: re-review."""
-        resolved = self.resolve_target(cmd, user, thread_ts, verb="appeal")
+        """🔁 "fixed or answered": the developer is done with the AI comments, and
+        which it was is ours to work out — every case is in TestCheckButtonScenarios.
+
+        Code changed since the last review (or none is on record): judge the replies,
+        re-check rejects on the new code, then re-review — fixed comments drop out.
+        Otherwise judge what there is, without a re-review: the same code would only
+        come back with the same findings reworded. Nothing open: try the merge."""
+        # quota is checked below, only on the paths that run a model
+        resolved = self.resolve_target(cmd, user, thread_ts, verb="appeal", costs_quota=False)
         if resolved is None:
             return None
         project, iid, mr_id = resolved
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
-        discussions = gitlab_client.list_discussions(base, token, project, iid)
-        appeals, counts = review_common.collect_appeals(discussions, self.gitlab_user_id())
-        if self.has_new_commits(base, token, project, iid, mr_id):
-            return self.rerun_mr(project, iid, mr_id, "auto", thread_ts, replies=len(appeals),
-                                 judge=self.needs_judging(appeals, discussions))
-        if not appeals and review_common.unresolved_accepts(discussions, self.gitlab_user_id()):
-            # nothing new to judge, but an earlier accept never got resolved: retry it
-            appeal.spawn_detached(project, iid, mr_id)
-            self.say(f":scales: `{project}` !{iid}: 重試 resolve 之前判定成立的討論串", thread_ts)
-            return True
-        if not appeals:
-            mr_state = gitlab_client.get_mr(base, token, project, iid).get("state")
-            if mr_state != "opened":
-                self.say(self.not_open_text(project, iid, mr_state), thread_ts)
-                return None
-            waiting = counts.get("unanswered", 0) + counts.get("rejected", 0)
-            self.say(f":speech_balloon: `{project}` !{iid} 還沒看到新的回覆 — 先在 GitLab 那則 "
-                     f"AI 留言的討論串裡按 Reply,回覆「為什麼不用修」,送出時選 "
-                     f"*Add comment now(立刻加入留言)*,再按一次「{blocks.APPEAL_LABEL}」"
-                     + (f"(目前有 {waiting} 則等回覆)" if waiting else "")
-                     + "\n• 選 Start a review 會變成草稿,只有你自己看得到,要按 Submit review 才算送出"
-                     "\n• 頁面最下方的留言框不算回覆,一定要回在 AI 那則留言底下", thread_ts)
+        mr = gitlab_client.get_mr(base, token, project, iid)
+        if mr.get("state") != "opened":
+            self.say(self.not_open_text(project, iid, mr.get("state")), thread_ts)
             return None
-        appeal.spawn_detached(project, iid, mr_id)
-        self.spend_budget()
-        self.say(f":scales: 讀取 `{project}` !{iid} 的 {len(appeals)} 則回覆中,"
-                 f"判斷完會回在 GitLab 討論串", thread_ts)
-        return True
+        me = self.gitlab_user_id()
+        discussions = gitlab_client.list_discussions(base, token, project, iid)
+        appeals, counts = review_common.collect_appeals(discussions, me,
+                                                        version=review_common.mr_version(mr))
+        retries = review_common.unresolved_accepts(discussions, me)
+        if self.review_is_stale(mr, mr_id):
+            if self.quota_refused(user, thread_ts):
+                return None
+            return self.rerun_mr(project, iid, mr_id, "auto", thread_ts, appeals=appeals,
+                                 judge=bool(appeals or retries))
+        if appeals or retries:
+            if self.mr_busy(mr_id):
+                self.say(f":hourglass: `{project}` !{iid} 正在 review 或判斷中,跑完後再按一次",
+                         thread_ts)
+                return None
+            if appeals and self.quota_refused(user, thread_ts):
+                return None
+            appeal.spawn_detached(project, iid, mr_id)
+            if appeals:
+                self.spend_budget()
+            self.say(f":scales: `{project}` !{iid}: {self.judging_text(appeals, retries)},"
+                     f"判斷完會回在 GitLab 討論串", thread_ts)
+            return True
+        if not review_common.open_findings(counts):
+            merge_retry.spawn_detached(project, iid, mr_id)
+            self.say(f":twisted_rightwards_arrows: `{project}` !{iid}: AI 留言都處理完了,"
+                     f"檢查合併條件中", thread_ts)
+            return True
+        waiting = counts.get("unanswered", 0) + counts.get("rejected", 0)
+        self.say(f":speech_balloon: `{project}` !{iid} 沒看到新的 commit,也沒看到新的回覆"
+                 + (f"(目前有 {waiting} 則還沒處理)" if waiting else "")
+                 + "\n• 照 AI 意見改好的:push 上去,再按一次"
+                 "\n• 不用改的:在 GitLab 那則 AI 留言的討論串裡按 Reply 寫理由,送出時選 "
+                 f"*Add comment now(立刻加入留言)*,再按一次「{blocks.CHECK_LABEL}」"
+                 "\n• 選 Start a review 會變成草稿,只有你自己看得到,要按 Submit review 才算送出"
+                 "\n• 頁面最下方的留言框不算回覆,一定要回在 AI 那則留言底下"
+                 "\n• 改原本的回覆不算,被 AI 駁回後要補充請新增一則回覆", thread_ts)
+        return None
+
+    @staticmethod
+    def judging_text(appeals, retries) -> str:
+        replies = sum(a["status"] == "appeal" for a in appeals)
+        rechecks = len(appeals) - replies
+        parts = ([f"判斷 {replies} 則回覆"] if replies else []) + \
+                ([f"對照新的 code 再確認 {rechecks} 則之前判定要修的留言"] if rechecks else []) + \
+                ([f"重試 resolve {len(retries)} 則判定成立的討論串"] if retries else [])
+        return "、".join(parts)
 
     def do_merge(self, cmd, user, thread_ts, waive: bool = False):
         """🔀 retry the merge of a clean MR; with `waive` (✅, admin-only by
@@ -766,13 +806,16 @@ class Bot:
     def do_waive(self, cmd, user, thread_ts):
         return self.do_merge(cmd, user, thread_ts, waive=True)
 
-    def has_new_commits(self, base, token, project, iid, mr_id) -> bool:
-        """The MR head moved past the last review's (False when no review is on record)."""
-        reviewed = reviewer.read_review_meta(reviewer.REVIEWS_DIR / str(mr_id)).get("head_sha")
-        if not reviewed:
-            return False
-        mr = gitlab_client.get_mr(base, token, project, iid)
-        return mr.get("state") == "opened" and mr.get("sha") not in (None, reviewed)
+    def review_is_stale(self, mr: dict, mr_id) -> bool:
+        """The last review no longer stands for this MR, so a pushed fix can only show
+        up through a new one: none on record, it did not finish, the code or the target
+        moved, or a rerun could not clear the old comments it replaces."""
+        meta = reviewer.read_review_meta(reviewer.REVIEWS_DIR / str(mr_id))
+        reviewed = meta.get("head_sha")
+        return (not reviewed or meta.get("mode") == reviewer.UNFINISHED_MODE
+                or mr.get("sha") not in (None, reviewed)
+                or reviewer.reviewed_target(meta) != mr.get("target_branch")
+                or str(mr_id) in self.bot_state.get("cleanup_pending", {}))
 
     def do_rerun(self, cmd, user, thread_ts):
         mode = next((a.lower() for a in cmd.args if a.lower() in ("auto", "lite", "deep")), "auto")
@@ -782,18 +825,22 @@ class Bot:
         project, iid, mr_id = resolved
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
         discussions = gitlab_client.list_discussions(base, token, project, iid)
-        appeals, _ = review_common.collect_appeals(discussions, self.gitlab_user_id())
-        return self.rerun_mr(project, iid, mr_id, mode, thread_ts, replies=len(appeals),
+        appeals, counts = review_common.collect_appeals(discussions, self.gitlab_user_id())
+        if counts.get("rejected"):
+            version = review_common.mr_version(gitlab_client.get_mr(base, token, project, iid))
+            appeals, _ = review_common.collect_appeals(discussions, self.gitlab_user_id(),
+                                                       version=version)
+        return self.rerun_mr(project, iid, mr_id, mode, thread_ts, appeals=appeals,
                              judge=self.needs_judging(appeals, discussions))
 
     def needs_judging(self, appeals, discussions) -> bool:
         """Replies to judge, or an earlier accept whose resolve failed (appeal.py retries it)."""
         return bool(appeals or review_common.unresolved_accepts(discussions, self.gitlab_user_id()))
 
-    def rerun_mr(self, project, iid, mr_id, mode, thread_ts, replies: int = 0,
-                 judge: bool = False):
+    def rerun_mr(self, project, iid, mr_id, mode, thread_ts, appeals=(), judge: bool = False):
         """Reset and re-review; with `judge`, appeal.py --review-after first judges the
-        `replies`, since a developer fixes some comments and answers others."""
+        `appeals` (collect_appeals), since a developer fixes some comments and answers
+        others."""
         base, token = self.config["gitlab_url"], self.config["gitlab_token"]
 
         # The reviewer's per-MR lock is held across reset + spawn: checking it and
@@ -808,10 +855,22 @@ class Bot:
 
             # record the comments about to be deleted, so the history keeps them; if
             # that failed, deleting would lose them for good — keep them instead
+            # the verdict goes before its comments do: a merge retry slipping in
+            # between this reset and the new review must not merge on it
+            reviewer.void_review_meta(reviewer.REVIEWS_DIR / str(mr_id))
             recorded = history_sync.sync_mr(self.config, project, iid,
                                             trigger=f"重審前紀錄 {project.rsplit('/', 1)[-1]}!{iid}")
             unclaimed = self.unclaim(base, token, project, iid)
-            deleted = self.clear_previous_comments(base, token, project, iid) if recorded else 0
+            deleted, undeleted = (self.clear_previous_comments(base, token, project, iid)
+                                  if recorded else (0, 0))
+            # an old comment left behind would hold the merge after a clean review on
+            # the same head: the next press must re-review (and retry the cleanup)
+            pending = self.bot_state.setdefault("cleanup_pending", {})
+            if recorded and not undeleted:
+                pending.pop(str(mr_id), None)
+            else:
+                pending[str(mr_id)] = self.now().isoformat()
+            self.save()
 
             if judge:
                 appeal.spawn_detached(project, iid, mr_id, review_mode=mode)
@@ -820,14 +879,16 @@ class Bot:
         self.spend_budget()
 
         detail = []
-        if replies:
-            detail.append(f"先判斷 {replies} 則回覆,再重審")
+        if appeals:
+            detail.append(f"先{self.judging_text(appeals, ())},再重審")
         if not unclaimed:
             detail.append("本來就沒有認領標記")
         if deleted:
             detail.append(f"清掉 {deleted} 則沒人回覆的舊留言")
         if not recorded:
             detail.append("review 歷史寫入失敗,舊留言先保留沒清")
+        if undeleted:
+            detail.append(f"{undeleted} 則舊留言刪除失敗")
         suffix = f"\n_({', '.join(detail)})_" if detail else ""
         self.say(f":recycle: 重跑中: `{project}` !{iid} (`{mode}`){suffix}", thread_ts)
         return True
@@ -852,7 +913,8 @@ class Bot:
                 removed = True
         return removed
 
-    def clear_previous_comments(self, base, token, project, iid) -> int:
+    def clear_previous_comments(self, base, token, project, iid) -> tuple[int, int]:
+        """(deleted, failed) among our unanswered AI comments."""
         discussions = gitlab_client.list_discussions(base, token, project, iid)
         note_ids = review_common.deletable_ai_notes(discussions, self.gitlab_user_id())
         deleted = 0
@@ -862,7 +924,7 @@ class Bot:
                 deleted += 1
             except urllib.error.HTTPError:
                 log.warning("could not delete note %s on !%s", note_id, iid)
-        return deleted
+        return deleted, len(note_ids) - deleted
 
 
 # ---------- entry point ----------

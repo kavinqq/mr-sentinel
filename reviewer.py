@@ -177,9 +177,13 @@ def try_auto_merge(config: dict, base: str, token: str, project_path: str, iid, 
                        f"*下一步*:等一下再{RETRY_MERGE}", retry_merge, [])
 
     rail = review_common.auto_merge_blocker(mr, reviewed_sha, has_ci)
+    # unknown counts as changed: no record says this target was ever reviewed
+    retargeted = RETARGETED if reviewed_target(
+        read_review_meta(REVIEWS_DIR / str(mr.get("id")))) != mr.get("target_branch") else None
     # our own failed status turns the pipeline red: name the reason behind it instead
     blocker = rail if rail == "new commits since review" else (
-        release or (f"{OPEN_COMMENTS}{open_threads}" if open_threads else None) or rail)
+        retargeted or release or (f"{OPEN_COMMENTS}{open_threads}" if open_threads else None)
+        or rail)
     if blocker:
         log.info("MR !%s clean but not auto-merged: %s", iid, blocker)
         why, next_step = blocker_text(blocker)
@@ -188,8 +192,7 @@ def try_auto_merge(config: dict, base: str, token: str, project_path: str, iid, 
         elif blocker in RERUN_BLOCKERS:
             buttons = blocks.rerun_buttons(project_path, iid, label="🔁 重審") + retry_merge
         elif blocker.startswith(OPEN_COMMENTS):
-            buttons = (blocks.rerun_buttons(project_path, iid, label="🔁 修好了，重審")
-                       + blocks.appeal_buttons(project_path, iid)
+            buttons = (blocks.check_buttons(project_path, iid)
                        + blocks.waive_buttons(project_path, iid))
         else:
             buttons = retry_merge
@@ -380,7 +383,8 @@ STATUS_SETTLE_SECONDS = 2
 NOT_REVIEWED = "latest commit not fully reviewed"
 UNFINISHED = "review did not finish"
 OPEN_COMMENTS = "open review comments: "
-RERUN_BLOCKERS = (NOT_REVIEWED, UNFINISHED, "test-marker rule could not read the diff")
+RETARGETED = "target branch changed since review"
+RERUN_BLOCKERS = (NOT_REVIEWED, UNFINISHED, RETARGETED, "test-marker rule could not read the diff")
 RETRY_MERGE = f"按「{blocks.MERGE_LABEL}」"
 RERUN_HINT = "按「🔁 重審」"
 
@@ -390,6 +394,8 @@ def blocker_text(blocker: str) -> tuple[str, str]:
     The blocker codes stay as they are for logs and tests; unknown ones pass through."""
     if blocker == "new commits since review":
         return "review 之後又推了新的 commit", "按「🔁 重審最新 commit」"
+    if blocker == RETARGETED:
+        return "review 之後 MR 的目標分支改過(或 review 紀錄沒記目標分支)", RERUN_HINT
     if blocker == "draft MR":
         return "MR 還是草稿(Draft)", f"到 GitLab 取消 Draft,再{RETRY_MERGE}"
     if blocker.startswith("not mergeable"):
@@ -417,9 +423,8 @@ def blocker_text(blocker: str) -> tuple[str, str]:
         return "上次 review 有一部分沒跑完", RERUN_HINT
     if blocker.startswith(OPEN_COMMENTS):
         return (f"還有 {blocker[len(OPEN_COMMENTS):]} 則 review 留言沒處理完",
-                f"在 GitLab 每則留言底下回覆 —— 修好的寫「已修正」,不用修的寫理由 ——"
-                f"再按「🔁 修好了，重審」或「{blocks.APPEAL_LABEL}」,兩個都會一起檢查"
-                f"新的 commit 和你的回覆")
+                f"照意見改好的 push 上去;不用改的在那則留言底下回覆理由,"
+                f"再按「{blocks.CHECK_LABEL}」")
     return blocker, f"處理後{RETRY_MERGE}"
 
 
@@ -591,15 +596,35 @@ def _remove_worktree(local: str, wt: Path) -> None:
 REVIEW_META = "review_meta.json"
 
 
+# meta mode of a review that did not finish, or whose findings did not all reach
+# GitLab: nothing may merge on it (merge_retry / appeal want "deep")
+UNFINISHED_MODE = "unfinished"
+
+
 def write_review_meta(work: Path, mode: str, head_sha: str, findings: int,
-                      guard: dict | None = None) -> None:
+                      guard: dict | None = None, target_branch: str | None = None) -> None:
     """What the last review actually covered. appeal.py reads it: merging after
     accepted appeals must keep the same rails as a clean review (deep, and the
     reviewed sha — never code pushed after the review). `guard` is the release
     guard's verdict (final_gates.Outcome.record, plus `waived_by` once an admin
     signs it off in merge_retry) that _release_blocker requires."""
     (work / REVIEW_META).write_text(json.dumps(
-        {"mode": mode, "head_sha": head_sha, "findings": findings, "guard": guard}, indent=1))
+        {"mode": mode, "head_sha": head_sha, "findings": findings, "guard": guard,
+         "target_branch": target_branch}, indent=1))
+
+
+def reviewed_target(meta: dict) -> str | None:
+    """The target branch the last review covered; metas from before it was recorded
+    fall back to the release guard's record (gated MRs only), else None."""
+    return meta.get("target_branch") or (meta.get("guard") or {}).get("target_branch")
+
+
+def void_review_meta(work: Path) -> None:
+    """A review is being redone: until it finishes, the last verdict stands for
+    nothing — its comments may already be deleted, and a merge retry must not
+    read it as a passed review."""
+    if (work / REVIEW_META).exists():
+        save_review_meta(work, {**read_review_meta(work), "mode": UNFINISHED_MODE})
 
 
 def save_review_meta(work: Path, meta: dict) -> None:
@@ -661,6 +686,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
 
     # 3. claim: :eyes: on the MR + optional Slack reaction on the notification
     if not dry_run:
+        void_review_meta(work)
         gitlab_client.add_award_emoji(base, token, project_path, iid, "eyes")
         slack = config.get("slack", {})
         if thread_ts and slack.get("bot_token") and slack.get("channel_id"):
@@ -737,9 +763,11 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                 log.error("engine failed for MR !%s (%s, rc=%s)", iid, m, rc)
                 return None
             found = json.loads(out_path.read_text())
-            if isinstance(found, dict) and isinstance(found.get("findings"), list):
-                found["findings"] = review_common.not_yet_raised(found["findings"], answered,
-                                                                 me["id"])
+            if not (isinstance(found, dict) and isinstance(found.get("findings"), list)):
+                # never "no findings": that would read as a clean review and could merge
+                log.error("engine output for MR !%s (%s) has no findings list", iid, m)
+                return None
+            found["findings"] = review_common.not_yet_raised(found["findings"], answered, me["id"])
             return found
 
         auto_merge = bool(review_cfg.get("auto_merge_on_clean"))
@@ -758,14 +786,15 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             _set_status(config, project_path, head_sha, ref, web_url, *final_gates.status(outcome))
         if result is None:
             posted = _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
-            write_review_meta(work, mode, head_sha, len(gate_findings), guard_record)
+            write_review_meta(work, UNFINISHED_MODE, head_sha, len(gate_findings), guard_record,
+                              ctx.get("target_branch"))
             _slack_say(config, f":warning: `{project_path}` MR !{iid}: review 沒跑完 — "
                                f"按「🔁 再試一次」"
-                               + (f";已經發出的 {posted} 則留言如果不用修,回覆後按"
-                                  f"「{blocks.APPEAL_LABEL}」" if posted else "")
+                               + (f";已經發出的 {posted} 則留言如果不用改,回覆理由後按"
+                                  f"「{blocks.CHECK_LABEL}」" if posted else "")
                                + f"\n{web_url}", thread_ts,
                        blocks.rerun_buttons(project_path, iid, label="🔁 再試一次")
-                       + (blocks.appeal_buttons(project_path, iid) if posted else []))
+                       + (blocks.check_buttons(project_path, iid) if posted else []))
             return 1
 
         # 7. post comments (scripts post; the AI never does)
@@ -783,7 +812,9 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         #    it is caught: it must not read as a failed review, which main() would
         #    answer by deleting the comments and reviewing again.
         # the merge check reads this review's verdict from the meta (_release_blocker)
-        write_review_meta(work, mode, head_sha, len(findings), guard_record)
+        # a finding that never reached GitLab cannot hold the merge as a comment
+        write_review_meta(work, mode if posted == len(findings) else UNFINISHED_MODE, head_sha,
+                          len(findings), guard_record, ctx.get("target_branch"))
         if len(gate_findings) < len(outcome.findings):
             # some gate findings were already answered for this head: the status
             # final_gates just set counts them as open, re-check it against GitLab
@@ -803,7 +834,9 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                     posted += post_comment.post_findings(
                         base, token, project_path, iid, bugs, ctx["diff_refs"],
                         signature=build_signature(MERGE_CHECK_LABEL))
-                    write_review_meta(work, mode, head_sha, len(findings), guard_record)
+                    write_review_meta(work, mode if posted == len(findings) else UNFINISHED_MODE,
+                                      head_sha, len(findings), guard_record,
+                                      ctx.get("target_branch"))
         except Exception:
             log.exception("auto-merge step of MR !%s crashed", iid)
 
@@ -815,11 +848,13 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         history_rate.rate_mr(config, project_path, iid, ctx=ctx)
 
         # 9. completion message
-        buttons = blocks.rerun_buttons(project_path, iid,
-                                       label="🔁 修好了，重審" if findings else "🔁 重審")
+        # a check that did not finish, or a comment GitLab refused, needs a plain rerun:
+        # 重新檢查 only re-reviews once the code changed
+        incomplete = not outcome.ok or posted < len(findings)
+        buttons = (blocks.rerun_buttons(project_path, iid, label="🔁 重審")
+                   if incomplete or not posted else [])
         if posted:
-            buttons += blocks.appeal_buttons(project_path, iid)
-            buttons += blocks.waive_buttons(project_path, iid)
+            buttons += blocks.check_buttons(project_path, iid) + blocks.waive_buttons(project_path, iid)
         text = completion_text(project_path, iid, web_url, findings, posted, language, mode)
         if not outcome.ok:
             text += "\n:warning: 有一部分檢查沒跑完,按「🔁 重審」再跑一次"
@@ -843,7 +878,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
 AUTO_RETRY_LIMIT = 1
 
 
-def reset_for_rerun(config: dict, project_path: str, iid) -> bool:
+def reset_for_rerun(config: dict, project_path: str, iid, mr_id=None) -> bool:
     """Give a claimed MR back to the reviewer: drop our :eyes: and our unanswered
     comments (a rerun would otherwise stack a second round on the first).
 
@@ -853,6 +888,10 @@ def reset_for_rerun(config: dict, project_path: str, iid) -> bool:
     """
     base, token = config["gitlab_url"], config["gitlab_token"]
     me = gitlab_client.get_current_user(base, token)["id"]
+    # the review may have written its verdict before it crashed: void it before its
+    # comments go, or a merge retry slipping in could merge on it
+    if mr_id is not None:
+        void_review_meta(REVIEWS_DIR / str(mr_id))
     if not history_sync.sync_mr(config, project_path, iid,
                                 trigger=f"自動重試前紀錄 {project_path.rsplit('/', 1)[-1]}!{iid}"):
         return False
@@ -873,7 +912,7 @@ def _retry_automatically(config: dict, state: dict, project_path: str, iid, mr_i
     if attempt >= AUTO_RETRY_LIMIT:
         return False
     try:
-        if not reset_for_rerun(config, project_path, iid):
+        if not reset_for_rerun(config, project_path, iid, mr_id):
             log.error("automatic retry of MR !%s skipped: review history could not be written", iid)
             return False
         spawn_detached(project_path, iid, mr_id, mode, attempt=attempt + 1)

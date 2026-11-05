@@ -6,6 +6,7 @@ offline in milliseconds.
 import json
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -68,6 +69,9 @@ class BotHarness:
             patcher.start()
         self._tmp = tempfile.TemporaryDirectory()
         root = Path(self._tmp.name)
+        # locks and review metas: never the real reviews/ directory
+        self._reviews = mock.patch.object(slack_bot.reviewer, "REVIEWS_DIR", root / "reviews")
+        self._reviews.start()
         self.bot = slack_bot.Bot(config(), state(), {"bot_user_id": BOT, "cursor": "1000.0"},
                                  bot_state_path=root / "bot_state.json",
                                  overrides_path=root / "overrides.json")
@@ -79,6 +83,7 @@ class BotHarness:
 
     def __exit__(self, *exc):
         self._history.stop()
+        self._reviews.stop()
         for patcher in self._spawns:
             patcher.stop()
         self._tmp.cleanup()
@@ -308,12 +313,16 @@ class TestRerun(unittest.TestCase):
                     "body": "🟠 [Medium] y\n\n— 🤖 mr-sentinel AI review (x)"},
                    {"id": 3, "author": {"id": 99}, "body": "這個其實沒問題"},
                    {"id": 4, "author": {"id": 42},
-                    "body": f"不成立 {review_common.APPEAL_REJECT}\n\n— 🤖 mr-sentinel AI review (x)"}]},
+                    "body": f"不成立 {review_common.APPEAL_REJECT}\n"
+                            f"{review_common.JUDGED_ON_MARKER.format('a1:None')}"
+                            f"\n\n— 🤖 mr-sentinel AI review (x)"}]},
     ]
 
     def rerun(self, harness, args, user=ADMIN, thread_ts=None, awards=None, discussions=None):
         gl = slack_bot.gitlab_client
         with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
+             mock.patch.object(gl, "get_mr", return_value={"id": 100, "state": "opened",
+                                                          "sha": "a1"}), \
              mock.patch.object(gl, "get_award_emojis",
                                return_value=self.AWARDS if awards is None else awards), \
              mock.patch.object(gl, "delete_award_emoji") as unclaim, \
@@ -546,17 +555,21 @@ class TestAppeal(unittest.TestCase):
     AI = "🟠 [Medium] x\n\n— 🤖 mr-sentinel AI review (m)"
 
     def appeal(self, harness, discussions, args=("g/app!481",), via_button=False,
-               mr_state="opened", head="h1", reviewed="h1"):
+               mr_state="opened", head="h1", reviewed="h1", user=ADMIN, meta=None,
+               target="master", busy=False, delete_error=None):
         gl = slack_bot.gitlab_client
+        meta = {"head_sha": reviewed, "target_branch": "master", **(meta or {})} \
+            if reviewed else {}
         with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
              mock.patch.object(gl, "list_discussions", return_value=discussions), \
              mock.patch.object(gl, "get_mr", return_value={"id": 100, "state": mr_state,
-                                                          "sha": head}), \
-             mock.patch.object(slack_bot.reviewer, "read_review_meta",
-                               return_value={"head_sha": reviewed} if reviewed else {}), \
+                                                          "sha": head, "target_branch": target}), \
+             mock.patch.object(slack_bot.reviewer, "read_review_meta", return_value=meta), \
+             mock.patch.object(slack_bot.Bot, "mr_busy", return_value=busy), \
              mock.patch.object(gl, "get_award_emojis", return_value=[]), \
-             mock.patch.object(gl, "delete_note"), \
+             mock.patch.object(gl, "delete_note", side_effect=delete_error) as self.deleted, \
              mock.patch.object(slack_bot.reviewer, "spawn_detached") as self.review_spawn, \
+             mock.patch.object(slack_bot.merge_retry, "spawn_detached") as self.merge_spawn, \
              mock.patch.object(slack_bot.appeal, "spawn_detached") as spawn, \
              mock.patch.object(slack_bot.slack_client, "chat_update") as update, \
              mock.patch.object(slack_bot.slack_client, "post_ephemeral"):
@@ -564,7 +577,7 @@ class TestAppeal(unittest.TestCase):
                 harness.bot.on_socket_event("interactive",
                                             click_payload(list(args), verb="appeal"))
             else:
-                harness.bot.dispatch(commands.Command("appeal", list(args)), ADMIN, None)
+                harness.bot.dispatch(commands.Command("appeal", list(args)), user, None)
         return spawn, update
 
     def replied(self):
@@ -605,20 +618,16 @@ class TestAppeal(unittest.TestCase):
             spawn.assert_called_once_with("g/app", "481", "100", review_mode="auto")
             self.review_spawn.assert_not_called()
 
-    def test_no_review_on_record_is_not_new_commits(self):
-        with BotHarness() as h:
-            spawn, _ = self.appeal(h, self.replied(), head="h2", reviewed=None)
-            spawn.assert_called_once_with("g/app", "481", "100")
-
     def test_no_reply_yet_explains_and_spends_nothing(self):
         with BotHarness() as h:
             spawn, _ = self.appeal(h, [{"id": "d1", "notes": [{"author": {"id": 42},
                                                                "body": self.AI}]}])
             spawn.assert_not_called()
-            self.assertIn("還沒看到新的回覆", h.last)
+            self.assertIn("沒看到新的 commit,也沒看到新的回覆", h.last)
+            self.assertIn("push", h.last)             # fixed: the new commit is the signal
             self.assertIn("立刻加入留言", h.last)     # a "Start a review" draft is invisible to us
             self.assertIn("最下方", h.last)           # a top-level comment is not a reply
-            self.assertIn(f"再按一次「{blocks.APPEAL_LABEL}」", h.last)
+            self.assertIn(f"再按一次「{blocks.CHECK_LABEL}」", h.last)
             self.assertEqual(h.bot.bot_state.get("rerun_log", []), [])
 
     def test_closed_mr_says_so_and_points_to_the_replacement(self):
@@ -632,7 +641,7 @@ class TestAppeal(unittest.TestCase):
                                                                "body": self.AI}]}],
                                    mr_state="closed")
             spawn.assert_not_called()
-            self.assertNotIn("還沒看到新的回覆", h.last)
+            self.assertNotIn("沒看到新的回覆", h.last)
             self.assertIn("已關閉", h.last)
             self.assertIn("g/app!482", h.last)
 
@@ -640,12 +649,235 @@ class TestAppeal(unittest.TestCase):
         with BotHarness() as h:
             _, update = self.appeal(h, self.replied(), via_button=True)
             note = update.call_args.args[4][-1]["elements"][0]["text"]
-            self.assertIn("不用修", note)
+            self.assertIn("重新檢查", note)
 
     def test_aliases_and_tier(self):
         self.assertEqual(commands.parse(f"<@{BOT}> 不用修 !481", BOT).verb, "appeal")
         self.assertIsNone(commands.authorize(commands.Command("appeal", []), OTHER, {}))
 
+
+
+class TestCheckButtonScenarios(TestAppeal):
+    """Every case of the one 「🔁 已修正或已回覆,重新檢查」 button. The developer only
+    says "I'm done"; whether they fixed or answered is ours to work out. h1 is the
+    reviewed head, h2 a newer push. Numbers match the scenario table in the README."""
+    AI = TestAppeal.AI
+    R = {"resolvable": True, "resolved": True, "resolved_by": {"id": 99}}
+
+    def finding(self, *replies, did="d1", **extra):
+        return {"id": did, "notes": [{"id": 1, "author": {"id": 42}, "body": self.AI, **extra},
+                                     *replies]}
+
+    def reply(self, body="不用改,這是刻意的"):
+        return {"id": 2, "author": {"id": 99, "name": "dev"}, "body": body}
+
+    def reject(self, head):
+        body = review_common.appeal_reply_body("reject", "還是會壞", "m",
+                                               judged_on=f"{head}:master")
+        return {"id": 3, "author": {"id": 42}, "body": body}
+
+    def accept(self, **extra):
+        return {"id": 3, "author": {"id": 42},
+                "body": review_common.appeal_reply_body("accept", "ok", "m"), **extra}
+
+    def budget(self, h):
+        return len(h.bot.bot_state.get("rerun_log", []))
+
+    # ---- the developer pushed a fix (head moved past the review) ----
+
+    def test_01_fixed_and_pushed_no_reply_re_reviews_and_drops_the_old_comment(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding()], head="h2")
+            spawn.assert_not_called()
+            self.review_spawn.assert_called_once_with("g/app", "481", "100", "auto")
+            self.assertEqual(self.deleted.call_count, 1)    # re-review decides if it is still there
+
+    def test_02_fixed_and_pushed_with_a_reply_is_judged_then_re_reviewed(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply("已修正"))], head="h2")
+            spawn.assert_called_once_with("g/app", "481", "100", review_mode="auto")
+            self.deleted.assert_not_called()                # a conversation is never deleted
+
+    def test_03_fixed_some_answered_others_then_pushed(self):
+        threads = [self.finding(did="fixed"), self.finding(self.reply(), did="answered")]
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, threads, head="h2")
+            spawn.assert_called_once_with("g/app", "481", "100", review_mode="auto")
+            self.assertEqual(self.deleted.call_count, 1)
+            self.assertIn("先判斷 1 則回覆,再重審", h.last)
+
+    def test_04_rejected_then_fixed_as_asked_without_a_reply_is_re_judged_on_the_new_code(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply(), self.reject("h1"))], head="h2")
+            spawn.assert_called_once_with("g/app", "481", "100", review_mode="auto")
+            self.assertIn("再確認 1 則之前判定要修的留言", h.last)
+
+    def test_05_no_review_on_record_counts_as_changed_code(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding()], head="h2", reviewed=None)
+            self.review_spawn.assert_called_once_with("g/app", "481", "100", "auto")
+
+    # ---- nothing pushed since the review ----
+
+    def test_06_answered_without_a_push_is_judged_only(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply())])
+            spawn.assert_called_once_with("g/app", "481", "100")
+            self.review_spawn.assert_not_called()           # same code: no reworded repeat
+            self.assertEqual(self.budget(h), 1)
+
+    def test_07_a_reject_on_an_older_head_is_re_judged_even_after_the_review_moved_on(self):
+        """Codex: the re-judge failed but the review that followed recorded h2."""
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply(), self.reject("h1"))],
+                                   head="h2", reviewed="h2")
+            spawn.assert_called_once_with("g/app", "481", "100")
+            self.review_spawn.assert_not_called()
+
+    def test_08_a_reject_on_this_head_waits_for_a_reply_or_a_fix(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply(), self.reject("h1"))])
+            spawn.assert_not_called()
+            self.review_spawn.assert_not_called()
+            self.assertIn("沒看到新的 commit,也沒看到新的回覆", h.last)
+            self.assertEqual(self.budget(h), 0)
+
+    def test_09_pressed_before_doing_anything_explains_both_ways(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding()])
+            spawn.assert_not_called()
+            self.assertIn("push 上去", h.last)
+            self.assertIn("Reply 寫理由", h.last)
+            self.assertIn("目前有 1 則還沒處理", h.last)
+            self.assertIn("改原本的回覆不算", h.last)   # row 19: an edited reply is not seen
+            self.assertEqual(self.budget(h), 0)
+
+    def test_10_resolved_by_the_developer_without_a_reply_or_a_push_is_not_done(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(**self.R)])
+            spawn.assert_not_called()
+            self.merge_spawn.assert_not_called()
+            self.assertIn("目前有 1 則還沒處理", h.last)
+
+    def test_11_everything_closed_but_not_merged_checks_the_merge(self):
+        bot_resolved = {"resolvable": True, "resolved": True, "resolved_by": {"id": 42}}
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply(), self.accept(**bot_resolved),
+                                                    **bot_resolved)])
+            spawn.assert_not_called()
+            self.merge_spawn.assert_called_once_with("g/app", "481", "100")
+            self.assertEqual(self.budget(h), 0)
+
+    def test_12_an_accept_gitlab_refused_to_resolve_is_retried_free(self):
+        unresolved = {"resolvable": True, "resolved": False}
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply(), self.accept(**unresolved),
+                                                    **unresolved)])
+            spawn.assert_called_once_with("g/app", "481", "100")
+            self.assertEqual(self.budget(h), 0)
+
+    def test_13_a_merged_or_closed_mr_says_so(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply())], mr_state="merged")
+            spawn.assert_not_called()
+            self.review_spawn.assert_not_called()
+            self.assertNotIn("沒看到新的", h.last)
+
+    # ---- the last review no longer stands (Codex round 2) ----
+
+    def test_14_an_unfinished_review_on_this_head_is_re_run(self):
+        with BotHarness() as h:
+            self.appeal(h, [self.finding()], meta={"mode": slack_bot.reviewer.UNFINISHED_MODE})
+            self.review_spawn.assert_called_once_with("g/app", "481", "100", "auto")
+
+    def test_15_retargeted_without_a_new_commit_is_re_reviewed(self):
+        with BotHarness() as h:
+            self.appeal(h, [self.finding()], target="main")
+            self.review_spawn.assert_called_once_with("g/app", "481", "100", "auto")
+
+    def test_15d_a_reject_is_re_judged_once_the_target_changed(self):
+        """Codex P2: the same commit aimed at another branch is another change."""
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply(), self.reject("h1"))],
+                                   target="main")
+            spawn.assert_called_once_with("g/app", "481", "100", review_mode="auto")
+
+    def test_15b_a_meta_from_before_targets_were_recorded_falls_back_to_the_guard(self):
+        with BotHarness() as h:
+            self.appeal(h, [self.finding()], target="main",
+                        meta={"target_branch": None, "guard": {"target_branch": "master"}})
+            self.review_spawn.assert_called_once_with("g/app", "481", "100", "auto")
+
+    def test_15c_no_target_on_record_at_all_is_re_reviewed(self):
+        with BotHarness() as h:
+            self.appeal(h, [self.finding()], meta={"target_branch": None})
+            self.review_spawn.assert_called_once_with("g/app", "481", "100", "auto")
+
+    def test_16a_old_comments_a_rerun_could_not_clear_force_another_rerun(self):
+        with BotHarness() as h:
+            h.bot.bot_state["cleanup_pending"] = {"100": "2026-11-05T12:00:00"}
+            self.appeal(h, [self.finding()])
+            self.review_spawn.assert_called_once_with("g/app", "481", "100", "auto")
+
+    def test_16c_a_rerun_voids_the_last_verdict_before_deleting_its_comments(self):
+        """Codex P1: the old deep verdict outlived its deleted comments and merged."""
+        with BotHarness() as h:
+            work = slack_bot.reviewer.REVIEWS_DIR / "100"
+            work.mkdir(parents=True)
+            slack_bot.reviewer.write_review_meta(work, "deep", "h1", 1, None, "master")
+            gl = slack_bot.gitlab_client
+            with mock.patch.object(gl, "get_current_user", return_value={"id": 42}), \
+                 mock.patch.object(gl, "get_award_emojis", return_value=[]), \
+                 mock.patch.object(gl, "list_discussions", return_value=[self.finding()]), \
+                 mock.patch.object(gl, "delete_note"):
+                h.bot.rerun_mr("g/app", "481", "100", "auto", None)
+            self.assertEqual(slack_bot.reviewer.read_review_meta(work)["mode"],
+                             slack_bot.reviewer.UNFINISHED_MODE)
+
+    def test_16b_a_failed_delete_is_remembered_for_the_next_press(self):
+        refused = urllib.error.HTTPError("u", 500, "x", {}, None)
+        with BotHarness() as h:
+            self.appeal(h, [self.finding()], head="h2", delete_error=refused)
+            self.review_spawn.assert_called_once()          # the rerun itself still runs
+            self.assertIn("100", h.bot.bot_state["cleanup_pending"])
+            self.assertIn("1 則舊留言刪除失敗", h.last)
+        with BotHarness() as h:                             # a clean rerun clears the debt
+            h.bot.bot_state["cleanup_pending"] = {"100": "2026-11-05T12:00:00"}
+            self.appeal(h, [self.finding()], head="h2")
+            self.assertNotIn("100", h.bot.bot_state["cleanup_pending"])
+
+    # ---- quota and concurrency: only a model run costs quota ----
+
+    def full_budget(self, h):
+        h.bot.bot_state["rerun_log"] = [h.bot.now().isoformat()] * commands.RERUN_LIMIT_PER_HOUR
+
+    def test_17a_quota_used_up_still_lets_the_merge_check_through(self):
+        bot_resolved = {"resolvable": True, "resolved": True, "resolved_by": {"id": 42}}
+        with BotHarness() as h:
+            self.full_budget(h)
+            self.appeal(h, [self.finding(self.reply(), self.accept(**bot_resolved),
+                                         **bot_resolved)], user=OTHER)
+            self.merge_spawn.assert_called_once()
+
+    def test_17b_quota_used_up_still_tells_what_to_do(self):
+        with BotHarness() as h:
+            self.full_budget(h)
+            self.appeal(h, [self.finding()], user=OTHER)
+            self.assertIn("沒看到新的 commit", h.last)
+
+    def test_17c_quota_used_up_refuses_a_model_run(self):
+        with BotHarness() as h:
+            self.full_budget(h)
+            spawn, _ = self.appeal(h, [self.finding(self.reply())], user=OTHER)
+            spawn.assert_not_called()
+            self.assertIn("重跑太頻繁", h.last)
+
+    def test_18_pressed_while_a_review_runs_costs_nothing(self):
+        with BotHarness() as h:
+            spawn, _ = self.appeal(h, [self.finding(self.reply())], busy=True)
+            spawn.assert_not_called()
+            self.assertIn("跑完後再按一次", h.last)
+            self.assertEqual(self.budget(h), 0)
 
 class TestSocketEvents(unittest.TestCase):
     def mention(self, ts, text=f"<@{BOT}> status", **extra):

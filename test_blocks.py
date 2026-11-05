@@ -66,6 +66,16 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestCheckButton(unittest.TestCase):
+    """One button for "fixed" and "answered": which one it was is ours to work out."""
+
+    def test_one_primary_button_naming_the_appeal_verb(self):
+        [button] = blocks.check_buttons("g/app", 481)
+        self.assertEqual(button["text"]["text"], blocks.CHECK_LABEL)
+        self.assertEqual(button["style"], "primary")
+        self.assertEqual(json.loads(button["value"]), {"verb": "appeal", "args": ["g/app!481"]})
+
+
 class TestMergedButtons(unittest.TestCase):
     def test_first_row_wins_on_a_repeated_action(self):
         first = blocks.rerun_buttons("g/app", 1, label="🔁 重審") + blocks.merge_buttons("g/app", 1)
