@@ -711,7 +711,11 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         # 6. hand off to the AI engine (file-based contract)
         ctx_path = work / "mr_context.json"
         out_path = work / "final_findings.json"
-        fetch_mr.write_context(ctx_path, ctx)
+        # a rerun keeps the threads someone answered: never raise one of those again,
+        # and decide on a deep confirmation from what is actually new
+        answered = gitlab_client.list_discussions(base, token, project_path, iid)
+        fetch_mr.write_context(ctx_path, {
+            **ctx, "already_raised": review_common.already_raised(answered, me["id"])})
         if out_path.exists():
             out_path.unlink()
 
@@ -724,10 +728,6 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             print("worktree :", wt)
             print("stats    :", ctx["stats"])
             return 0
-
-        # a rerun keeps the threads someone answered: never raise one of those again,
-        # and decide on a deep confirmation from what is actually new
-        answered = gitlab_client.list_discussions(base, token, project_path, iid)
 
         def run(m: str) -> dict | None:
             if out_path.exists():

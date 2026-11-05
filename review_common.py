@@ -268,7 +268,9 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
         completely alone, so a human's reply (and the comment it answers) never
         disappears — even when that human is the account the bot runs on;
       - only notes carrying the AI signature are deleted, so operational notes
-        and anything hand-written by us survive.
+        and anything hand-written by us survive;
+      - a thread that is not "unanswered" (an admin ruling, a resolve by us) is a
+        decision, not noise.
     """
     deletable = []
     for discussion in discussions:
@@ -276,6 +278,8 @@ def deletable_ai_notes(discussions: list[dict], user_id: int,
         if not notes:
             continue
         if not all(is_bot_note(n, user_id) for n in notes):
+            continue
+        if discussion_status(discussion, user_id) not in (None, "unanswered"):
             continue
         deletable += [n["id"] for n in notes if marker in (n.get("body") or "")]
     return deletable
@@ -309,8 +313,10 @@ def _human_notes(discussion: dict) -> list[dict]:
 def discussion_status(discussion: dict, user_id) -> str | None:
     """State of one AI finding thread, or None if it is not one.
 
-    closed     — resolved on GitLab, or (for a plain note GitLab cannot resolve)
-                 our latest verdict accepted the reply
+    closed     — resolved on GitLab by us (an accepted appeal, an admin override),
+                 or our latest verdict accepted the reply. A developer resolving
+                 the thread themselves closes nothing: GitLab lets the MR author
+                 resolve and cannot restrict that, so it would skip the judgment
     accepted   — we accepted, but a resolvable thread is still unresolved (the
                  resolve call failed): still open, so nothing merges on it
     appeal     — someone replied after our last word: ready to be judged
@@ -326,17 +332,21 @@ def discussion_status(discussion: dict, user_id) -> str | None:
         return None
     # GitLab's own rule: a thread is resolved when every resolvable note in it is
     resolvable = [n for n in notes if n.get("resolvable")]
-    if resolvable and all(n.get("resolved") for n in resolvable):
-        return "closed"
+    resolved = bool(resolvable) and all(n.get("resolved") for n in resolvable)
     last_ours = max((i for i, n in enumerate(notes) if is_bot_note(n, user_id)), default=0)
-    replied_after = any(not is_bot_note(n, user_id) for n in notes[last_ours + 1:])
-    if replied_after:
-        return "appeal"
     body = notes[last_ours].get("body") or ""
+    # our latest verdict outranks who resolved: an earlier resolve by us must not
+    # survive a later reject
+    if APPEAL_ACCEPT in body and resolved:
+        return "closed"
+    if any(not is_bot_note(n, user_id) for n in notes[last_ours + 1:]):
+        return "appeal"
     if APPEAL_ACCEPT in body:
         return "accepted" if resolvable else "closed"
     if APPEAL_REJECT in body:
         return "rejected"
+    if resolved and all((n.get("resolved_by") or {}).get("id") == user_id for n in resolvable):
+        return "closed"
     return "unanswered"
 
 
@@ -391,6 +401,27 @@ def not_yet_raised(findings: list, discussions: list[dict], user_id, head: str |
             title in body and (path == file if path else not file or f"`{file}" in body)
             for path, body in raised)
     return [f for f in findings if not seen(f)]
+
+
+def already_raised(discussions: list[dict], user_id) -> list[dict]:
+    """AI threads someone has answered, for the review model to judge "same issue,
+    reworded" — a title match alone misses it, since titles differ on every run."""
+    raised = []
+    for discussion in discussions:
+        status = discussion_status(discussion, user_id)
+        if status in (None, "unanswered"):
+            continue
+        first, *replies = _human_notes(discussion)
+        position = first.get("position") or {}
+        raised.append({
+            "file": position.get("new_path"),
+            "line": position.get("new_line"),
+            "status": status,
+            "finding": first.get("body") or "",
+            "replies": [{"role": "ai" if is_bot_note(n, user_id) else "developer",
+                         "body": n.get("body") or ""} for n in replies],
+        })
+    return raised
 
 
 def unresolved_accepts(discussions: list[dict], user_id) -> list[str]:

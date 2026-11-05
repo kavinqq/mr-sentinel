@@ -612,6 +612,21 @@ class TestAnsweredFindingsInReview(ReviewHarness, unittest.TestCase):
         self.assertEqual(modes, ["lite", "deep"])
         self.assertEqual(self.posted(m), [])
 
+    def test_the_model_is_told_what_was_already_answered(self):
+        """Regression (!60): reworded titles slipped past the title match."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["gitlab_client"].list_discussions.return_value = [{"id": "d1", "notes": [
+            {"id": 1, "author": {"id": 7}, "body": self.AI,
+             "position": {"new_path": "a.py", "new_line": 3}},
+            {"id": 2, "author": {"id": 99}, "body": "不用修"}]}]
+        m["engines"].get_engine.return_value.run_review.return_value = 1
+        reviewer.run_review("g/app", 5, 100, self.CFG, {}, False, force_mode="lite")
+        written = m["fetch_mr"].write_context.call_args.args[1]
+        self.assertEqual([(r["file"], r["status"]) for r in written["already_raised"]],
+                         [("a.py", "appeal")])
+
 
 class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
     """The final gates run on every review, land even when the AI review says
@@ -900,6 +915,12 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
         gl = self._merge([], {**self.PASSED, "leaks": 1}, threads=[release_thread("h")])
         gl.merge_mr.assert_not_called()
 
+    def test_a_release_comment_the_developer_resolved_holds_it(self):
+        """Regression (!60): developers resolved AI comments themselves, unjudged."""
+        gl = self._merge([], {**self.PASSED, "leaks": 1},
+                         threads=[release_thread("h", closed=True, resolver=99)])
+        gl.merge_mr.assert_not_called()
+
     def test_answered_comments_from_an_older_head_do_not_count(self):
         gl = self._merge([], {**self.PASSED, "leaks": 1},
                          threads=[release_thread("old0000", closed=True)])
@@ -936,11 +957,12 @@ class TestReleaseAutoMergeRail(unittest.TestCase):
         gl.merge_mr.assert_not_called()
 
 
-def release_thread(head, closed=False):
+def release_thread(head, closed=False, resolver=7):
     body = rc.format_comment_body({"title": "t", "gate_head": head},
                                   "— 🤖 mr-sentinel AI review (release guard · m)")
+    resolved = {"resolved": True, "resolved_by": {"id": resolver}} if closed else {}
     return {"id": f"d-{head}", "notes": [{"author": {"id": 7}, "body": body,
-                                          "resolvable": True, "resolved": closed}]}
+                                          "resolvable": True, "resolved": False, **resolved}]}
 
 
 MR_HEAD = {"id": 100, "iid": 10, "sha": "h", "target_branch": "master",

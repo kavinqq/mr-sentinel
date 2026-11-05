@@ -148,6 +148,11 @@ every thread where someone replied after its last word, checks the argument
 against the code, and answers in that thread: ✅ accepted → the thread is
 resolved; ⚠️ rejected → the reason, thread stays open (reply again and press
 again). Unclear cases are accepted — the developer has context the model lacks.
+Only a resolve by the bot account closes a comment: GitLab lets the MR author
+resolve and cannot restrict it, so a comment the developer resolved themselves
+still counts as unanswered (no reply) or waiting to be judged (with a reply), and
+a rerun deletes it only in the first case. A rerun also tells the model which
+answered comments exist, so a reworded copy of a settled finding is not raised again.
 When nothing is left open and `auto_merge_on_clean` is on, the normal auto-merge
 rails apply, pinned to the sha the last *deep* review covered (a lite review,
 or code pushed after the review, is never merged this way). Appeals share the

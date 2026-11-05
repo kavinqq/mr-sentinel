@@ -7,6 +7,11 @@ You are reviewing a GitLab merge request.
 ## Task
 1. Read `./__CONTEXT_FILE__` and understand the change. Its `description` is the
    author's MR description — treat it as the spec the change must meet.
+   Its `already_raised` lists findings an earlier round of this review already
+   posted and someone answered (the developer's replies and our verdicts are
+   included). Do NOT report any of those again, however you would word it —
+   the same defect in the same code is settled there. Report one only if the
+   code has since changed so that a genuinely different defect now exists.
 2. Go through every diff hunk looking for REAL defects, in priority order:
    correctness bugs → security (authz/IDOR/injection/PII leaks) → data loss →
    race conditions → and only then maintainability. Inspect files under

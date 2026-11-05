@@ -65,7 +65,7 @@ class Harness:
             if d["id"] == did:
                 for n in d["notes"]:
                     if n.get("resolvable"):
-                        n["resolved"] = True
+                        n.update(resolved=True, resolved_by={"id": ME})
 
     def run_engine(self, work, ctx_path, out_path, wt, cfg):
         self.ctx = json.loads(ctx_path.read_text())
@@ -108,7 +108,8 @@ class Harness:
                  mock.patch.object(appeal.history_sync, "sync_mr") as self.history, \
                  mock.patch.object(appeal.fetch_mr, "build_context", return_value={
                      "diff_refs": {"head_sha": self.ctx_head}}), \
-                 mock.patch.object(appeal.fetch_mr, "write_context"), \
+                 mock.patch.object(appeal.fetch_mr, "write_context",
+                                   side_effect=lambda path, ctx: setattr(self, "written_ctx", ctx)), \
                  mock.patch.object(appeal.engines, "get_engine", return_value=engine):
                 self.rc = appeal.run_appeal("g/app", "5", "100", self.cfg, {},
                                             review_after=self.review_after)
@@ -202,8 +203,19 @@ class TestRunAppeal(unittest.TestCase):
                     meta={**self.LITE, "guard": guard}).run()
         self.assertEqual(h.meta_after["guard"], guard)
 
+    def test_deep_pass_is_told_what_was_already_answered(self):
+        """Codex P5 (!60 class): the deep pass re-raising a just-accepted finding
+        blocked the merge with nothing left to appeal."""
+        again = {"findings": [{"severity": "medium", "title": "x", "file": "a.py", "line": 3}]}
+        h = Harness([disputed("d1")], self.ACCEPT, deep=again,
+                    auto_merge_on_clean=True, meta=self.LITE).run()
+        written = h.written_ctx["already_raised"]
+        self.assertEqual([(r["file"], r["status"]) for r in written], [("a.py", "closed")])
+        h.merge.assert_called_once()
+
     def test_deep_pass_with_findings_records_nothing(self):
-        found = {"findings": [{"severity": "medium", "title": "x", "file": "a.py", "line": 3}]}
+        found = {"findings": [{"severity": "medium", "title": "仍會 None", "file": "a.py",
+                               "line": 3}]}
         h = Harness([disputed("d1")], self.ACCEPT, deep=found,
                     auto_merge_on_clean=True, meta=self.LITE).run()
         self.assertEqual(h.meta_after["mode"], "lite")

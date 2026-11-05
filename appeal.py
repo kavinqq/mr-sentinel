@@ -148,21 +148,27 @@ def _deep_gate(config, project, iid, work, wt, wt_sha) -> tuple[str, dict] | Non
 
     None when it did not run to completion, or when the head moved since `wt` was
     checked out (the pass would then cover code other than what the appeals judged).
-    Nothing is posted: the model has not seen the appeals, so a finding it repeats
-    would only stack a second round on threads the developer already settled."""
+    Nothing is posted: a finding it still repeats would only stack a second round on
+    threads the developer already settled."""
     base, token, review_cfg = config["gitlab_url"], config["gitlab_token"], config["review"]
     ctx = fetch_mr.build_context(base, token, project, iid)
     head_sha = ctx["diff_refs"]["head_sha"]
     if head_sha != wt_sha:
         return None
+    me = gitlab_client.get_current_user(base, token)["id"]
+    answered = gitlab_client.list_discussions(base, token, project, iid)
     ctx_path, out_path = work / DEEP_GATE_CONTEXT, work / DEEP_GATE_FINDINGS
-    fetch_mr.write_context(ctx_path, ctx)
+    fetch_mr.write_context(ctx_path, {
+        **ctx, "already_raised": review_common.already_raised(answered, me)})
     if out_path.exists():
         out_path.unlink()
     engine = engines.get_engine(review_cfg["engine"])
     if engine.run_review(work, ctx_path, out_path, wt, review_cfg, "deep") != 0:
         return None
-    return head_sha, json.loads(out_path.read_text())
+    result = json.loads(out_path.read_text())
+    if isinstance(result, dict) and isinstance(result.get("findings"), list):
+        result["findings"] = review_common.not_yet_raised(result["findings"], answered, me)
+    return head_sha, result
 
 
 def _finish(config, project, iid, web_url, verdicts, me, thread_ts, work, deep_gate=None) -> int:

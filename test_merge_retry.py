@@ -73,7 +73,7 @@ class Harness:
             raise RuntimeError("502")
         for n in self.thread(did)["notes"]:
             if n.get("resolvable"):
-                n["resolved"] = True
+                n.update(resolved=True, resolved_by={"id": ME})
 
     @property
     def last(self):

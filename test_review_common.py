@@ -353,6 +353,18 @@ class TestDeletableAiNotes(unittest.TestCase):
                                    "system": True}]}]
         self.assertEqual(rc.deletable_ai_notes(discussions, self.ME), [1])
 
+    def test_an_admin_override_with_no_reply_survives(self):
+        """Codex P3: deleting it would drop the ruling and raise the finding again."""
+        ruling = {"id": 2, "author": {"id": self.ME},
+                  "body": f"✅ 冠霖 裁定放行\n\n{rc.APPEAL_ACCEPT}"}
+        self.assertEqual(rc.deletable_ai_notes([{"notes": [self.ai_note(1), ruling]}],
+                                               self.ME), [])
+
+    def test_a_developer_resolving_without_reply_is_still_deletable(self):
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": 99}}
+        self.assertEqual(rc.deletable_ai_notes([{"notes": [{**self.ai_note(1), **r}]}],
+                                               self.ME), [1])
+
     def test_empty_and_noteless_discussions(self):
         self.assertEqual(rc.deletable_ai_notes([], self.ME), [])
         self.assertEqual(rc.deletable_ai_notes([{"notes": []}, {}], self.ME), [])
@@ -417,9 +429,57 @@ class TestAppeals(unittest.TestCase):
 
     def test_resolved_thread_is_closed(self):
         """Shape as GitLab returns it (verified live on a merged MR): every note
-        of a resolvable thread carries resolvable/resolved."""
+        of a resolvable thread carries resolvable/resolved/resolved_by."""
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": ME}}
+        accept = note(ME, rc.appeal_reply_body("accept", "ok", "m"), **r)
+        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "x", **r), accept),
+                         "closed")
+
+    def test_an_unjudged_reply_stays_open_whoever_resolved(self):
+        """Closing a reply nobody judged is the admin's ✅, which leaves a verdict."""
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": ME}}
+        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "x", **r)), "appeal")
+
+    def test_developer_resolving_without_reply_is_still_unanswered(self):
+        """!60: the author resolved 7 findings without a word; nobody judged them."""
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": DEV}}
+        self.assertEqual(self.status(note(ME, AI_BODY, **r)), "unanswered")
+
+    def test_developer_resolving_after_a_reply_still_needs_judging(self):
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": DEV}}
+        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "先保留", **r)), "appeal")
+
+    def test_developer_resolving_a_rejected_thread_keeps_it_rejected(self):
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": DEV}}
+        reject = note(ME, rc.appeal_reply_body("reject", "still broken", "m"), **r)
+        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "x", **r), reject),
+                         "rejected")
+
+    def test_accepted_thread_resolved_by_anyone_is_closed(self):
+        """The verdict is ours already; GitLab keeps the first resolver when we
+        resolve a thread a developer had resolved."""
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": DEV}}
+        accept = note(ME, rc.appeal_reply_body("accept", "ok", "m"), **r)
+        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "x", **r), accept),
+                         "closed")
+
+    def test_a_later_reject_beats_an_earlier_resolve_by_us(self):
+        """Codex P1: accepted+resolved, developer replies, we reject, the developer
+        deletes the reply — every remaining note was resolved by us."""
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": ME}}
+        accept = note(ME, rc.appeal_reply_body("accept", "ok", "m"), **r)
+        reject = note(ME, rc.appeal_reply_body("reject", "no", "m"), **r)
+        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "x", **r), accept, reject),
+                         "rejected")
+
+    def test_owner_resolving_by_hand_is_ours(self):
+        """The bot runs on the owner's account: indistinguishable, and the owner may."""
+        r = {"resolvable": True, "resolved": True, "resolved_by": {"id": ME}}
+        self.assertEqual(self.status(note(ME, AI_BODY, **r)), "closed")
+
+    def test_resolver_unknown_is_not_ours(self):
         r = {"resolvable": True, "resolved": True}
-        self.assertEqual(self.status(note(ME, AI_BODY, **r), note(DEV, "x", **r)), "closed")
+        self.assertEqual(self.status(note(ME, AI_BODY, **r)), "unanswered")
 
     def test_partly_resolved_thread_is_not_closed(self):
         self.assertEqual(self.status(note(ME, AI_BODY, resolvable=True, resolved=True),
@@ -510,6 +570,26 @@ class TestNotYetRaised(unittest.TestCase):
     def test_an_unanswered_thread_does_not_hide_a_finding(self):
         found = [{"file": "a.py", "line": 3, "title": "x"}]
         self.assertEqual(rc.not_yet_raised(found, [self.thread()], 42), found)
+
+
+class TestAlreadyRaised(unittest.TestCase):
+    """What the review model is told was already discussed, so a reworded copy of
+    a settled finding is not raised again (!60: titles differ on every run)."""
+    AI = TestNotYetRaised.AI
+
+    def test_answered_threads_go_to_the_model_with_the_whole_conversation(self):
+        answered = TestNotYetRaised.thread(TestNotYetRaised(), "後端之後會上線")
+        accept = {"id": 9, "author": {"id": 42}, "body": rc.appeal_reply_body("accept", "ok", "m")}
+        answered["notes"].append(accept)
+        self.assertEqual(rc.already_raised([answered], 42), [{
+            "file": "a.py", "line": 3, "status": "closed", "finding": self.AI,
+            "replies": [{"role": "developer", "body": "後端之後會上線"},
+                        {"role": "ai", "body": accept["body"]}]}])
+
+    def test_unanswered_and_non_ai_threads_are_left_out(self):
+        unanswered = TestNotYetRaised.thread(TestNotYetRaised())
+        human = {"id": "h", "notes": [{"id": 1, "author": {"id": 99}, "body": "nit"}]}
+        self.assertEqual(rc.already_raised([unanswered, human], 42), [])
 
 
 if __name__ == "__main__":
