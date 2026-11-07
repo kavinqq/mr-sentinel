@@ -46,6 +46,7 @@ def sidebar(request):
             _nav("團隊總覽", "monitoring", reverse_lazy("admin:index")),
             _nav("每週週報", "event_note", reverse_lazy("weekly")),
             _nav("專案風險", "folder_managed", reverse_lazy("projects")),
+            _nav("SonarQube 報告", "bug_report", reverse_lazy("sonar_report", args=["index.html"])),
             _nav("評分變動紀錄", "timeline", reverse_lazy("score_log")),
         ]},
         {"title": "系統", "separator": True, "items": [

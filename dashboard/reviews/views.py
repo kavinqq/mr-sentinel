@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
-from django.http import Http404, HttpResponseBadRequest
+from django.http import Http404, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -15,7 +15,7 @@ from django.views.decorators.http import require_GET, require_POST
 from history import db as hdb
 from history.parse import CATEGORIES
 
-from . import ops, services
+from . import ops, services, sonar_reports
 from .models import Finding, ScoringConfig
 
 
@@ -273,16 +273,28 @@ def ops_status(request):
     return _page(request, "reviews/ops.html", "服務狀態", **ops.page())
 
 
+@require_GET
+def sonar_report(request, name):
+    body = sonar_reports.read(name)
+    if body is None:
+        raise Http404
+    return HttpResponse(body, content_type="text/html; charset=utf-8")
+
+
 @require_POST
 def ops_switch(request):
-    """Turns a live Slack listener off: superusers only, on top of staff + CSRF."""
+    """Turns a service (or a whole project) on or off: superusers only, on top of staff + CSRF."""
     if not request.user.is_superuser:
         raise PermissionDenied
-    label, on = request.POST.get("label", ""), request.POST.get("on") == "1"
+    label, project = request.POST.get("label", ""), request.POST.get("project", "")
+    on = request.POST.get("on") == "1"
     try:
-        result = ops.switch(label, on)
-    except ValueError as exc:
+        if project:
+            name, result = project, ops.switch_project(project, on)
+        else:
+            name, result = ops.BY_LABEL[label].title, ops.switch(label, on)
+    except (KeyError, ValueError) as exc:
         messages.error(request, str(exc))
     else:
-        messages.success(request, f"{'開啟' if on else '關閉'} {ops.BY_LABEL[label].title}:{result}")
+        messages.success(request, f"{'開啟' if on else '關閉'} {name}:\n{result}")
     return redirect("ops")

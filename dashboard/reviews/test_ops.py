@@ -55,10 +55,24 @@ class TestRedact(SimpleTestCase):
 
 
 class TestSwitch(SimpleTestCase):
-    def test_only_the_socket_listeners_can_be_switched(self):
+    def test_only_the_listed_services_can_be_switched(self):
         with mock.patch.object(ops, "launchctl") as lc:
             with self.assertRaises(ValueError):
-                ops.switch("com.example.mr-sentinel", on=False)
+                ops.switch("com.example.unlisted", on=False)
+        lc.assert_not_called()
+
+    def test_every_project_off_covers_all_its_services(self):
+        for project in ("mr-sentinel", "alert-doctor"):
+            with self.subTest(project=project), mock.patch.object(ops, "launchctl", return_value=(0, "")) as lc:
+                ops.switch_project(project, on=False)
+            targets = {c.args[0][1].rsplit("/", 1)[1] for c in lc.call_args_list}
+            self.assertEqual(targets, {s.label for s in ops.SERVICES if s.project == project})
+            self.assertEqual({c.args[0][0] for c in lc.call_args_list}, {"disable", "bootout"})
+
+    def test_project_without_switchable_services_is_refused(self):
+        with mock.patch.object(ops, "launchctl") as lc:
+            with self.assertRaises(ValueError):
+                ops.switch_project("nope", on=False)
         lc.assert_not_called()
 
     def test_off_disables_then_unloads_so_it_stays_off_after_a_reboot(self):

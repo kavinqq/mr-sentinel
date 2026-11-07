@@ -14,7 +14,8 @@ dashboard/run.sh                   # http://127.0.0.1:8765
 | 個人 `/people/<id>/` | score breakdown, aspect bars, monthly trend, follow-up bugs, every finding (links to the GitLab comment) with 改面向 / 標記誤判 / 恢復計分 |
 | 評分設定 `/scoring/` | edit weights / thresholds as JSON → validated → new version, in force immediately |
 | 原始資料 `/admin/` | browse every table (view-only) |
-| 服務狀態 `/admin/system/` | launchd state and recent logs of mr-sentinel and alert-doctor on this machine, GitLab / Socket heartbeat / SonarQube checks; superusers can switch the two Slack Socket listeners off and on (`reviews/ops.py`) |
+| SonarQube 報告 `/admin/review/sonar/index.html` | the fix-list HTML files written by `~/sonarqube/export_report.py`, served as-is (read from disk on each request, `reviews/sonar_reports.py`); regenerate them there |
+| 服務狀態 `/admin/system/` | launchd state and recent logs of mr-sentinel and alert-doctor on this machine, GitLab / Socket heartbeat / SonarQube checks; superusers can switch every listed service off and on, one by one or per project ("全部關閉") (`reviews/ops.py`) |
 
 ## Boundaries (why it is built this way)
 
@@ -31,8 +32,9 @@ dashboard/run.sh                   # http://127.0.0.1:8765
 - `MR_SENTINEL_DB=/path/to/sentinel.db` points both the dashboard and the jobs it
   starts at another file.
 
-- **The Socket switch is `launchctl disable` + `bootout`** (and back), so an off
-  listener stays off across reboots; a kill would be undone by `KeepAlive`. Only
-  the labels in `ops.SOCKETS` can be switched, and only by a superuser.
+- **The panel switch is `launchctl disable` + `bootout`** (and back), so an off
+  service stays off across reboots; a kill would be undone by `KeepAlive`. Each
+  project switches as a whole ("全部關閉"); only the labels in `ops.SWITCHABLE`
+  (every service in `ops.SERVICES`) can be switched, and only by a superuser.
 
 Tests: `dashboard/.venv/bin/python dashboard/manage.py test reviews`

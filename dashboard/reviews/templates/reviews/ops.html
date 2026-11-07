@@ -15,7 +15,17 @@
   </ul>
 
   {% for project, rows in groups %}
-  <h2 class="ms-ops-group">{{ project }}</h2>
+  <h2 class="ms-ops-group">{{ project }}
+    {% if request.user.is_superuser %}
+    <form method="post" action="{% url 'ops_switch' %}" class="ms-ops-all">{% csrf_token %}
+      <input type="hidden" name="project" value="{{ project }}">
+      <button type="submit" name="on" value="0" class="ms-ops-btn stop"
+              onclick="return confirm('關閉 {{ project }} 全部服務?')">全部關閉</button>
+      <button type="submit" name="on" value="1" class="ms-ops-btn start"
+              onclick="return confirm('開啟 {{ project }} 全部服務?')">全部開啟</button>
+    </form>
+    {% endif %}
+  </h2>
   {% for r in rows %}
   <section class="ms-ops-svc">
     <div class="ms-ops-row">
@@ -29,7 +39,7 @@
         <input type="hidden" name="label" value="{{ r.service.label }}">
         <input type="hidden" name="on" value="{{ r.on|yesno:'0,1' }}">
         <button type="submit" class="ms-ops-btn {{ r.on|yesno:'stop,start' }}"
-                onclick="return confirm('{{ r.on|yesno:'關閉,開啟' }} {{ r.service.title|escapejs }}?')">{{ r.on|yesno:'關閉 Socket,開啟 Socket' }}</button>
+                onclick="return confirm('{{ r.on|yesno:'關閉,開啟' }} {{ r.service.title|escapejs }}?')">{{ r.on|yesno:'關閉,開啟' }}</button>
       </form>
       {% endif %}
     </div>

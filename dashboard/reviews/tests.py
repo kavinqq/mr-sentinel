@@ -573,17 +573,21 @@ class TestOps(DashboardCase):
         checks.start()
         self.addCleanup(checks.stop)
 
-    def test_page_lists_both_projects_with_switches_for_the_sockets_only(self):
+    def test_page_lists_both_projects_with_a_switch_per_service_and_per_project(self):
         resp = self.client.get(reverse("ops"))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "alert-doctor")
-        self.assertContains(resp, 'name="label" value="tw.pocket.alert-doctor.collector"')
-        self.assertNotContains(resp, 'name="label" value="tw.pocket.alert-doctor.health"')
+        for s in ops.SERVICES:
+            self.assertContains(resp, f'name="label" value="{s.label}"')
+        self.assertContains(resp, 'name="project" value="alert-doctor"')
+        self.assertContains(resp, 'name="project" value="mr-sentinel"')
 
     def test_staff_who_are_not_superusers_see_no_switch_and_cannot_post(self):
         User.objects.create_user("staff", password="pw-for-tests-only", is_staff=True)
         self.client.force_login(User.objects.get(username="staff"))
-        self.assertNotContains(self.client.get(reverse("ops")), "關閉 Socket")
+        page = self.client.get(reverse("ops"))
+        self.assertNotContains(page, 'name="label"')
+        self.assertNotContains(page, 'name="project"')
         with mock.patch.object(ops, "switch") as sw:
             resp = self.client.post(reverse("ops_switch"), {"label": "tw.pocket.alert-doctor.collector"})
         self.assertEqual(resp.status_code, 403)
@@ -603,6 +607,6 @@ class TestOps(DashboardCase):
         self.assertRedirects(resp, reverse("ops"), fetch_redirect_response=False)
         sw.assert_called_once_with("tw.pocket.alert-doctor.collector", False)
 
-    def test_non_socket_labels_are_never_switched(self):
-        self.client.post(reverse("ops_switch"), {"label": "com.example.mr-sentinel", "on": "0"})
+    def test_labels_outside_the_allowlist_are_never_switched(self):
+        self.client.post(reverse("ops_switch"), {"label": "com.example.unlisted", "on": "0"})
         self.launchctl.assert_not_called()

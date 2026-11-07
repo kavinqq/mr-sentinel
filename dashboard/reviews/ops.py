@@ -1,5 +1,5 @@
 """本機服務狀態:mr-sentinel 和 alert-doctor 的 launchd 服務、它們依賴的東西,
-以及兩個 Slack Socket listener 的開關。只讀 launchctl / log 檔,只有 SOCKETS 能被切換。"""
+以及每個服務的開關(整個專案或單一服務)。只讀 launchctl / log 檔,只有 SWITCHABLE 內的 label 能被切換。"""
 import json
 import os
 import re
@@ -49,8 +49,10 @@ SERVICES = (
     Service("tw.pocket.alert-doctor.weekly", "alert-doctor", "weekly(週報)", "週一 09:30",
             (HOME / "alert-doctor/logs/weekly.log",)),
 )
-# one listener per Slack app: switching these is the whole point of the panel
-SOCKETS = {"com.example.mr-sentinel-bot-socket", "tw.pocket.alert-doctor.collector"}
+# Every listed service can be switched, and each project as a whole: mr-sentinel's
+# poller launches reviews, its Socket answers buttons and replays a history tick
+# on every reconnect; alert-doctor's analyzer calls the LLM. Off = no token spend.
+SWITCHABLE = frozenset(s.label for s in SERVICES)
 BY_LABEL = {s.label: s for s in SERVICES}
 
 SECRET_RE = re.compile(
@@ -87,9 +89,9 @@ def parse_disabled(text: str) -> dict:
 
 
 def switch(label: str, on: bool) -> str:
-    """Turn a Socket listener on or off for good: disable + bootout survives a reboot,
+    """Turn a service on or off for good: disable + bootout survives a reboot,
     a plain kill would be undone by KeepAlive. Raises ValueError for anything else."""
-    if label not in SOCKETS:
+    if label not in SWITCHABLE:
         raise ValueError(f"{label} cannot be switched from the panel")
     target = f"gui/{UID}/{label}"
     if on:
@@ -98,6 +100,13 @@ def switch(label: str, on: bool) -> str:
         steps = [["disable", target], ["bootout", target]]
     results = [launchctl(step) for step in steps]
     return "; ".join(f"{step[0]} rc={rc} {out.strip()}" for step, (rc, out) in zip(steps, results))
+
+
+def switch_project(project: str, on: bool) -> str:
+    labels = [s.label for s in SERVICES if s.project == project]
+    if not labels:
+        raise ValueError(f"{project} 沒有可切換的服務")
+    return "\n".join(f"{BY_LABEL[label].title}: {switch(label, on)}" for label in labels)
 
 
 def tail(path: Path, lines: int = LOG_LINES) -> str:
@@ -185,7 +194,7 @@ def page() -> dict:
             st = service_status(s, disabled)
             kind, label = _badge(s, st)
             rows.append({"service": s, "kind": kind, "label": label, "status": st,
-                         "log_ago": _ago(st["log_age"]), "switchable": s.label in SOCKETS,
+                         "log_ago": _ago(st["log_age"]), "switchable": s.label in SWITCHABLE,
                          "on": st["loaded"] and not st["disabled"],
                          "logs": [(str(p), tail(p)) for p in s.logs]})
         groups.append((project, rows))
