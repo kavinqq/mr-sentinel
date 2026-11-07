@@ -1362,3 +1362,216 @@ class TestFailingStep(unittest.TestCase):
     def test_without_a_command_keeps_the_tail(self):
         trace = "\n".join(f"l{i}" for i in range(100))
         self.assertEqual(len(reviewer.failing_step(trace).splitlines()), reviewer.TRACE_TAIL_LINES)
+
+
+class TestLaterRoundsInReview(ReviewHarness, unittest.TestCase):
+    """Owner's call (2026-11-07, after !60): every round reads the whole MR, but from
+    the second completed round on a finding nobody raised before is posted only where
+    the code changed since that round. Real clone, real history db; GitLab and the
+    model are the harness's mocks."""
+    FINANCIAL = "src/pages/Todo/pages/components/StockLendingFinancialSection.js"
+    NAVBAR = "src/components/Navbar.js"
+
+    @classmethod
+    def setUpClass(cls):
+        # one clone for the class (git is the slow part); tests address commits by sha
+        from test_review_rounds import Repo, edit, js
+        cls.repo, cls.edit, cls.js = Repo(cls), staticmethod(edit), staticmethod(js)
+        cls.h1 = cls.repo.commit({cls.FINANCIAL: js(250), cls.NAVBAR: js(300)})
+        cls.h2 = cls.repo.commit({cls.FINANCIAL: edit(js(250), 20, "const ratio = 0.3;")})
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.work = Path(self.dir.name) / "100"
+        self.work.mkdir()
+        self.cfg = {**self.CFG, "history": {"db_path": str(Path(self.dir.name) / "s.db")}}
+
+    def last_round(self, head, target="master", mode="deep"):
+        reviewer.write_review_meta(self.work, mode, head, 1, None, target,
+                                   last_round={"head_sha": head, "target_branch": target,
+                                               "mode": mode})
+
+    def record(self, *rows):
+        from history import db
+        conn = db.connect(self.cfg["history"]["db_path"])
+        conn.execute("INSERT INTO mrs(mr_id, project, iid) VALUES (100, 'g/app', 5)")
+        conn.executemany(
+            "INSERT INTO findings(note_id, mr_id, file, line, body, status, present, head_sha) "
+            "VALUES (?, 100, ?, ?, ?, ?, 0, ?)",
+            [(i, r["file"], r.get("line"), r.get("body", "x"), r["status"], r["head_sha"])
+             for i, r in enumerate(rows, 1)])
+        conn.commit()
+        conn.close()
+
+    def review(self, findings, head=None, gates=None, discussions=(), engine_ok=True):
+        m = self.patches(self.dir.name, gates or outcome())
+        m["prepare_worktree"].return_value = (self.repo.path, None)
+        m["fetch_mr"].build_context.return_value = {
+            **self.CTX, "diff_refs": {"start_sha": self.h1, "head_sha": head or self.h2}}
+        m["gitlab_client"].list_discussions.return_value = list(discussions)
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": list(findings)} if engine_ok else None,
+                                             "deep")), \
+                self.assertLogs("mr_sentinel.reviewer", "INFO") as logs:
+            reviewer.run_review("g/app", 5, 100, self.cfg, {}, False)
+        return m, "\n".join(logs.output)
+
+    def held_back(self):
+        path = self.work / reviewer.SUPPRESSED_LOG
+        if not path.exists():
+            return []
+        return [f["title"] for line in path.read_text().splitlines()
+                for f in json.loads(line)["findings"]]
+
+    ON_CHANGE = {"severity": "medium", "title": "財力門檻比例寫死在畫面", "line": 20}
+    UNTOUCHED = {"severity": "medium", "title": "元件測試連結靠建置參數", "line": 215}
+
+    def findings(self):
+        return [{**self.ON_CHANGE, "file": self.FINANCIAL}, {**self.UNTOUCHED, "file": self.NAVBAR}]
+
+    def titles(self, m):
+        return sorted(f["title"] for f in self.posted(m))
+
+    def test_round_two_holds_back_a_new_finding_on_untouched_code(self):
+        self.last_round(self.h1)
+        m, logs = self.review(self.findings())
+        self.assertEqual(self.titles(m), [self.ON_CHANGE["title"]])
+        self.assertEqual(self.held_back(), [self.UNTOUCHED["title"]])
+        self.assertIn(self.UNTOUCHED["title"], logs)
+        self.assertIn("1 comment", m["_slack_say_verdict"].call_args.args[1])
+
+    def test_the_first_round_posts_everything(self):
+        m, logs = self.review(self.findings())
+        self.assertEqual(len(self.posted(m)), 2)
+        self.assertEqual(self.held_back(), [])
+        self.assertIn("first round", logs)
+
+    def test_a_retargeted_mr_starts_over(self):
+        self.last_round(self.h1, target="develop")
+        m, logs = self.review(self.findings())
+        self.assertEqual(len(self.posted(m)), 2)
+        self.assertIn("target", logs)
+
+    def test_a_rebased_mr_starts_over(self):
+        self.repo.git("checkout", "-q", "-b", "rebased", self.h1)
+        self.addCleanup(self.repo.git, "checkout", "-q", "main")
+        rebased = self.repo.commit({self.FINANCIAL: self.edit(self.js(250), 20, "const r = 1;")})
+        self.last_round(self.h2)
+        m, logs = self.review(self.findings(), head=rebased)
+        self.assertEqual(len(self.posted(m)), 2)
+        self.assertIn("not an ancestor", logs)
+
+    def test_a_reverted_fix_is_raised_again(self):
+        """The fix (a guard line) was accepted as fixed on h3; h4 deletes it again."""
+        guarded = self.edit(self.js(250), 40, "if (amount == null) return 0;\nconst line40 = 'v1';")
+        h3 = self.repo.commit({self.FINANCIAL: guarded})
+        h4 = self.repo.commit({self.FINANCIAL: self.js(250)})
+        self.last_round(h3)
+        title = "總財力加總沒處理空值"
+        fixed = {"id": "d1", "notes": [
+            {"id": 1, "author": {"id": 7}, "position": {"new_path": self.FINANCIAL, "new_line": 40},
+             "body": f"🟠 **Medium** · {title}\n\n{rc.SIGNATURE_MARKER}"},
+            {"id": 2, "author": {"id": 99}, "body": "已修"},
+            {"id": 3, "author": {"id": 7},
+             "body": f"✅ **已確認修正**\n{rc.APPEAL_SIGNATURE}\n{rc.APPEAL_ACCEPT}\n{rc.APPEAL_FIXED}"}]}
+        again = {"severity": "medium", "title": title, "file": self.FINANCIAL, "line": 40}
+        m, _ = self.review([again], head=h4, discussions=[fixed])
+        self.assertEqual(self.titles(m), [title])
+
+    def test_a_comment_the_rerun_deleted_unanswered_is_not_new(self):
+        """The rerun cleanup removed it from GitLab; the history db still has it."""
+        self.last_round(self.h1)
+        self.record({"file": self.NAVBAR, "line": 215, "status": "unanswered", "head_sha": self.h1})
+        m, _ = self.review(self.findings())
+        self.assertEqual(len(self.posted(m)), 2)
+
+    def test_an_unreadable_history_db_holds_nothing_back(self):
+        self.last_round(self.h1)
+        Path(self.cfg["history"]["db_path"]).mkdir()
+        m, logs = self.review(self.findings())
+        self.assertEqual(len(self.posted(m)), 2)
+        self.assertIn("history", logs)
+
+    def test_the_gate_holds_back_new_guard_findings_but_never_rule_hits(self):
+        """A rule hit the review did not post holds the merge on its own (_release_blocker)."""
+        self.last_round(self.h1)
+        hit = {**GATE_HIT, "file": self.NAVBAR, "line": 210, "hit_lines": [210]}
+        leak = {**LEAK, "file": self.NAVBAR, "line": 215}
+        m, _ = self.review([], gates=outcome(rule=[hit], guard=[leak]))
+        self.assertEqual([f["gate"] for f in self.posted(m)], ["artifact"])
+        self.assertEqual(reviewer.read_review_meta(self.work)["guard"]["leaks"], 1)
+        self.assertEqual(self.held_back(), [LEAK["title"]])
+
+    def test_only_a_round_that_completed_moves_the_last_round(self):
+        self.last_round(self.h1)
+        self.review(self.findings(), engine_ok=False)
+        self.assertEqual(reviewer.read_review_meta(self.work)["last_round"]["head_sha"], self.h1)
+        self.review(self.findings())
+        self.assertEqual(reviewer.read_review_meta(self.work)["last_round"],
+                         {"head_sha": self.h2, "target_branch": "master", "mode": "deep"})
+
+    def test_a_deep_round_after_a_lite_one_posts_everything(self):
+        """`rerun deep` (or the confirmation before auto-merge) after a lite round: the
+        lite pass was not the strict one, and a held-back finding could let it merge."""
+        self.last_round(self.h2, mode="lite")
+        m, logs = self.review(self.findings())
+        self.assertEqual(len(self.posted(m)), 2)
+        self.assertIn("lite", logs)
+
+    def test_a_lite_round_after_a_deep_one_still_holds_back(self):
+        self.last_round(self.h1)
+        m = self.patches(self.dir.name, outcome())
+        m["prepare_worktree"].return_value = (self.repo.path, None)
+        m["fetch_mr"].build_context.return_value = {**self.CTX, "diff_refs": {"start_sha": self.h1, "head_sha": self.h2}}
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": self.findings()}, "lite")):
+            reviewer.run_review("g/app", 5, 100, self.cfg, {}, False)
+        self.assertEqual(self.titles(m), [self.ON_CHANGE["title"]])
+
+    def test_a_round_with_an_unfinished_gate_does_not_move_it(self):
+        self.last_round(self.h1)
+        self.review(self.findings(), gates=outcome(broken=True))
+        self.assertEqual(reviewer.read_review_meta(self.work)["last_round"]["head_sha"], self.h1)
+
+    def test_a_lite_pass_with_only_held_back_findings_is_confirmed_by_deep(self):
+        """Codex P2: held back after the clean check, the lite pass skipped its deep
+        confirmation and finished with nothing posted and no merge."""
+        self.last_round(self.h1)
+        m = self.patches(self.dir.name, outcome())
+        m["prepare_worktree"].return_value = (self.repo.path, None)
+        m["fetch_mr"].build_context.return_value = {**self.CTX, "diff_refs": {"start_sha": self.h1, "head_sha": self.h2}}
+        modes = []
+
+        def run_review(work, ctx_path, out_path, wt, cfg, mode):
+            modes.append(mode)
+            found = [{**self.UNTOUCHED, "file": self.NAVBAR}] if mode == "lite" else []
+            out_path.write_text(json.dumps({"findings": found}))
+            return 0
+        m["engines"].get_engine.return_value.run_review.side_effect = run_review
+        m["engines"].get_engine.return_value.label.return_value = "m"
+        reviewer.run_review("g/app", 5, 100, self.cfg, {}, False, force_mode="lite")
+        self.assertEqual(modes, ["lite", "deep"])
+        self.assertEqual(self.posted(m), [])
+        m["try_auto_merge"].assert_called_once()
+        self.assertEqual(self.held_back(), [])        # the deep result is the one that stands
+
+    def test_a_fix_undone_with_a_rename_is_raised_after_a_missed_round(self):
+        """Codex P2 (pass 3): fixed on h3; h4 renames the file and drops the fix; the h4
+        round missed it, so a rerun on h4 has nothing changed since the last round."""
+        guarded = self.edit(self.js(250), 40, "if (amount == null) return 0;\nconst line40 = 'v1';")
+        h3 = self.repo.commit({self.FINANCIAL: guarded})
+        renamed = "src/pages/Todo/pages/components/FinancialSection.js"
+        h4 = self.repo.commit({self.FINANCIAL: None, renamed: self.js(250)})
+        self.last_round(h4)
+        fixed = {"id": "d1", "notes": [
+            {"id": 1, "author": {"id": 7}, "position": {"new_path": self.FINANCIAL, "new_line": 40},
+             "body": f"🟠 **Medium** · 總財力加總沒處理空值\n\n{rc.SIGNATURE_MARKER}"},
+            {"id": 2, "author": {"id": 99}, "body": "已修"},
+            {"id": 3, "author": {"id": 7},
+             "body": f"✅ **已確認修正**\n{rc.APPEAL_SIGNATURE}\n"
+                     f"{rc.JUDGED_ON_MARKER.format(h3 + ':master')}\n"
+                     f"{rc.APPEAL_ACCEPT}\n{rc.APPEAL_FIXED}"}]}
+        again = {"severity": "medium", "title": "財力加總遇到空值會算錯", "file": renamed, "line": 40}
+        m, _ = self.review([again], head=h4, discussions=[fixed])
+        self.assertEqual(self.titles(m), [again["title"]])

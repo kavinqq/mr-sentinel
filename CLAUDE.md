@@ -45,9 +45,22 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   reads the whole MR, but gets `already_raised` and must not raise those again
   unless their code changed. The gate gets the finding and its state only, never a
   developer's reply (text they control). A rejected or self-resolved comment is
-  reopened on GitLab so its unresolved-thread count shows what is left. An
-  incremental "review only what changed" design was tried and dropped: chaining
-  rounds kept missing reverted fixes, races and failed rounds (two Codex passes).
+  reopened on GitLab so its unresolved-thread count shows what is left.
+  First round strictest, later rounds only on what changed (owner's call,
+  2026-11-07, after !60): every round still reads the whole MR, but from the
+  second completed round on, a *new* AI-review or release-guard finding is posted
+  only if it lands on code changed since `review_meta.json` `last_round` (the last
+  round that finished with every comment posted); otherwise it is logged and
+  appended to `reviews/<mr_id>/suppressed_findings.jsonl`, never posted, so never
+  scored (`review_rounds.py`). Not new, so always posted: rule hits (a hit never
+  posted holds the merge by itself), findings in a file with an earlier gate one
+  still open or one the rerun cleanup deleted unanswered (history db, any round),
+  in the file of a finding accepted as fixed on another head (a fix undone) or
+  accepted on a reason whose file changed since that verdict (renames followed),
+  and findings about no file. No `last_round`, another target, a previous head
+  that is not an ancestor, or a deep round after a lite one = first round. A
+  chained "review only the diff" design was dropped: it kept missing reverted
+  fixes, races and failed rounds (two Codex passes).
 
 - **The test-code gate is an MR gate only** (owner's call, 2026-10-20): it acts when an MR
   targets a production branch. Do not add or propose branch monitoring, force-push

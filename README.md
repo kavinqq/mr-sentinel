@@ -181,6 +181,16 @@ resolve and cannot restrict it, so a comment the developer resolved themselves
 still counts as unanswered (no reply) or waiting to be judged (with a reply), and
 a rerun deletes it only in the first case. A rerun also tells the model which
 answered comments exist, so a reworded copy of a settled finding is not raised again.
+The first round is the strict one: every round still reads the whole MR, but from
+the second finished round on, a new finding (normal review or release guard) is
+posted only if it lands on code changed since that round (within 3 lines). Findings
+in a file with an earlier gate comment still open or a comment the rerun deleted
+unanswered, in the file of a finding accepted as fixed on an earlier commit (a fix
+undone) or accepted on a reason whose file changed since, test-marker rule hits and findings about no file are always posted. A
+rebase, a new target, a deep review after a lite one or no finished round on
+record starts over with a first round. Held-back findings go to the
+reviewer log and `reviews/<mr_id>/suppressed_findings.jsonl`, never to GitLab or the
+scores.
 When nothing is left open and `auto_merge_on_clean` is on, the normal auto-merge
 rails apply, pinned to the sha the last *deep* review covered (a lite review,
 or code pushed after the review, is never merged this way). Appeals share the
@@ -347,7 +357,9 @@ more bugs. A giant MR that can't finish in `review_timeout_seconds` reports
 **Does it re-review when new commits are pushed?**
 Not automatically — one review per MR, claimed via the 👀 emoji (idempotent).
 But you can ask for another round from Slack (`@bot rerun`), which drops the
-claim, deletes its own previous comments that nobody replied to, and runs again.
+claim, deletes its own previous comments that nobody replied to, and runs again;
+from the second round on, new findings are posted only on code changed since the
+last finished round.
 Automatic re-review on push is on the roadmap.
 
 ## Roadmap

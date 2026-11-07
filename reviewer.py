@@ -11,6 +11,7 @@ The user's clone is never touched: `git fetch` only updates refs/objects and
 the checkout happens in a throwaway worktree that is removed afterwards.
 """
 import argparse
+import dataclasses
 import fcntl
 import json
 import logging
@@ -27,6 +28,7 @@ import artifact_gate
 import blocks
 import commands
 import engines
+from history import db as history_db
 from history import rate as history_rate
 from history import sync as history_sync
 import fetch_mr
@@ -35,6 +37,7 @@ import gitlab_client
 import post_comment
 import release_guard
 import review_common
+import review_rounds
 import slack_client
 from sentinel_config import (SCRIPT_DIR, SOCKET_HEARTBEAT_MAX_AGE, SOCKET_HEARTBEAT_PATH,
                              load_config, load_state)
@@ -274,6 +277,82 @@ def _post_gate_findings(config: dict, engine, project_path: str, iid, ctx: dict,
             posted += post_comment.post_findings(base, token, project_path, iid, items,
                                                  ctx["diff_refs"], signature=signature)
     return posted
+
+
+def _round_scope(config: dict, iid, mr_id, last_round: dict | None, mode: str, ctx: dict,
+                 local: str | None, discussions: list[dict], me: int
+                 ) -> review_rounds.Scope | None:
+    """What a later round may post new findings on; None = first-round rules, where
+    every finding is posted (logged with the reason)."""
+    head, target = ctx["diff_refs"]["head_sha"], ctx.get("target_branch")
+    if not last_round:
+        log.info("MR !%s: first round (no completed round on record), posting every finding", iid)
+        return None
+    if last_round.get("target_branch") != target:
+        log.info("MR !%s: target changed since the last round (%s -> %s), posting every finding",
+                 iid, last_round.get("target_branch"), target)
+        return None
+    if mode == "deep" and last_round.get("mode") != "deep":
+        # a lite round was not the strict one: a deep pass after it (forced, or the
+        # confirmation before auto-merge) must not have its findings held back
+        log.info("MR !%s: first deep round after a lite one, posting every finding", iid)
+        return None
+    previous = last_round.get("head_sha")
+    changed, why = review_rounds.changed_since(local, previous, head)
+    if changed is None:
+        log.info("MR !%s: %s, posting every finding as in a first round", iid, why)
+        return None
+    moved = review_rounds.renames(local, ctx["diff_refs"].get("start_sha") or "", head)
+    if moved is None:
+        log.info("MR !%s: renames in the MR unknown, posting every finding", iid)
+        return None
+    since_verdict: dict = {}
+
+    def changed_since(sha: str) -> set | None:
+        if sha not in since_verdict:
+            since_verdict[sha] = review_rounds.files_changed(local, sha, head)
+        return since_verdict[sha]
+    try:
+        carried = review_rounds.carried_files(discussions, me, head,
+                                              _recorded_findings(config, mr_id), changed_since,
+                                              moved)
+    except Exception:
+        # the comments a rerun deleted are only in the history db: without them a
+        # re-find could be held back as new, so hold nothing back
+        log.exception("MR !%s: history db unreadable, posting every finding", iid)
+        return None
+    return review_rounds.Scope(previous, changed, frozenset(review_rounds.follow(carried, moved)))
+
+
+def _recorded_findings(config: dict, mr_id) -> list[dict]:
+    conn = history_db.connect(history_db.resolve_path(config))
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT file, status, body FROM findings WHERE mr_id = ?", (int(mr_id),))]
+    finally:
+        conn.close()
+
+
+SUPPRESSED_LOG = "suppressed_findings.jsonl"
+
+
+def _hold_back(scope: review_rounds.Scope | None, findings: list) -> tuple[list, list]:
+    """(to post, held back); everything is posted under first-round rules."""
+    return review_rounds.split(findings, scope) if scope else (findings, [])
+
+
+def _record_held(work: Path, iid, head_sha: str, scope: review_rounds.Scope | None,
+                 held: list) -> None:
+    """Held-back findings are logged and appended to SUPPRESSED_LOG, never posted, so
+    no score counts them."""
+    for f in held:
+        log.info("MR !%s: not posted, not on code changed since %s: %s:%s %s", iid,
+                 scope.previous[:8], f.get("file"), f.get("line"), f.get("title"))
+    if held:
+        with open(work / SUPPRESSED_LOG, "a") as out:
+            out.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "head_sha": head_sha,
+                                  "previous": scope.previous, "findings": held},
+                                 ensure_ascii=False) + "\n")
 
 
 def _main_branch(base: str, token: str, project_path: str) -> str | None:
@@ -627,15 +706,18 @@ UNFINISHED_MODE = "unfinished"
 
 
 def write_review_meta(work: Path, mode: str, head_sha: str, findings: int,
-                      guard: dict | None = None, target_branch: str | None = None) -> None:
+                      guard: dict | None = None, target_branch: str | None = None,
+                      last_round: dict | None = None) -> None:
     """What the last review actually covered. appeal.py reads it: merging after
     accepted appeals must keep the same rails as a clean review (deep, and the
     reviewed sha — never code pushed after the review). `guard` is the release
     guard's verdict (final_gates.Outcome.record, plus `waived_by` once an admin
-    signs it off in merge_retry) that _release_blocker requires."""
+    signs it off in merge_retry) that _release_blocker requires. `last_round` is
+    the last review that finished with every comment posted ({head_sha,
+    target_branch}): later rounds post new findings only on code changed since."""
     (work / REVIEW_META).write_text(json.dumps(
         {"mode": mode, "head_sha": head_sha, "findings": findings, "guard": guard,
-         "target_branch": target_branch}, indent=1))
+         "target_branch": target_branch, "last_round": last_round}, indent=1))
 
 
 def reviewed_target(meta: dict) -> str | None:
@@ -709,6 +791,8 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
     ctx = fetch_mr.build_context(base, token, project_path, iid)
     head_sha = ctx["diff_refs"]["head_sha"]
 
+    last_round = read_review_meta(work).get("last_round")
+
     # 3. claim: :eyes: on the MR + optional Slack reaction on the notification
     if not dry_run:
         void_review_meta(work)
@@ -780,6 +864,16 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
             print("stats    :", ctx["stats"])
             return 0
 
+        scopes: dict = {}
+
+        def scope_for(m: str) -> review_rounds.Scope | None:
+            if m not in scopes:
+                scopes[m] = _round_scope(config, iid, mr_id, last_round, m, ctx, local,
+                                         answered, me["id"])
+            return scopes[m]
+
+        held_by_mode: dict = {}
+
         def run(m: str) -> dict | None:
             if out_path.exists():
                 out_path.unlink()
@@ -793,6 +887,9 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                 log.error("engine output for MR !%s (%s) has no findings list", iid, m)
                 return None
             found["findings"] = review_common.not_yet_raised(found["findings"], answered, me["id"])
+            # held back before the lite pass is judged clean, so a lite pass with only
+            # held-back findings still gets its deep confirmation
+            found["findings"], held_by_mode[m] = _hold_back(scope_for(m), found["findings"])
             return found
 
         auto_merge = bool(review_cfg.get("auto_merge_on_clean"))
@@ -805,6 +902,20 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         outcome = (final_gates.run(engine, work, {**ctx, "already_raised": settled}, local, wt,
                                    review_cfg) if gated
                    else final_gates.NOT_APPLICABLE)
+        # a later round posts new findings only on code changed since the last one.
+        # Rule hits are exempt: a hit never posted holds the merge on its own
+        # (_release_blocker), and a rule finds nothing new on unchanged code anyway
+        scope = scope_for(mode)
+        this_round = {"head_sha": head_sha, "target_branch": ctx.get("target_branch"),
+                      "mode": mode}
+        held = []
+        if outcome.guard:
+            guard_kept, held = _hold_back(scope, outcome.guard)
+            outcome = dataclasses.replace(outcome, guard=guard_kept)
+        if result is not None:
+            result["findings"], also_held = _hold_back(scope, result["findings"])
+            held += held_by_mode.get(mode, []) + also_held
+        _record_held(work, iid, head_sha, scope, held)
         gate_findings = review_common.not_yet_raised(outcome.findings, answered, me["id"],
                                                      head=head_sha)
         # an ungated review leaves no verdict: if the MR is retargeted to a main
@@ -815,7 +926,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         if result is None:
             posted = _post_gate_findings(config, engine, project_path, iid, ctx, gate_findings)
             write_review_meta(work, UNFINISHED_MODE, head_sha, len(gate_findings), guard_record,
-                              ctx.get("target_branch"))
+                              ctx.get("target_branch"), last_round)
             if gated:
                 # a clean gate does not make an unfinished review a passed one
                 _set_status(config, project_path, head_sha, ref, web_url, "failed",
@@ -845,8 +956,11 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
         #    answer by deleting the comments and reviewing again.
         # the merge check reads this review's verdict from the meta (_release_blocker)
         # a finding that never reached GitLab cannot hold the merge as a comment
+        # only a round that finished with every comment posted is one later rounds build on
+        round_done = posted == len(findings) and outcome.ok
         write_review_meta(work, mode if posted == len(findings) else UNFINISHED_MODE, head_sha,
-                          len(findings), guard_record, ctx.get("target_branch"))
+                          len(findings), guard_record, ctx.get("target_branch"),
+                          this_round if round_done else last_round)
         if gated:
             # the status final_gates just set knows only this run's findings: comments
             # posted for this head earlier (answered, or still open) decide it — an
@@ -877,9 +991,11 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                     posted += post_comment.post_findings(
                         base, token, project_path, iid, bugs, ctx["diff_refs"],
                         signature=build_signature(MERGE_CHECK_LABEL))
+                    round_done = round_done and posted == len(findings)
                     write_review_meta(work, mode if posted == len(findings) else UNFINISHED_MODE,
                                       head_sha, len(findings), guard_record,
-                                      ctx.get("target_branch"))
+                                      ctx.get("target_branch"),
+                                      this_round if round_done else last_round)
                     if gated and posted < len(findings):
                         # the status was rechecked before these were posted
                         _set_status(config, project_path, head_sha, ref, web_url, "failed",

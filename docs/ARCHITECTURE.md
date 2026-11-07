@@ -42,7 +42,10 @@ scheduler (launchd / cron / systemd, every 60s)
                            no line of code is an MR-level note. No separate Slack message.
                            Verdict → GitLab commit status `mr-sentinel/release-gate`
        7. post             post_comment.py: rule → guard → review findings, duplicates dropped;
-                           inline discussion first, note fallback
+                           inline discussion first, note fallback. From the second finished
+                           round on (review_meta `last_round`), review_rounds.py holds back new
+                           guard / review findings not on code changed since that round (logged +
+                           suppressed_findings.jsonl); rule hits, re-finds and no-file ones post
        8. auto-merge       if deep-clean + auto_merge_on_clean (a clean lite pass is re-run deep first):
                            merge pinned to the reviewed sha (unless draft/head moved/unmergeable/
                            CI not green/CI config but no pipeline), then :done: on the notification.
@@ -216,6 +219,7 @@ prose is not. The final message is used for nothing.
 | `prompts/` | review methodology + shared skeptic persona |
 | `fetch_mr.py` | GitLab diff → noise-filtered context file |
 | `post_comment.py` | findings file → MR comments |
+| `review_rounds.py` | later rounds: which new findings land on code changed since the last finished round |
 | `gitlab_client.py` / `slack_client.py` | thin REST wrappers (urllib) |
 | `review_common.py` | pure functions (allowlist, noise, size, sort, position, …) |
 | `sentinel_config.py` | config/state IO and defaults |
