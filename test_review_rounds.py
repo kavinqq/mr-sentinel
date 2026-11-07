@@ -101,9 +101,22 @@ class TestChangedSince(unittest.TestCase):
         repo.git("commit", "-q", "-m", "mv")
         head = repo.git("rev-parse", "HEAD")
         moved = review_rounds.renames(repo.path, start, head)
-        self.assertEqual(moved, {"old.py": "src/new.py", "mid.py": "src/new.py"})
+        self.assertEqual(moved, {"old.py": {"mid.py", "src/new.py"}, "mid.py": {"src/new.py"}})
         self.assertEqual(review_rounds.follow({"old.py", FINANCIAL}, moved),
-                         {"old.py", "src/new.py", FINANCIAL})
+                         {"old.py", "mid.py", "src/new.py", FINANCIAL})
+
+    def test_a_reused_path_keeps_every_file_it_named(self):
+        """Codex P2 (pass 5): a→b, x→a, a→c. A comment on a.py may be about the
+        first a (now b) or the second (now c); overwriting kept only c."""
+        repo = Repo(self)
+        start = repo.commit({"README": "x\n"})
+        repo.commit({"a.py": js(30), "x.py": js(40)})
+        for old, new in (("a.py", "b.py"), ("x.py", "a.py"), ("a.py", "c.py")):
+            repo.git("mv", old, new)
+            repo.git("commit", "-q", "-m", "mv")
+        head = repo.git("rev-parse", "HEAD")
+        moved = review_rounds.renames(repo.path, start, head)
+        self.assertEqual(review_rounds.follow({"a.py"}, moved), {"a.py", "b.py", "c.py"})
 
     def test_a_rename_taken_in_by_merging_the_target_is_seen(self):
         """Codex P2 (pass 4): the rename is on the target; start..head excludes it."""
@@ -119,7 +132,7 @@ class TestChangedSince(unittest.TestCase):
         repo.git("merge", "-q", "--no-edit", "main")
         head = repo.git("rev-parse", "HEAD")
         self.assertNotEqual(base, target)
-        self.assertEqual(review_rounds.renames(repo.path, target, head), {"old.py": "new.py"})
+        self.assertEqual(review_rounds.renames(repo.path, target, head), {"old.py": {"new.py"}})
 
     def test_renames_without_a_start_are_unknown(self):
         self.assertIsNone(review_rounds.renames("/x", "", "h"))
@@ -286,7 +299,7 @@ class TestCarriedFiles(unittest.TestCase):
         """Codex P2 (pass 4): commented on old.py, accepted on h2 after the rename to
         new.py, new.py changed on h3 — the comment still names old.py."""
         threads = [self.settled_thread("old.py", "reason", "h2")]
-        self.assertEqual(self.carried(threads, changed={"new.py"}, moved={"old.py": "new.py"}),
+        self.assertEqual(self.carried(threads, changed={"new.py"}, moved={"old.py": {"new.py"}}),
                          {"old.py"})
 
     def test_a_reason_without_a_verdict_head_or_an_unknown_one_is_carried(self):

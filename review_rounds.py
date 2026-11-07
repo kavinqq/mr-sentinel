@@ -89,7 +89,7 @@ def _comment_file(path: str | None, body: str | None) -> str | None:
 
 
 def carried_files(discussions: list[dict], user_id, head: str, recorded: list[dict],
-                  changed_since, moved: dict[str, str]) -> set[str]:
+                  changed_since, moved: dict[str, set[str]]) -> set[str]:
     """Files where a finding is not new even on untouched code:
     - a release-gate comment for an earlier head still open: it holds only its own
       head, so this head's gate must post it again or its status goes green;
@@ -139,10 +139,12 @@ def files_changed(local: str, since: str, head: str) -> set[str] | None:
     return {n for n in out.stdout.split("\0") if n} if out.returncode == 0 else None
 
 
-def renames(local: str, start: str, head: str) -> dict[str, str] | None:
-    """{old path: path at `head`} for every rename along the MR's line of commits
+def renames(local: str, start: str, head: str) -> dict[str, set[str]] | None:
+    """{old path: every path it was renamed to} along the MR's line of commits
     (start..head), chained; None when git cannot tell. First-parent with merge diffs:
-    a rename the MR took in by merging its target shows on the merge commit."""
+    a rename the MR took in by merging its target shows on the merge commit.
+    A path reused after a rename (a→b, x→a, a→c) names two files over time and a
+    comment does not say which, so it keeps both destinations (Codex P2, pass 5)."""
     if not (local and start and head):
         return None
     try:
@@ -153,21 +155,23 @@ def renames(local: str, start: str, head: str) -> dict[str, str] | None:
         return None
     if out.returncode != 0:
         return None
-    moved: dict[str, str] = {}
+    moved: dict[str, set[str]] = {}
     fields = [f.strip("\n") for f in out.stdout.split("\0")]
     fields = [f for f in fields if f]
     for i in range(0, len(fields) - 2, 3):
         if not fields[i].startswith("R"):
             return None                          # an entry this parser does not know
         old, new = fields[i + 1], fields[i + 2]
-        moved = {k: (new if v == old else v) for k, v in moved.items()}
-        moved[old] = new
+        for names in moved.values():
+            if old in names:
+                names.add(new)
+        moved.setdefault(old, set()).add(new)
     return moved
 
 
-def follow(files: set[str], moved: dict[str, str]) -> set[str]:
+def follow(files: set[str], moved: dict[str, set[str]]) -> set[str]:
     """`files` plus the names they were renamed to."""
-    return files | {moved[f] for f in files if f and f in moved}
+    return files | {n for f in files if f for n in moved.get(f, ())}
 
 
 def _judged_head(discussion: dict, user_id) -> str | None:
