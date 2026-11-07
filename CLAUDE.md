@@ -49,6 +49,11 @@ adversarial two-model AI code review (see README.md and docs/ARCHITECTURE.md).
   incremental "review only what changed" design was tried and dropped: chaining
   rounds kept missing reverted fixes, races and failed rounds (two Codex passes).
 
+- **The test-code gate is an MR gate only** (owner's call, 2026-10-20): it acts when an MR
+  targets a production branch. Do not add or propose branch monitoring, force-push
+  detection or periodic full-tree scans — an unrequested `branch_guard.py` once announced
+  "watching" to 13 projects on Slack and had to be removed.
+
 - Schedulers (launchd/cron) run with a **minimal PATH**: plists must use absolute
   interpreter paths, and external CLIs are resolved via `engines.resolve_cli()`.
 - `config.json`, `state.json`, `bot_state.json`, `overrides.json`,
