@@ -18,7 +18,8 @@ deliberately simple and printed with every result:
 A finding with no category yet (or "needs_review") is listed but not scored;
 one filed under the old 5-way taxonomy uses its mapped category until the
 classifier files it again. Not counted: findings a human excluded as false positives,
-and findings whose appeal the AI accepted (the developer was right). Under
+findings whose appeal the AI accepted (the developer was right), and findings a
+rerun of the very same code deleted and replaced (superseded_notes). Under
 `min_reviewed_mrs` reviewed MRs there is no level ("資料不足") — a handful of
 MRs says more about luck than about skill.
 
@@ -35,14 +36,74 @@ high-severity bug.
 import json
 from datetime import datetime, timedelta, timezone
 
+import review_common
 from history import db
 from history.parse import CATEGORIES, LEGACY_CATEGORIES, is_release_mr
 
 UNCATEGORIZED = "uncategorized"
 
 
-def effective_findings(findings: list[dict], reviews: list[dict]) -> list[dict]:
-    """Apply human overrides (latest wins, per field) on top of the raw rows."""
+def reviewed_head(f: dict) -> str | None:
+    """The commit a finding was raised on: a final-gate comment names it in its body
+    (MR-level ones too), an inline comment carries it in its position."""
+    return review_common.gate_head({"notes": [{"body": f.get("body") or ""}]}) or f.get("head_sha")
+
+
+def superseded_notes(findings: list[dict], rated: list[tuple] = ()) -> set:
+    """Note ids of deleted findings (present = 0) that a rerun of the same code replaced.
+
+    A rerun records every comment (sync) and then deletes the unanswered ones, so
+    the first round posted after a finding was last seen is the rerun that deleted
+    it. If that round reviewed the same head, nothing could have been fixed in
+    between: the deletion only made room for the rerun's own copy, which is the
+    record (and may since have been accepted). A finding deleted before new code
+    still counts — the developer made that mistake. Unknown either way (no head on
+    the finding, no later round with a head) keeps counting.
+
+    `rated` adds rounds that left no comment with a head: (mr_id, rated_at, head)
+    of each review's own grade (review_rounds) — without it, a round on other code
+    that posted only MR-level notes would be skipped over."""
+    rounds: dict = {}
+    for mr_id, at, head in rated:
+        rounds.setdefault(mr_id, []).append((at, head))
+    for f in findings:
+        head = reviewed_head(f)
+        if head and f.get("created_at"):
+            rounds.setdefault(f["mr_id"], []).append((f["created_at"], head))
+    for posted in rounds.values():
+        posted.sort()
+    out = set()
+    for f in findings:
+        head, seen = reviewed_head(f), f.get("last_seen_at")
+        if f.get("present", 1) or not head or not seen:
+            continue
+        rerun = next((h for at, h in rounds.get(f["mr_id"], []) if at > seen), None)
+        if rerun == head:
+            out.add(f["note_id"])
+    return out
+
+
+def is_counted(f: dict) -> bool:
+    """An effective finding that counts against someone (see the module docstring)."""
+    return not f["excluded"] and not f["appeal_accepted"] and not f["superseded"]
+
+
+def review_rounds(conn, mr_id: int | None = None) -> list[tuple]:
+    """(mr_id, rated_at, head) of every review's own grade (history/rate.py writes
+    one right after each review) — a review round even when it posted nothing."""
+    where = "source = 'review' AND author_id IS NULL AND head_sha IS NOT NULL"
+    args: tuple = ()
+    if mr_id is not None:
+        where, args = where + " AND mr_id = ?", (mr_id,)
+    return [tuple(r) for r in conn.execute(
+        f"SELECT DISTINCT mr_id, rated_at, head_sha FROM mr_ratings WHERE {where}", args)]
+
+
+def effective_findings(findings: list[dict], reviews: list[dict], rated: list[tuple] = ()) -> list[dict]:
+    """Apply human overrides (latest wins, per field) on top of the raw rows.
+    `findings` must hold every finding of each MR it covers, `rated` its
+    review_rounds (superseded_notes compares a finding with the rounds after it)."""
+    superseded = superseded_notes(findings, rated)
     latest_cat, latest_excl = {}, {}
     for r in sorted(reviews, key=lambda r: (r["created_at"], r["id"])):
         if r.get("category"):
@@ -59,16 +120,16 @@ def effective_findings(findings: list[dict], reviews: list[dict]) -> list[dict]:
         f["category_provisional"] = not decided and bool(provisional)
         f["excluded"] = latest_excl.get(f["note_id"], False)
         f["appeal_accepted"] = f.get("appeal_verdict") == "accept"
+        f["superseded"] = f["note_id"] in superseded
         out.append(f)
     return out
 
 
-def uncounted_notes(raw: list[dict], reviews: list[dict]) -> set[str]:
+def uncounted_notes(raw: list[dict], reviews: list[dict], rated: list[tuple] = ()) -> set[str]:
     """Note ids (as followups.source_ref strings) that do not count anywhere:
-    excluded by a human or appeal-accepted. Global, not per author — an AI
+    excluded by a human, appeal-accepted or superseded. Global, not per author — an AI
     re-find is pinned on one person but the finding itself may be someone else's."""
-    return {str(f["note_id"]) for f in effective_findings(raw, reviews)
-            if f["excluded"] or f["appeal_accepted"]}
+    return {str(f["note_id"]) for f in effective_findings(raw, reviews, rated) if not is_counted(f)}
 
 
 GATES = {  # level key -> (stat, holds(stat, limit), why-not text)
@@ -215,7 +276,7 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
     # personal MRs, plus release MRs where this person's own commits were graded
     # (history/rate.py slices); a release MR as a whole is nobody's
     own = [m for m in reviewed if not m.get("release") or m["mr_id"] in ratings]
-    counted = [f for f in findings if not f["excluded"] and not f["appeal_accepted"]]
+    counted = [f for f in findings if is_counted(f)]
     scored = [f for f in counted if f["category"] in CATEGORIES]
     live = [fu for fu in followups if fu.get("verdict") != "unrelated"]
 
@@ -265,6 +326,8 @@ def person_report(mrs: list[dict], findings: list[dict], followups: list[dict],
         "confirmed_followups": confirmed,
         "excluded": sum(1 for f in findings if f["excluded"]),
         "appeal_accepted": sum(1 for f in findings if f["appeal_accepted"] and not f["excluded"]),
+        "superseded": sum(1 for f in findings if f["superseded"]
+                          and not f["excluded"] and not f["appeal_accepted"]),
         "severities": severities,
         "followups": follow_counts,
         "score": score,
@@ -393,8 +456,9 @@ def attribution(conn, cfg: dict, now: datetime | None = None) -> dict:
 
     raw = [dict(r) for r in conn.execute("SELECT * FROM findings")]
     reviews = [dict(r) for r in conn.execute("SELECT * FROM finding_reviews")]
+    rated = review_rounds(conn)
     out, unattributed, unknown = [], [], {}
-    for f in effective_findings(raw, reviews):
+    for f in effective_findings(raw, reviews, rated):
         home = mrs.get(f["mr_id"])
         if home is None:
             continue
@@ -421,7 +485,7 @@ def attribution(conn, cfg: dict, now: datetime | None = None) -> dict:
     return {"mrs": mrs, "findings": out, "unattributed": unattributed, "since": since,
             "owners": owners,
             "unknown_emails": sorted(unknown.values(), key=lambda e: -e["findings"]),
-            "uncounted_notes": uncounted_notes(raw, reviews)}
+            "uncounted_notes": uncounted_notes(raw, reviews, rated)}
 
 
 def email_owners(conn, mrs: dict | None = None) -> dict[str, int]:
@@ -626,10 +690,15 @@ def per_mr_profile(row: dict) -> dict:
 
 
 def latest_ratings(conn) -> dict[int, dict[str, dict]]:
-    """mr_id -> category -> the newest whole-MR rating (history/rate.py)."""
+    """mr_id -> category -> the newest whole-MR rating (history/rate.py). A release
+    MR has none: one graded whole before it was known to be a release (the rule in
+    is_release_mr grew) is everyone's work, so that grade is nobody's."""
+    releases = {r["mr_id"] for r in conn.execute("SELECT mr_id, title, source_branch, target_branch FROM mrs")
+                if is_release_mr(r["title"], r["source_branch"], r["target_branch"])}
     out: dict[int, dict] = {}
     for r in conn.execute("SELECT * FROM mr_ratings WHERE author_id IS NULL ORDER BY rated_at, id"):
-        out.setdefault(r["mr_id"], {})[r["category"]] = dict(r)
+        if r["mr_id"] not in releases:
+            out.setdefault(r["mr_id"], {})[r["category"]] = dict(r)
     return out
 
 

@@ -184,6 +184,28 @@ class TestRadar(DashboardCase):
         self.assertContains(resp, 'class="chart" data-type="radar"')
 
 
+class TestSuperseded(DashboardCase):
+    def test_a_copy_a_same_code_rerun_replaced_is_listed_but_not_counted(self):
+        def gate(nid, created):
+            body = rc.format_comment_body({"severity": "medium", "title": "/test 連結", "problem": "p",
+                                           "category": "security", "gate_head": "a78ba095"},
+                                          "— 🤖 mr-sentinel AI review (m)")
+            return {"id": f"g{nid}", "notes": [{"id": nid, "author": {"id": ME}, "body": body,
+                                                "created_at": created}]}
+        conn = services.history_conn()
+        with conn:
+            with mock.patch("history.db.now_iso", return_value="2026-11-05T04:34:42Z"):
+                sync.store_mr(conn, "g/app", mr(0), [gate(60, "2026-11-05T03:58:21Z")], [], ME, None)
+            with mock.patch("history.db.now_iso", return_value="2026-11-05T06:52:23Z"):
+                sync.store_mr(conn, "g/app", mr(0), [gate(61, "2026-11-05T05:36:41Z")], [], ME, None)
+        conn.close()
+        (row,) = services.team()[2]
+        # 4 untouched + note 1 (deleted, no head to compare: still counts) + note 61
+        self.assertEqual((row["findings"], row["superseded"]), (6, 1))
+        resp = self.client.get(reverse("person", args=[7]))
+        self.assertContains(resp, "重審已取代 · 不計分", count=1)
+
+
 class TestReview(DashboardCase):
     def post(self, note_id, **data):
         return self.client.post(reverse("review_finding", args=[note_id]), data)

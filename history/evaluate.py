@@ -129,7 +129,7 @@ def profiles(conn) -> dict[int, dict]:
             continue
         pid = row["author_id"]
         mine = [f for f in attributed["findings"] if f["owner_author_id"] == pid and f["in_window"]
-                and not f["excluded"] and not f["appeal_accepted"]]
+                and score.is_counted(f)]
         own = set(row["mr_ids"])
         fus = [fu for fu in followups if fu["feature_mr_id"] in own and fu.get("verdict") != "unrelated"]
         out[pid] = profile(row, mine, fus, team, cfg, attributed["mrs"], ratings)

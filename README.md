@@ -274,7 +274,8 @@ python3 -m history report       # per person: 8 items × 5, total out of 40, lev
   same file within 30 days, or the AI flagging that file again — pinned on the
   most recent earlier feature MR that touched it.
 - **Level**: `(Σ severity weight × category multiplier + Σ follow-up weight) / reviewed MRs`,
-  lower is better; appeal-accepted and human-excluded findings do not count;
+  lower is better; appeal-accepted and human-excluded findings do not count, nor a
+  comment a rerun of the same commit deleted and posted again;
   under 5 reviewed MRs there is no level. Weights and thresholds are versioned
   rows in `scoring_configs` (v1 defaults are uncalibrated placeholders).
 - Ownership: `history/` owns the schema (append-only migrations). People act

@@ -4,7 +4,8 @@ re-run (or two machines syncing the same projects) can never double-count.
 GitLab is the source of truth because it holds what local files cannot: findings
 a rerun already deleted locally, developer replies, appeal verdicts, resolves.
 A finding that disappears from GitLab (rerun cleanup of an unanswered comment)
-is kept with present=0 — the developer still made that mistake.
+is kept with present=0 — the developer still made that mistake, unless the rerun
+reviewed the very same commit (score.superseded_notes: then it was only re-posted).
 """
 import logging
 from datetime import datetime, timedelta

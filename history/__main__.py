@@ -116,7 +116,8 @@ def print_report(rows: list[dict], version: int, cfg: dict) -> None:
         print(f"   嚴重度: 🔴{sev['high']} 🟠{sev['medium']} 🟡{sev['low']}"
               f"   後續 bug: fix MR {r['followups'].get('fix_mr', 0)} · AI 再抓到 "
               f"{r['followups'].get('ai_refind', 0)}"
-              f"   不計: 誤判 {r['excluded']} · 申訴成立 {r['appeal_accepted']}")
+              f"   不計: 誤判 {r['excluded']} · 申訴成立 {r['appeal_accepted']}"
+              f" · 重審取代 {r['superseded']}")
 
 
 def main(argv=None) -> int:

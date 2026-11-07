@@ -36,6 +36,12 @@ _VERSION_BUMP_RE = re.compile(r"^\s*(\[\s*ver(sion)?\s*\]|ver(sion)?\s*[:：])|�
 # integration branches: an MR *from* one of these carries other people's work
 RELEASE_SOURCES = {"dev", "develop", "development", "uat", "sit", "staging", "stage",
                    "pre-prod", "preprod", "prod", "production", "main", "master"}
+# the team's release-day branch: "mr/1105_merge", "0910_master_merge", "mr/0903_merge2"
+_RELEASE_DAY_SOURCE_RE = re.compile(r"^(mr/)?\d{4}(\d{4})?_(master_|uat_)?merge(_request)?(_?\d+)?$", re.I)
+# a title that names only the day: "1105_mr", "1029_merge", "0910 上版項目", "2026/10/16上版"
+_RELEASE_DAY_TITLE_RE = re.compile(
+    r"^\s*(\d{4}([/_.-]?\d{1,2}){0,2}|\d{1,2}/\d{1,2})[\s_-]*"
+    r"((master|main|merge|mr|release|上版項目|上版|項目)[\s_-]*)+$", re.I)
 
 
 def category_marker(category: str | None) -> str:
@@ -71,11 +77,19 @@ def is_release_mr(title: str | None, source_branch: str | None,
     or a version bump. Its diff is everyone's work, so it is nobody's personal MR:
     the scoring hands its findings back to the feature MRs that wrote that code.
 
+    Also a release: the release-day branch whose title names only the day
+    ("mr/1105_merge -> MASTER | 1105_mr"), the MR the team merges every feature
+    branch of that day into. Both are required: a release-day branch titled with
+    one feature ("mr/0806_merge | 1.49.1_任務卡片管理增加複製任務") is someone
+    shipping their own work.
+
     Deliberately NOT a release: a personal merge branch to master
     ("new-merge-branch -> master | [ feat ] 第三方登入改版") — in this team that is
     how one person ships their own feature, so it stays theirs."""
     source = (source_branch or "").strip().lower()
     if source in RELEASE_SOURCES or source.startswith(("release/", "release-", "hotfix-release")):
+        return True
+    if _RELEASE_DAY_SOURCE_RE.match(source) and _RELEASE_DAY_TITLE_RE.match(title or ""):
         return True
     return bool(_VERSION_BUMP_RE.search(title or "")) and not _FIX_RE.search(source)
 

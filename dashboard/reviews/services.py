@@ -94,7 +94,7 @@ def mr_records(row: dict, attributed: dict) -> list[dict]:
         if not m:
             continue
         here = [f for f in mine if f["mr_id"] == mr_id]
-        counted = [f for f in here if not f["excluded"] and not f["appeal_accepted"]]
+        counted = [f for f in here if score.is_counted(f)]
         kind = ("release" if m["release"] else "個人" if m["author_id"] == pid else "他人的 MR")
         out.append({
             "mr_id": mr_id, "short": f"{m['project'].rsplit('/', 1)[-1]}!{m['iid']}",
@@ -247,7 +247,7 @@ def person_detail(author_id: int) -> dict | None:
         f.update(mr=m, owner_mr=shown_mrs.get(f["owner_mr_id"]),
                  gitlab_url=f"{m.web_url}#note_{f['note_id']}" if m.web_url else None,
                  category_label=CATEGORY_LABELS.get(f["category"], f["category"]),
-                 counted=not f["excluded"] and not f["appeal_accepted"],
+                 counted=score.is_counted(f),
                  history=history_by_note.get(f["note_id"], []))
         findings.append(f)
     findings.sort(key=lambda f: f.get("created_at") or "", reverse=True)

@@ -47,8 +47,8 @@ def mr_facts(conn, cfg: dict, attributed: dict | None = None) -> list[dict]:
     its counted findings (high, possibly open at merge) and its live follow-ups."""
     attributed = attributed or score.attribution(conn, cfg)
     findings = attributed["findings"] + attributed["unattributed"]
-    counted = [f for f in findings if not f["excluded"] and not f["appeal_accepted"]]
-    uncounted = {str(f["note_id"]) for f in findings if f["excluded"] or f["appeal_accepted"]}
+    counted = [f for f in findings if score.is_counted(f)]
+    uncounted = {str(f["note_id"]) for f in findings if not score.is_counted(f)}
     by_mr: dict = {}
     for f in counted:
         by_mr.setdefault(f["mr_id"], []).append(f)

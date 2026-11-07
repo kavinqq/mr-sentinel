@@ -29,7 +29,7 @@
       <div class="d">{% if not summary.ranked %}不排入評分{% elif summary.next_level %}升 {{ summary.next_level }} 還需要:{{ summary.next_level_misses|join:"、" }}{% elif summary.level %}最高等級{% else %}{{ summary.explain }}{% endif %}</div></div>
     <div class="ms-stat"><div class="k">{% if summary.ranked %}總分{% else %}參考分數{% endif %}</div><div class="v">{{ summary.score|default_if_none:"—" }}<span class="ms-dim" style="font-size:1rem"> / {{ max_total|floatformat:0 }}</span></div><div class="d">{% for t in track_cols %}<span class="ms-tag {{ t.key|tag:'track' }}">{{ t.label }} {{ t.score|default_if_none:"—" }}</span> {% endfor %}{% if summary.fullstack_bonus %}<span class="ms-tag c-green" title="等級用加分前的 {{ summary.score_before_bonus }}">全端 +{{ summary.fullstack_bonus|floatformat:0 }}</span>{% endif %}{% if summary.sample %} <span class="ms-tag {{ summary.sample|tag:'sample' }}">{{ summary.sample }} · {{ summary.rated_mrs }} 個 MR</span>{% endif %}{% if not track_cols %}{{ summary.coverage }}/8 項已評估{% endif %}</div></div>
     <div class="ms-stat"><div class="k">已評分的 MR</div><div class="v">{{ summary.rated_mrs }}<span class="ms-dim" style="font-size:1rem"> / {{ summary.own_mrs }}</span></div><div class="d">個人 MR · 沒有 finding {{ summary.clean_mrs }}{% if summary.clean_rate is not None %}({% widthratio summary.clean_rate 1 100 %}%){% endif %}</div></div>
-    <div class="ms-stat"><div class="k">finding</div><div class="v">{{ summary.findings }}</div><div class="d">merge 時可能未處理 {{ summary.escaped }} · 誤判 {{ summary.excluded }} · 回覆已採納 {{ summary.appeal_accepted }}</div></div>
+    <div class="ms-stat"><div class="k">finding</div><div class="v">{{ summary.findings }}</div><div class="d">merge 時可能未處理 {{ summary.escaped }} · 誤判 {{ summary.excluded }} · 回覆已採納 {{ summary.appeal_accepted }} · 重審取代 {{ summary.superseded }}</div></div>
     <div class="ms-stat"><div class="k">後續 bug</div><div class="v">{{ summary.confirmed_followups }}<span class="ms-dim" style="font-size:1rem"> / {{ summary.followups.fix_mr|add:summary.followups.ai_refind }}</span></div><div class="d">已確認 / 推估</div></div>
   </div>
   {% else %}
@@ -135,6 +135,7 @@
             <span class="ms-tag {{ f.category|tag:'cat' }}" title="{% if f.category_provisional %}暫用舊分類,等 AI 重新分類{% elif f.category_source == 'classifier' %}AI 分類{% elif f.category_source == 'review' %}review 標記{% endif %}">{{ f.category_label }}{% if f.category_provisional %} · 暫定{% endif %}</span>
             {% if f.excluded %}<span class="ms-tag c-gray">誤判 · 不計分</span>
             {% elif f.appeal_accepted %}<span class="ms-tag c-green">回覆已採納 · 不計分</span>
+            {% elif f.superseded %}<span class="ms-tag c-gray" title="同一版程式重審時被刪掉,改由那次重審的留言計分">重審已取代 · 不計分</span>
             {% else %}<span class="ms-tag {{ f.status|tag:'thread' }}">{{ f.status|thread_label }}</span>{% endif %}
             {% if f.escaped and f.counted %}<span class="ms-tag c-red">merge 時可能未處理</span>{% endif %}
             {% if not f.present %}<span class="ms-tag c-gray">已從 GitLab 移除</span>{% endif %}

@@ -93,14 +93,24 @@ class TestRelease(unittest.TestCase):
                                 ("[ ver ] 版本更新至 1.15", "dev", "master"),
                                 ("ver: 版號 0.0.14.53", "new-merge-branch", "master"),   # by title
                                 ("anything", "release/1.2", "master"),
-                                ("ver: 版號更新", "some-branch", "UAT")]:
+                                ("ver: 版號更新", "some-branch", "UAT"),
+                                # the release-day branch titled with the day only (!60, !55)
+                                ("1105_mr", "mr/1105_merge", "MASTER"),
+                                ("1029_merge", "mr/1029_merge", "MASTER"),
+                                ("0910 上版項目", "0910_master_merge", "main"),
+                                ("2026/10/16上版", "1015_merge", "main")]:
             self.assertTrue(is_release_mr(title, src, tgt), (title, src))
         for title, src, tgt in [("[feat] 新增 version 檢查", "feature/version-check", "UAT"),
                                 ("[ fix ] 修登入", "fix/login", "UAT"),
                                 ("合併帳號", "feature/merge-accounts", "dev"),
                                 # someone shipping their own work via a merge branch
                                 ("[ feat ] 第三方登入改版", "new-merge-branch", "master"),
-                                ("1.49.1_任務卡片管理增加複製任務", "mr/0806_merge", "MASTER")]:
+                                ("1.49.1_任務卡片管理增加複製任務", "mr/0806_merge", "MASTER"),
+                                ("[ feat ] 網頁語系宣告錯誤 #3189", "mr/0910_merge", "master"),
+                                # a day-only title needs the release-day branch too
+                                ("0706上版項目", "new-merge-branch", "master"),
+                                ("1105_mr", "feature/x", "dev"),
+                                ("merge", "mr/1105_merge", "MASTER")]:   # no day in the title
             self.assertFalse(is_release_mr(title, src, tgt), (title, src))
 
 
@@ -481,6 +491,146 @@ class TestRatingScore(unittest.TestCase):
         (f,) = score.effective_findings(raw, reviews)
         self.assertEqual((f["category"], f["excluded"]), ("security", False))
 
+
+
+LIYU, NEKO = 105, 138
+NOV = datetime(2026, 11, 7, tzinfo=timezone.utc)
+HEAD_A, HEAD_B = "a78ba09514b2", "69fa3f71e0c4"
+
+
+def gate_body(sev, title, category, head):
+    return rc.format_comment_body({"severity": sev, "title": title, "problem": "p", "category": category,
+                                   "gate_head": head}, "— 🤖 mr-sentinel AI review (m)")
+
+
+def gate_note(nid, title, created, head, path=None, category="security", sev="medium"):
+    position = {"new_path": path, "new_line": 215, "head_sha": head} if path else None
+    return note(nid, ME, gate_body(sev, title, category, head), created_at=created,
+                resolvable=True, resolved=False, **({"position": position} if position else {}))
+
+
+def accepted(first):
+    """A thread whose appeal we accepted and resolved."""
+    return [{**first, "resolved": True, "resolved_by": {"id": ME}}, note(first["id"] + 1, LIYU, "正式機有關"),
+            note(first["id"] + 2, ME, rc.appeal_reply_body("accept", "ok", "m"))]
+
+
+class TestIntegrationMr(DbCase):
+    """pocketms-frontend !60: 麗羽 opened the release-day MR (mr/1105_merge -> MASTER,
+    titled "1105_mr") that merged four people's feature branches; it was scored as
+    her own MR — its whole-MR grade and every unblamed finding landed on her."""
+
+    def seed(self):
+        with self.conn:
+            own = {**mr(mid=3589, iid=435, author=LIYU, title="[ feat ] 網頁語系宣告錯誤 #3189",
+                        branch="mr/0910_merge", created="2026-09-10T03:00:00Z"), "target_branch": "master"}
+            sync.store_mr(self.conn, "developer/frontend/pocketexplorer", own, [],
+                          [{"name": "eyes", "user": {"id": ME}}], ME, None,
+                          ([{"id": "j1", "author_email": "jennischen@pocket.com"}], True))
+            mr60 = {**mr(mid=5630, iid=60, author=LIYU, state="opened", title="1105_mr", merged=None,
+                         branch="mr/1105_merge", created="2026-11-04T10:09:46Z"), "target_branch": "MASTER"}
+            sync.store_mr(self.conn, "developer/frontend/pocketms-frontend", mr60, [
+                {"id": "d1", "notes": accepted(gate_note(55524, "/test 連結", "2026-11-05T05:36:41Z", HEAD_A,
+                                                         "src/components/Navbar.js"))},
+                {"id": "d2", "notes": [gate_note(55529, "點數下限改 0", "2026-11-05T05:36:43Z", HEAD_A,
+                                                 "src/PKFansExchangeProductEditPage.js", "correctness")]},
+                {"id": "d3", "notes": [gate_note(55211, "要先確認後端已上版", "2026-11-05T03:46:49Z", HEAD_B,
+                                                 category="correctness")]}], [], ME, None)
+            self.conn.executemany("INSERT INTO finding_blame VALUES (?, ?, ?, ?, ?, 'now')", [
+                (55524, "c1", "jennischen@pocket.com", "Jennis", None),
+                (55529, "c2", "kunpao0104@gmail.com", "neko0104", None),
+                (55211, None, None, None, "finding has no file/line")])
+        from history import rate
+        rate.store(self.conn, 3589, {c: {"score": 4, "reason": "r", "evidence": []} for c in CATEGORIES},
+                   "aa11", "review", "claude")
+        rate.store(self.conn, 5630, {c: {"score": 1, "reason": "r", "evidence": []} for c in CATEGORIES},
+                   HEAD_A, "review", "claude")
+
+    def test_the_release_day_mr_is_nobodys_own(self):
+        self.seed()
+        attributed = score.attribution(self.conn, CFG, NOV)
+        self.assertTrue(attributed["mrs"][5630]["release"])
+        self.assertNotIn(5630, score.latest_ratings(self.conn))       # graded whole: void
+        (row,) = [r for r in score.team_report(self.conn, 1, CFG, NOV, attributed) if r["author_id"] == LIYU]
+        self.assertNotIn(5630, row["mr_ids"])
+        # only her personal MR's 4: (3×3 + 4) / 4, not (3×3 + 4 + 1) / 5
+        self.assertEqual(row["items"]["requirements"]["score"], 3.25)
+        # the line she wrote (blame) is still hers; an unknown author's and an
+        # MR-level note are listed for review, not pinned on whoever opened the MR
+        self.assertEqual([f["note_id"] for f in attributed["findings"] if f["mr_id"] == 5630], [55524])
+        self.assertEqual(sorted(f["note_id"] for f in attributed["unattributed"]), [55211, 55529])
+
+    def test_a_feature_shipped_through_the_release_day_branch_stays_personal(self):
+        self.seed()
+        self.assertFalse(score.attribution(self.conn, CFG, NOV)["mrs"][3589]["release"])
+        self.assertIn(3589, score.latest_ratings(self.conn))
+
+
+class TestSupersededFindings(DbCase):
+    """!60 on head a78ba095: the same commit was reviewed three times; each rerun
+    deleted the unanswered comments and posted its own (7 -> 8 -> 12). The last
+    round's copies were all accepted, yet the deleted copies kept counting."""
+
+    def store(self, discussions, at):
+        with mock.patch.object(db, "now_iso", return_value=at), self.conn:
+            sync.store_mr(self.conn, "developer/frontend/pocket-app", mr(
+                mid=900, iid=9, author=LIYU, state="opened", merged=None, title="[ feat ] 口袋粉",
+                created="2026-11-04T10:00:00Z"), discussions, [], ME, None)
+
+    def report(self):
+        (row,) = [r for r in score.team_report(self.conn, 1, CFG, NOV) if r["author_id"] == LIYU]
+        return row
+
+    def test_a_copy_deleted_by_a_rerun_of_the_same_code_does_not_count(self):
+        first = gate_note(55283, "/test 連結靠 debugMode", "2026-11-05T03:58:21Z", HEAD_A, "src/Navbar.js")
+        self.store([{"id": "d1", "notes": [first]}], "2026-11-05T04:34:42Z")
+        rerun = gate_note(55524, "/test 連結靠 debugMode", "2026-11-05T05:36:41Z", HEAD_A, "src/Navbar.js")
+        self.store([{"id": "d2", "notes": accepted(rerun)}], "2026-11-05T06:52:23Z")
+        (old,) = [f for f in score.attribution(self.conn, CFG, NOV)["findings"] if f["note_id"] == 55283]
+        self.assertTrue(old["superseded"])
+        row = self.report()
+        self.assertEqual((row["findings"], row["superseded"], row["appeal_accepted"]), (0, 1, 1))
+        self.assertIsNone(row["items"]["security"]["score"])
+        self.assertIn("55283", score.uncounted_notes(
+            [dict(r) for r in self.conn.execute("SELECT * FROM findings")], []))
+
+    def test_an_mr_level_gate_note_is_matched_by_its_gate_head(self):
+        first = gate_note(55441, "/test 頁仍可直接開啟", "2026-11-05T04:40:09Z", HEAD_A)
+        self.store([{"id": "d1", "notes": [first]}], "2026-11-05T05:31:52Z")
+        rerun = gate_note(55524, "/test 連結靠 debugMode", "2026-11-05T05:36:41Z", HEAD_A, "src/Navbar.js")
+        self.store([{"id": "d2", "notes": accepted(rerun)}], "2026-11-05T06:52:23Z")
+        self.assertEqual(self.report()["findings"], 0)
+
+    def test_a_copy_deleted_before_new_code_still_counts(self):
+        first = gate_note(55206, "/test 連結只靠 debugMode", "2026-11-05T03:46:46Z", HEAD_B, "src/Navbar.js")
+        self.store([{"id": "d1", "notes": [first]}], "2026-11-05T03:51:19Z")
+        rerun = gate_note(55283, "/test 連結靠 debugMode", "2026-11-05T03:58:21Z", HEAD_A, "src/Navbar.js")
+        self.store([{"id": "d2", "notes": [rerun]}], "2026-11-05T04:34:42Z")
+        row = self.report()
+        self.assertEqual((row["findings"], row["superseded"]), (2, 0))
+        self.assertEqual(row["items"]["security"]["score"], 3.0)      # min(3, cap 3), n=1
+
+    def test_a_round_on_other_code_with_no_inline_comment_is_not_skipped(self):
+        """Codex: head A deleted by a round on B that posted only an MR-level note,
+        then a force-push back to A — the round on B decides, not the later one."""
+        from history import rate
+        first = gate_note(55283, "/test 連結靠 debugMode", "2026-11-05T03:58:21Z", HEAD_A, "src/Navbar.js")
+        self.store([{"id": "d1", "notes": [first]}], "2026-11-05T04:34:42Z")
+        plain = note(55300, ME, ai_body("medium", "MR 說明不足", "requirements"), created_at="2026-11-05T04:40:00Z")
+        self.store([{"id": "d2", "notes": [plain]}], "2026-11-05T04:41:00Z")
+        with mock.patch.object(db, "now_iso", return_value="2026-11-05T04:40:30Z"):
+            rate.store(self.conn, 900, {"security": {"score": 3, "reason": "r", "evidence": []}},
+                       HEAD_B, "review", "claude")
+        again = gate_note(55400, "/test 連結靠 debugMode", "2026-11-05T05:36:41Z", HEAD_A, "src/Navbar.js")
+        self.store([{"id": "d2", "notes": [plain]}, {"id": "d3", "notes": [again]}], "2026-11-05T06:00:00Z")
+        (old,) = [f for f in score.attribution(self.conn, CFG, NOV)["findings"] if f["note_id"] == 55283]
+        self.assertFalse(old["superseded"])
+
+    def test_a_deletion_no_later_round_explains_still_counts(self):
+        first = gate_note(55283, "/test 連結靠 debugMode", "2026-11-05T03:58:21Z", HEAD_A, "src/Navbar.js")
+        self.store([{"id": "d1", "notes": [first]}], "2026-11-05T04:34:42Z")
+        self.store([], "2026-11-05T06:52:23Z")
+        self.assertEqual((self.report()["findings"], self.report()["superseded"]), (1, 0))
 
 
 class TestTeamReport(DbCase):

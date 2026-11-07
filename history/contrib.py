@@ -12,7 +12,7 @@ def facts(conn, pid: int, attributed: dict, followups: list[dict], since: str) -
     """Counts and the MRs behind them — a lead is not scored or compared."""
     mrs = attributed["mrs"]
     counted = [f for f in attributed["findings"] + attributed["unattributed"]
-               if not f["excluded"] and not f["appeal_accepted"]]
+               if score.is_counted(f)]
     by_mr: dict[int, list] = {}
     for f in counted:
         by_mr.setdefault(f["mr_id"], []).append(f)

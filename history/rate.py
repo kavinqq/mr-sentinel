@@ -109,8 +109,8 @@ def _findings_of(conn, mr_id: int) -> list[dict]:
     reviews = [dict(r) for r in conn.execute(
         "SELECT * FROM finding_reviews WHERE note_id IN (SELECT note_id FROM findings WHERE mr_id = ?)",
         (mr_id,))]
-    return [f for f in score.effective_findings(rows, reviews)
-            if not f["excluded"] and not f["appeal_accepted"]]
+    return [f for f in score.effective_findings(rows, reviews, score.review_rounds(conn, mr_id))
+            if score.is_counted(f)]
 
 
 def rate_one(conn, config: dict, mr: dict, ctx: dict | None = None,
