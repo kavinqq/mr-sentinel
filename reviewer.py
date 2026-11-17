@@ -248,21 +248,24 @@ def _set_status(config: dict, project_path: str, sha: str, ref: str | None, web_
         log.exception("commit status %s for %s@%s not set", state, project_path, sha)
 
 
-def _clear_ungated_status(config: dict, project_path: str, sha: str, ref: str | None,
-                          web_url: str | None) -> None:
+def _clear_ungated_status(base: str, token: str, project_path: str, sha: str,
+                          ref: str | None, web_url: str | None) -> bool:
     """Turn green a status of ours left red on an MR the final gates do not apply to
     (a crash before the target was known, or a retarget off a release branch); left
     red, it makes GitLab and auto-merge read a failed pipeline nothing can clear.
-    Never raises: a status still red simply stays a blocker."""
+    True when it changed the status. Never raises: a status still red stays a blocker."""
     try:
-        ours = [s for s in gitlab_client.list_commit_statuses(
-                    config["gitlab_url"], config["gitlab_token"], project_path, sha)
+        ours = [s for s in gitlab_client.list_commit_statuses(base, token, project_path, sha)
                 if s.get("name") == final_gates.STATUS_NAME]
+        if not ours or ours[0].get("status") == "success":
+            return False
+        gitlab_client.set_commit_status(base, token, project_path, sha, "success",
+                                        final_gates.STATUS_NAME, "這個目標分支不跑這項檢查",
+                                        web_url or "", ref or "")
+        return True
     except Exception:
-        log.exception("commit statuses of %s@%s unavailable", project_path, sha)
-        return
-    if ours and ours[0].get("status") != "success":
-        _set_status(config, project_path, sha, ref, web_url, "success", "這個目標分支不跑這項檢查")
+        log.exception("leftover status on %s@%s not cleared", project_path, sha)
+        return False
 
 
 def _fail_status(config: dict, project_path: str, iid, reason: str) -> None:
@@ -478,9 +481,16 @@ def sync_release_status(config: dict, base: str, token: str, project_path: str,
     """Turn the release status green once _release_blocker has nothing left, so
     GitLab's own merge check agrees; returns the MR as GitLab reports it after.
 
-    Runs _release_blocker itself unless the caller just did (`cleared`). Only a
-    failed status of ours on a gated head is touched, never raised: the caller
-    re-checks the pipeline anyway, and a red one simply stays a blocker."""
+    Runs _release_blocker itself unless the caller just did (`cleared`). A failed
+    status of ours is touched on a gated head with a finished verdict, or on an MR
+    the gates do not apply to (a leftover). Never raises: the caller re-checks the
+    pipeline anyway, and a red one simply stays a blocker."""
+    if not final_gates.applies(mr.get("target_branch"), config.get("review", {}),
+                               _main_branch(base, token, project_path)):
+        if _clear_ungated_status(base, token, project_path, mr["sha"],
+                                 mr.get("source_branch"), mr.get("web_url")):
+            mr = _settled(base, token, project_path, mr)
+        return mr
     meta = read_review_meta(REVIEWS_DIR / str(mr.get("id")))
     if not _same_change(meta.get("guard"), mr) or meta.get("mode") == UNFINISHED_MODE:
         return mr                 # an unfinished review never turns the status green
@@ -494,6 +504,15 @@ def sync_release_status(config: dict, base: str, token: str, project_path: str,
         gitlab_client.set_commit_status(base, token, project_path, mr["sha"], "success",
                                         final_gates.STATUS_NAME, "review 留言都處理完了",
                                         mr.get("web_url") or "", mr.get("source_branch") or "")
+    except Exception:
+        log.exception("release status of !%s not synced", mr.get("iid"))
+        return mr
+    return _settled(base, token, project_path, mr)
+
+
+def _settled(base: str, token: str, project_path: str, mr: dict) -> dict:
+    """The MR once GitLab has recomputed its pipeline from our new status. Never raises."""
+    try:
         for _ in range(STATUS_SETTLE_TRIES):
             mr = gitlab_client.get_mr(base, token, project_path, mr["iid"])
             if (mr.get("head_pipeline") or {}).get("status") != "failed":
@@ -850,7 +869,7 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
     if gated and not dry_run:
         _set_status(config, project_path, head_sha, ref, web_url, "pending", "review 進行中")
     elif not dry_run:
-        _clear_ungated_status(config, project_path, head_sha, ref, web_url)
+        _clear_ungated_status(base, token, project_path, head_sha, ref, web_url)
     local, failure = prepare_worktree(project_path, iid, head_sha, wt, review_cfg)
     if failure:
         if not dry_run:

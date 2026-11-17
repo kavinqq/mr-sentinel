@@ -966,8 +966,9 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
         with mock.patch.object(reviewer, "_review_with_confirmation",
                                return_value=({"findings": []}, "deep")):
             reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
-        self.assertEqual(self.statuses(m), ["success"])
-        self.assertEqual(m["_set_status"].call_args.args[2], "h")
+        set_status = m["gitlab_client"].set_commit_status
+        set_status.assert_called_once()
+        self.assertEqual(set_status.call_args.args[3:5], ("h", "success"))
         m["run"].assert_not_called()
 
     def test_mr_outside_release_branches_leaves_a_green_status_alone(self):
@@ -980,7 +981,7 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
         with mock.patch.object(reviewer, "_review_with_confirmation",
                                return_value=({"findings": []}, "deep")):
             reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
-        m["_set_status"].assert_not_called()
+        m["gitlab_client"].set_commit_status.assert_not_called()
 
     def test_mr_into_the_projects_own_main_branch_is_gated(self):
         d = tempfile.TemporaryDirectory()
@@ -1367,6 +1368,22 @@ class TestSyncReleaseStatus(unittest.TestCase):
 
     def test_verdict_for_another_head_is_never_turned_green(self):
         self._sync("failed", guard_head="old").set_commit_status.assert_not_called()
+
+    def test_merge_retry_clears_our_leftover_red_status_outside_release_branches(self):
+        """Regression (pocketms-backend !347 into UAT): the blocked-merge message only
+        offers 「重新合併」, which goes through here; the crash leftover must clear."""
+        mr = {**MR_HEAD, "target_branch": "UAT", "source_branch": "feat", "web_url": "u"}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(reviewer, "REVIEWS_DIR", Path(d)), \
+             mock.patch.object(reviewer, "STATUS_SETTLE_SECONDS", 0), \
+             mock.patch.object(reviewer, "gitlab_client") as gl:
+            gl.get_project.return_value = {"default_branch": "master"}
+            gl.list_commit_statuses.return_value = [{"name": "mr-sentinel/release-gate",
+                                                     "status": "failed"}]
+            gl.get_mr.return_value = {**mr, "head_pipeline": {"status": "success"}}
+            after = reviewer.sync_release_status({}, "b", "t", "g/p", mr)
+        self.assertEqual(gl.set_commit_status.call_args.args[3:5], ("h", "success"))
+        self.assertEqual(after["head_pipeline"]["status"], "success")
 
 
 class TestBlockerFindings(unittest.TestCase):
