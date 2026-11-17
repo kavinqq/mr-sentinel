@@ -1,6 +1,7 @@
 """Fetch MR diff + metadata, drop noise files, and produce the context the AI engine reads."""
 import argparse
 import json
+import time
 from pathlib import Path
 
 import gitlab_client
@@ -10,8 +11,29 @@ import review_common
 DESCRIPTION_MAX = 8000
 
 
+# GitLab computes a new MR's diff asynchronously: seconds after creation the API
+# still answers with diff_refs null (pocketms-backend !347, reviewed 8 s in)
+DIFF_READY_TRIES = 6
+DIFF_READY_SECONDS = 5
+
+
+class DiffNotReady(RuntimeError):
+    """GitLab never produced the MR's diff_refs within the wait."""
+
+
+def _changes_when_ready(base: str, token: str, project, iid) -> dict:
+    for attempt in range(DIFF_READY_TRIES):
+        raw = gitlab_client.get_mr_changes(base, token, project, iid)
+        if (raw.get("diff_refs") or {}).get("head_sha"):
+            return raw
+        if attempt < DIFF_READY_TRIES - 1:
+            time.sleep(DIFF_READY_SECONDS)
+    raise DiffNotReady(f"GitLab has no diff for {project}!{iid} after "
+                       f"{DIFF_READY_TRIES * DIFF_READY_SECONDS}s")
+
+
 def build_context(base: str, token: str, project, iid) -> dict:
-    raw = gitlab_client.get_mr_changes(base, token, project, iid)
+    raw = _changes_when_ready(base, token, project, iid)
     changes = review_common.filter_noise_changes(raw.get("changes", []))
     files, lines = review_common.diff_stats(changes)
     return {

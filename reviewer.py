@@ -248,10 +248,33 @@ def _set_status(config: dict, project_path: str, sha: str, ref: str | None, web_
         log.exception("commit status %s for %s@%s not set", state, project_path, sha)
 
 
-def _fail_status(config: dict, project_path: str, iid, reason: str) -> None:
-    """Best effort: mark the MR's current head failed when the gates could not run."""
+def _clear_ungated_status(config: dict, project_path: str, sha: str, ref: str | None,
+                          web_url: str | None) -> None:
+    """Turn green a status of ours left red on an MR the final gates do not apply to
+    (a crash before the target was known, or a retarget off a release branch); left
+    red, it makes GitLab and auto-merge read a failed pipeline nothing can clear.
+    Never raises: a status still red simply stays a blocker."""
     try:
-        mr = gitlab_client.get_mr(config["gitlab_url"], config["gitlab_token"], project_path, iid)
+        ours = [s for s in gitlab_client.list_commit_statuses(
+                    config["gitlab_url"], config["gitlab_token"], project_path, sha)
+                if s.get("name") == final_gates.STATUS_NAME]
+    except Exception:
+        log.exception("commit statuses of %s@%s unavailable", project_path, sha)
+        return
+    if ours and ours[0].get("status") != "success":
+        _set_status(config, project_path, sha, ref, web_url, "success", "這個目標分支不跑這項檢查")
+
+
+def _fail_status(config: dict, project_path: str, iid, reason: str) -> None:
+    """Best effort: mark the MR's current head failed when the gates could not run.
+    An MR the gates do not apply to is left alone: none of its later reviews would
+    turn the status green again (pocketms-backend !347 into UAT)."""
+    try:
+        base, token = config["gitlab_url"], config["gitlab_token"]
+        mr = gitlab_client.get_mr(base, token, project_path, iid)
+        if not final_gates.applies(mr.get("target_branch"), config.get("review", {}),
+                                   _main_branch(base, token, project_path)):
+            return
         _set_status(config, project_path, mr["sha"], mr.get("source_branch"), mr.get("web_url"),
                     "failed", f"review 沒跑完,請重審:{reason}"[:255])
     except Exception:
@@ -826,6 +849,8 @@ def run_review(project_path: str, iid, mr_id, config: dict, state: dict, dry_run
                                 _main_branch(base, token, project_path))
     if gated and not dry_run:
         _set_status(config, project_path, head_sha, ref, web_url, "pending", "review 進行中")
+    elif not dry_run:
+        _clear_ungated_status(config, project_path, head_sha, ref, web_url)
     local, failure = prepare_worktree(project_path, iid, head_sha, wt, review_cfg)
     if failure:
         if not dry_run:

@@ -409,6 +409,37 @@ class TestMainCrashReport(unittest.TestCase):
         reset.assert_not_called()
 
 
+class TestFailStatus(unittest.TestCase):
+    """A crash marks the head failed only where the final gates apply: on any other
+    MR nothing would ever turn it green again (pocketms-backend !347 into UAT)."""
+    CFG = {"gitlab_url": "http://gl", "gitlab_token": "t", "review": {}}
+
+    def _fail(self, target, default_branch="master"):
+        with mock.patch.object(reviewer, "gitlab_client") as gl, \
+             mock.patch.object(reviewer, "_set_status") as set_status:
+            gl.get_mr.return_value = {"sha": "h", "target_branch": target,
+                                      "source_branch": "feat", "web_url": "u"}
+            if default_branch is None:
+                gl.get_project.side_effect = RuntimeError("500")
+            else:
+                gl.get_project.return_value = {"default_branch": default_branch}
+            with self.assertNoLogs("mr_sentinel.reviewer", "ERROR") if default_branch \
+                    else self.assertLogs("mr_sentinel.reviewer", "ERROR"):
+                reviewer._fail_status(self.CFG, "g/app", 5, "TypeError")
+        return set_status
+
+    def test_mr_into_a_release_branch_is_marked_failed(self):
+        set_status = self._fail("master")
+        self.assertEqual(set_status.call_args.args[5], "failed")
+        self.assertIn("TypeError", set_status.call_args.args[6])
+
+    def test_mr_outside_release_branches_gets_no_status(self):
+        self._fail("UAT").assert_not_called()
+
+    def test_unknown_main_branch_still_marks_failed(self):
+        self.assertEqual(self._fail("UAT", default_branch=None).call_args.args[5], "failed")
+
+
 class TestCrashAfterCompletion(unittest.TestCase):
     """Once the completion message is out, nothing after it may read as a failed
     review: main() would answer by deleting the comments and reviewing again."""
@@ -920,6 +951,36 @@ class TestFinalGatesInReview(ReviewHarness, unittest.TestCase):
         m["try_auto_merge"].assert_called_once()
         # no guard verdict is recorded, so a later retarget to master cannot reuse it
         self.assertIsNone(reviewer.read_review_meta(Path(d.name) / "100")["guard"])
+
+    def test_mr_outside_release_branches_clears_our_leftover_red_status(self):
+        """Regression (pocketms-backend !347 into UAT): a crash left our status failed on
+        an MR the gates never apply to; no later review touched it, and auto-merge kept
+        refusing on "pipeline failed"."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["fetch_mr"].build_context.return_value = {**self.CTX, "target_branch": "UAT"}
+        m["gitlab_client"].list_commit_statuses.return_value = [
+            {"name": "ci/build", "status": "failed"},
+            {"name": reviewer.final_gates.STATUS_NAME, "status": "failed"}]
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        self.assertEqual(self.statuses(m), ["success"])
+        self.assertEqual(m["_set_status"].call_args.args[2], "h")
+        m["run"].assert_not_called()
+
+    def test_mr_outside_release_branches_leaves_a_green_status_alone(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        m = self.patches(d.name, outcome())
+        m["fetch_mr"].build_context.return_value = {**self.CTX, "target_branch": "UAT"}
+        m["gitlab_client"].list_commit_statuses.return_value = [
+            {"name": reviewer.final_gates.STATUS_NAME, "status": "success"}]
+        with mock.patch.object(reviewer, "_review_with_confirmation",
+                               return_value=({"findings": []}, "deep")):
+            reviewer.run_review("g/app", 5, 100, self.CFG, {}, False)
+        m["_set_status"].assert_not_called()
 
     def test_mr_into_the_projects_own_main_branch_is_gated(self):
         d = tempfile.TemporaryDirectory()

@@ -32,6 +32,28 @@ class TestBuildContext(unittest.TestCase):
         self.assertEqual(ctx["iid"], 45)
         self.assertEqual(ctx["title"], "Fix login bug")
 
+    def test_waits_for_gitlab_to_compute_the_diff_of_a_new_mr(self):
+        """Regression (pocketms-backend !347): reviewed 8 s after creation, GitLab still
+        had diff_refs null and the review crashed with a TypeError."""
+        not_ready = {**FAKE_CHANGES, "diff_refs": None, "changes": []}
+        with mock.patch("gitlab_client.get_mr_changes",
+                        side_effect=[not_ready, not_ready, FAKE_CHANGES]) as get, \
+             mock.patch.object(fetch_mr.time, "sleep") as sleep:
+            ctx = fetch_mr.build_context("https://gl", "tok", "group/backend-app", 45)
+        self.assertEqual(ctx["diff_refs"]["head_sha"], "h")
+        self.assertEqual([c["new_path"] for c in ctx["changes"]], ["app/views.py"])
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_a_diff_that_never_gets_ready_fails_with_a_clear_error(self):
+        not_ready = {**FAKE_CHANGES, "diff_refs": {"base_sha": "b", "start_sha": "s",
+                                                   "head_sha": None}}
+        with mock.patch("gitlab_client.get_mr_changes", return_value=not_ready) as get, \
+             mock.patch.object(fetch_mr.time, "sleep"):
+            with self.assertRaises(fetch_mr.DiffNotReady):
+                fetch_mr.build_context("https://gl", "tok", "group/backend-app", 45)
+        self.assertEqual(get.call_count, fetch_mr.DIFF_READY_TRIES)
+
     def test_write_context_roundtrip(self):
         with mock.patch("gitlab_client.get_mr_changes", return_value=FAKE_CHANGES):
             ctx = fetch_mr.build_context("https://gl", "tok", "group/backend-app", 45)
